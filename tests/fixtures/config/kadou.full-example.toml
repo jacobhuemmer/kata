@@ -1,0 +1,27 @@
+# Missing keys mean defaults. This file may be empty.
+theme    = "doop"
+max_risk = "medium"           # human ceiling for every folder
+
+[agent]
+max_risk = "low"
+allow    = []                 # ids the agent may run above low, e.g. "sesami/ses-deploy"
+
+[folder.sesami]                # optional per-folder policy; nothing to "register"
+max_risk = "critical"
+
+[trust]
+paths = []                    # project-local kata folders that may use the vault and be seen by agents
+
+[exec]
+timeout  = "30m"
+pass_env = []
+
+[mcp]
+max_output_lines = 50
+max_wait = "50s"
+
+[vault]
+keyring = false
+
+[notify]
+enabled = true
