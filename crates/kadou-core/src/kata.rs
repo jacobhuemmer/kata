@@ -87,6 +87,10 @@ pub struct Kata {
     pub timeout: Option<Duration>,
     /// The first comment paragraph after the closing `# ---`, shown by `kadou show` (§4.3).
     pub notes: Option<String>,
+    /// Line 1 when it is a shebang (`#!...`); absent means the exec contract falls back to
+    /// `/bin/sh` (§6.1). The runtime, not a display concern — carried on `Kata` because
+    /// `kadou-exec` execs by id, not by `ParsedHeader`.
+    pub shebang: Option<String>,
 }
 
 #[cfg(test)]
