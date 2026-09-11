@@ -157,6 +157,11 @@ pub struct RunSpec {
     pub env: Vec<(String, String)>,
     /// `[exec] timeout`, lowered or raised by the kata's own `timeout:` header (§6.1).
     pub timeout: Duration,
+    /// `true` starts the child from an empty environment (only `env` is set) instead of
+    /// inheriting this process's own environment first. MCP sets this — its `env` is already
+    /// the complete allowlisted set (§6.1 "MCP child environment"); the CLI leaves it `false`
+    /// ("CLI keeps the full parent environment", §6.1).
+    pub env_clear: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,6 +247,9 @@ pub async fn run(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if spec.env_clear {
+        cmd.env_clear();
+    }
     for (key, value) in &spec.env {
         cmd.env(key, value);
     }
@@ -394,6 +402,7 @@ mod tests {
             cwd,
             env: Vec::new(),
             timeout: Duration::from_secs(10),
+            env_clear: false,
         }
     }
 
@@ -445,6 +454,33 @@ mod tests {
         let outcome = run(s, None).await.unwrap();
         assert_eq!(outcome.status, RunStatus::Success);
         assert_eq!(outcome.output, vec!["bar".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn env_clear_starts_the_child_from_an_empty_environment() {
+        // `CARGO_MANIFEST_DIR` is always set in this test process's own environment (cargo
+        // sets it), but never appears in `spec.env` here — it must not reach a child that
+        // asked for `env_clear: true` (§6.1 "MCP child environment" — the allowlist, not
+        // blanket inheritance, decides what's visible). This reads real ambient state rather
+        // than mutating it, avoiding the `unsafe`/parallel-test-race concerns `set_var` carries
+        // (edition 2024 made it `unsafe` for exactly that reason).
+        assert!(
+            std::env::var("CARGO_MANIFEST_DIR").is_ok(),
+            "sanity: cargo sets this"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_script(
+            dir.path(),
+            "kata.sh",
+            "#!/bin/sh\necho \"leak=${CARGO_MANIFEST_DIR:-none}\"\n",
+        );
+        let mut s = spec(Some("#!/bin/sh"), file, dir.path().to_path_buf());
+        s.env_clear = true;
+
+        let outcome = run(s, None).await.unwrap();
+        assert_eq!(outcome.status, RunStatus::Success);
+        assert_eq!(outcome.output, vec!["leak=none".to_string()]);
     }
 
     #[tokio::test]
