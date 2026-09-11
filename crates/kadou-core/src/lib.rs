@@ -4,6 +4,7 @@
 //! resolution); it never runs a script and never speaks MCP — `kadou-exec` and `kadou-mcp`
 //! own those (`docs/design/05-prd.md` §3).
 
+mod check;
 mod config;
 mod header;
 mod kata;
@@ -11,6 +12,7 @@ mod paths;
 mod risk;
 mod scan;
 
+pub use check::{CheckReport, FolderReport, check_all, check_folder, check_path, render_report};
 pub use config::{
     AgentConfig, Config, ConfigError, EMPTY_TEMPLATE, ExecConfig, FolderConfig, McpConfig,
     NotifyConfig, TrustConfig, VaultConfig,
