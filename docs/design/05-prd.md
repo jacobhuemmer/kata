@@ -4,13 +4,14 @@
 **Status:** design (phase 5)
 **Codename:** dops-next. This document does not propose a product name. The binary and crate names stay `dops` until the naming phase (`docs/design/04-naming.md`) lands.
 
-This is the product and architecture contract for the Rust rewrite. It obeys `docs/design/03-principles.md`. Every numbered decision cites `01-audit.md`, `02-competitors.md`, or `03-principles.md`.
+This is the product and architecture contract for the Rust rewrite. It obeys `docs/design/03-principles.md`. Every numbered decision cites `01-audit.md`, `02-competitors.md`, or `03-principles.md`. Session-mining rows also cite `06-session-mining.md`.
 
 **Inputs (read-only):**
 
 - `docs/design/01-audit.md` — Go product at `~/origin/dops` `795d2d2` (tag `v0.13.1`, feature-complete at v0.12.0)
 - `docs/design/02-competitors.md` — adjacent MCP / task-runner / skills products
 - `docs/design/03-principles.md` — charter and non-goals
+- `docs/design/06-session-mining.md` — pipeline, redaction, review gate (engine packaging in `06` §5 is Go `cmd/` + `internal/`; **ignore that layout** — dops-next is Rust)
 - Reference catalog `~/Bitbucket/sdo-dops-catalog` — 32 `src/*/runbook.yaml` (disk count 2026-09-11)
 - crates.io versions and licenses, retrieved 2026-09-11 (see §10). Anything not retrieved is marked **unverified**.
 
@@ -29,7 +30,7 @@ One binary exposes three interfaces over one engine (`03` charter 13; `01` §2.1
 | Interface | Entry | Who |
 |---|---|---|
 | TUI | `dops` (no args) | DevOps operators |
-| CLI | `dops run`, `dops list`, `dops info`, `dops catalog`, … | Operators, scripts, CI |
+| CLI | `dops run`, `dops list`, `dops info`, `dops catalog`, `dops mine`, … | Operators, scripts, CI, scheduled mining |
 | MCP | `dops mcp serve` (stdio default) | Mason's agents (Claude Code, Cursor, Codex, Grok, …) |
 
 It is not a general agent harness, not a web app, and not a hosted control plane (`03` non-goals).
@@ -40,7 +41,7 @@ The migratable unit is today's catalog: a directory of `runbook.yaml` + `script.
 
 **Mason's agents.** Local stdio MCP clients. They list, describe, and run runbooks. They may draft new runbooks. They never raise their own risk ceiling, never see secret values, and never accept their own proposals (`03` §10–11).
 
-**DevOps operators.** Humans at a keyboard (TUI) or in a shell (CLI). They install team catalogs (Sesami's 32 Jenkins-trigger runbooks first), save `jenkins_url` / `jenkins_user` / `jenkins_token` once in the vault, raise ceilings, grant specific high/critical ids to agents, and accept proposed runbooks.
+**DevOps operators.** Humans at a keyboard (TUI) or in a shell (CLI). They install team catalogs (Sesami's 32 Jenkins-trigger runbooks first), save `jenkins_url` / `jenkins_user` / `jenkins_token` once in the vault, raise ceilings, grant specific high/critical ids to agents, and accept proposed or **mined** runbooks (`06` §2.9).
 
 Same engine, same catalogs, same vault, same risk policy. A fourth interface (Vue web UI) is deferred and is not a v1 driver (`01` §3.2, §9 Q10; `03` non-goals).
 
@@ -60,13 +61,13 @@ A change that grows the default `tools/list` past 800 tokens is a principles vio
 
 ---
 
-## 2. Decision table (01 §9, all 14)
+## 2. Decision table (01 §9 plus mining)
 
-Each row is a closed decision. One-line reason plus citations.
+Each row is a closed decision. One-line reason plus citations. Rows 1–14 close `01` §9. Row 15 closes how `06` §5.3 fits the `03` §8 tool budget.
 
 | # | Question | Decision | Reason | Cite |
 |---|---|---|---|---|
-| 1 | MCP tool shape | **Four meta-tools only:** `list_runbooks`, `describe_runbook`, `run_runbook`, `propose_runbook`. No tool per runbook. No resource-only catalog. No `select_catalog` that then registers tools. No history tool on the default surface. | Constant-size surface is ~37× cheaper than 32 eager schemas and stays flat at 370 pipelines; history is a human/CLI concern in MVP. | `01` §6.2, §9 Q1; `02` §7.1, §7.8, mise in `02` §2.3; `03` §8 rules 1–2, convention table |
+| 1 | MCP tool shape | **Four meta-tools only:** `list_runbooks`, `describe_runbook`, `run_runbook`, `propose_runbook`. No tool per runbook. No resource-only catalog. No `select_catalog` that then registers tools. No history tool. **No `mine_*` tools** (decision 15). | Constant-size surface is ~37× cheaper than 32 eager schemas and stays flat at 370 pipelines; a second four-tool mine surface would double connect cost. | `01` §6.2, §9 Q1; `02` §7.1, §7.8, mise in `02` §2.3; `03` §8 rules 1–2, convention table |
 | 2 | Format versioning | **`runbook.yaml` v2** with a **v1 compatibility loader**. v1 files (no `format_version`) load without rewrite. v2 adds optional `format_version: 2`, omittable `script:` (defaults to `script.sh`), omittable `name:` (defaults to directory), and optional catalog-root `catalog.yaml` shared `parameters:`. `integer` and `number` both import; v2 authors write `integer` (any whole) or `float`. | Must ingest 32 Sesami files as-is; catalog-level params kill 29 copies of `jenkins_*` for *new* catalogs without breaking old ones. | `01` §4.2–4.3, §7, §9 Q2; `03` §7 rules 1–3 |
 | 3 | Catalog identity | **`name` is the stable id.** `display_name` is cosmetic. Recommended Sesami register: `--name jenkins-pipelines` with `sub_path = "src"` (matches SPEC.md comment, not `filepath.Base` → `src`). Renames are operator-explicit and break vault keys / history ids by design. | IDs are `catalog.runbook`; silent rename is data loss. | `01` §2.6, §4.9, §9 Q3; `03` §7 rule 2 |
 | 4 | Confirm protocol | **One human-attest rule, three faces.** low/medium: none. high: human must affirm (TUI: y/N, default No; CLI: `--confirm <id>`). critical: human must type the runbook id (TUI input; CLI `--confirm <id>`). **MCP: no confirm strings in schemas.** high/critical from an agent without a prior grant → `pending_grant`, does not run. | Schema `_confirm_id` / `_confirm_word` is copyable theater; Sesami `ses-deploy` is production-impacting. | `01` §4.6, §9 Q4; `02` §7.7; `03` §10 rules 2–3, §11 rule 4 |
@@ -79,7 +80,8 @@ Each row is a closed decision. One-line reason plus citations.
 | 11 | Compatibility tests | **Yes.** 32 Sesami YAML files are the acceptance suite: parse, strict-load, schema round-trip, `describe`, `run --dry-run` env map. **Do not execute Jenkins in CI.** Optional live dry-run behind `DOPS_TEST_CATALOG`. | The catalog is the compatibility target (`01` §1). | `01` §7, §9 Q11 |
 | 12 | Loader strictness | **Fail closed.** `name` (after defaulting) **must** equal the directory. `risk_level` required and valid. `select` / `multi_select` require `options`. `script` file must exist for non-skill entries. Unknown `type` is a load error (v1 `number`/`integer`/`file_path`/`resource_id` are known aliases — §4.3). YAML that does not unmarshal is a load error. | Today's "unmarshal and hope" makes `name` ≠ dirname a silent wrong script path. | `01` §4.1–4.2, §9 Q12; `03` §7 rule 1 |
 | 13 | Secret parameter vs type | **Keep `secret: true` on any type.** Do not add `type: secret`. | Catalog uses the flag (e.g. `jenkins_token`); a new type would not exist in today's YAML. | `01` §2.4, §9 Q13; `03` §10 rule 4 |
-| 14 | Inactive catalogs and multi-catalog MCP | Inactive catalogs are skipped. Addressing is the **id** `catalog.runbook` (or an alias). `list_runbooks.catalog` is an optional filter. `run_runbook` / `describe_runbook` take `id`, not a separate required catalog argument. | Dispatcher still needs a stable id; catalog is already the first segment. | `01` §2.6–2.7, §9 Q14; `03` §7 rule 2 |
+| 14 | Inactive catalogs and multi-catalog MCP | Inactive catalogs are skipped for **execution**. Addressing is the **id** `catalog.runbook` (or an alias). `list_runbooks.catalog` is an optional filter. `run_runbook` / `describe_runbook` take `id`, not a separate required catalog argument. **Staging exception (decision 15):** catalog `mined` (and `proposed`) may be listed/described when `include_staging=true` or `catalog=mined`; `run_runbook` still refuses them. | Dispatcher still needs a stable id; mined drafts must be reviewable without becoming executable tools. | `01` §2.6–2.7, §9 Q14; `03` §7 rule 2; `06` §2.9, §5.3 |
+| 15 | Session mining MCP (`mine_list` / `mine_get` / `mine_run` / `mine_review`) | **Do not add those tools, resources, or prompts.** Engine is crate `dops-mine` + CLI `dops mine` (not Go `cmd/mine.go`). Map: `mine_list` → `list_runbooks` (`catalog=mined` or `include_staging=true`); `mine_get` → `describe_runbook` on `mined.<slug>`; `mine_run` → **CLI/LaunchAgent only** (`dops mine run --once`); `mine_review` approve → human `dops mine approve` / `dops catalog accept`; reject/skip → human `dops mine reject\|skip`. No `dops://mine/*` on `resources/list`. No MCP approve. | Four extra tools would break the ≤4 budget; inactive `mined` catalog is already the review gate; schema `_confirm_id` on mine_review is the same theater decision 4 rejected. | `06` §5 (ignore Go layout), §5.3, §2.9; `03` §8 rules 1 and 6, §11 rules 1–2; `02` §7.13 |
 
 ---
 
@@ -96,6 +98,7 @@ dops-next/
     dops-exec/               # process group, POSIX sh, env injection, dry-run
     dops-mcp/                # rmcp server, 4 tools, result truncation
     dops-tui/                # ratatui app
+    dops-mine/               # session mining engine (ingest/parse/cluster/redact/propose)
   catalogs/starter/          # embedded at compile time (also present as files for humans)
   docs/design/
   tests/fixtures/            # v1 YAML, v2 YAML, Sesami-shaped stubs (no tokens)
@@ -107,9 +110,10 @@ dops-next/
 | `dops-exec` | `Runner::run(ctx, script_path, env)`, cwd = runbook dir, parent env + `UPPER_SNAKE`, cancel via process group | dops-core, tokio |
 | `dops-mcp` | stdio (default) + loopback HTTP (opt-in); the four tools; no resources/prompts on the default list | dops-core, dops-exec, rmcp, tokio, serde_json |
 | `dops-tui` | keyboard-first catalog / wizard / confirm / output / palette / `?` | dops-core, dops-exec, ratatui, crossterm |
-| `dops` | `main`, clap command tree, `include!` of starter catalog via rust-embed, install-time version | all of the above, clap, clap_complete, rust-embed |
+| `dops-mine` | index.jsonl ingest, per-agent parsers, normalize/cluster/rank/redact/propose; **no MCP types** | dops-core, serde_json, regex, sha2, tokio |
+| `dops` | `main`, clap command tree including `dops mine`, rust-embed starter, install-time version | all of the above, clap, clap_complete, rust-embed |
 
-**Why split this way:** one engine (`dops-core` + `dops-exec`) shared by CLI, TUI, and MCP so confirm/risk/vault cannot drift again (`01` §2.1). MCP and TUI stay out of each other's dependency graph. The bin crate stays thin.
+**Why split this way:** one engine (`dops-core` + `dops-exec`) shared by CLI, TUI, and MCP so confirm/risk/vault cannot drift again (`01` §2.1). Mining is a local batch job (`06` §3) that writes drafts; it must not sit inside `dops-mcp`. Ignore `06` §5.1 Go `cmd/mine.go` + `internal/mine/` — that layout is not this repo.
 
 ### 3.1 Key dependencies (crates.io 2026-09-11)
 
@@ -142,6 +146,7 @@ Versions are **max stable on crates.io on 2026-09-11**. Pin in `Cargo.toml` with
 | **fs-err** | 3.3.1 | MIT OR Apache-2.0 | IO errors with paths. |
 | **sha2** | 0.11.0 | MIT OR Apache-2.0 | Script digest in `describe_runbook`. |
 | **humantime** | 2.4.0 | MIT OR Apache-2.0 | Duration display. |
+| **regex** | 1.13.1 | MIT OR Apache-2.0 | Mining redaction rules (`06` §4.2). Already listed in the 2026-09-11 crates.io pull. |
 
 **Dev / test:** `assert_cmd` 2.2.2, `predicates` 3.1.4, `tempfile` 3.27.0, `insta` 1.48.0 (snapshot `tools/list` payload size), `proptest` 1.11.0 — all MIT OR Apache-2.0 except insta (Apache-2.0).
 
@@ -172,7 +177,9 @@ Versions are **max stable on crates.io on 2026-09-11**. Pin in `Cargo.toml` with
   scripts/                         # optional extra files; not scanned as runbooks
 ```
 
-Loader scans **immediate subdirectories** of each **active** catalog root that contain `runbook.yaml`. Nested catalogs are not supported (`01` §4.1). Extra files (Sesami `scripts/trigger-pipeline.sh`, `device-log-metrics/lib/`, tests) are preserved and not loaded as runbooks (`01` §7; decision 7).
+Loader scans **immediate subdirectories** of each catalog root that contain `runbook.yaml`. Nested catalogs are not supported (`01` §4.1). Extra files (Sesami `scripts/trigger-pipeline.sh`, `device-log-metrics/lib/`, tests) are preserved and not loaded as runbooks (`01` §7; decision 7).
+
+**Active vs staging.** Active catalogs are listed, described, and runnable (subject to risk). Inactive catalogs are skipped for execution (`01` §2.6). The **staging** catalogs `mined` and `proposed` are inactive by default and are the only inactive catalogs MCP may *list/describe* (decision 15). They are never runnable until a human `dops catalog accept` copies a runbook into an active catalog, or the operator sets `active = true` on `mined` after reading the scripts (`06` §2.9–2.10).
 
 ### 4.2 Identity
 
@@ -287,7 +294,7 @@ Sesami: 87 `jenkins_*` global declarations, 146 runbook-scoped Jenkins toggles, 
 
 ### 4.7 Loader strictness (decision 12)
 
-A catalog load **fails** (CLI/TUI/MCP all refuse to start with that catalog active) if any runbook in it fails the checks in §4.3. Inactive catalogs are skipped entirely (`01` §2.6). Warnings (non-fatal): alias collisions, skill missing `skill.md`.
+A catalog load **fails** (CLI/TUI/MCP all refuse to start with that catalog active) if any **active** runbook in it fails the checks in §4.3. Inactive non-staging catalogs are skipped entirely (`01` §2.6). Staging load errors fail that draft only (drop + audit), not the whole server. Warnings (non-fatal): alias collisions, skill missing `skill.md`.
 
 Starter catalog is always loaded from embed and is guaranteed valid at compile time (tests).
 
@@ -297,11 +304,11 @@ Starter catalog is always loaded from embed and is guaranteed valid at compile t
 
 ### 5.1 Default surface
 
-`tools/list` returns **exactly these four tools**, in this order. No other tools. No per-runbook tools, including as an opt-in — the charter closed that list (`03` convention table; `02` §7.1 said opt-in for tiny catalogs, **`03` wins**).
+`tools/list` returns **exactly these four tools**, in this order. No other tools. No per-runbook tools, including as an opt-in — the charter closed that list (`03` convention table; `02` §7.1 said opt-in for tiny catalogs, **`03` wins**). `06` §5.3's `mine_list` / `mine_get` / `mine_run` / `mine_review` are **not** registered (decision 15).
 
-`resources/list` is **empty**. Catalog JSON and schema markdown are not registered (`01` §5.2 was a token and doc-drift trap; `02` §7.11; `03` §8). Agents that need a schema call `describe_runbook`.
+`resources/list` is **empty**. Catalog JSON, schema markdown, and `dops://mine/*` are not registered (`01` §5.2; `02` §7.11; `03` §8; `06` §5.3 rejected as a connect-time dump). Agents that need a schema call `describe_runbook`.
 
-`prompts/list` is **empty**. `create-runbook` becomes the `propose_runbook` **tool**. Skills are not prompts (`01` §9 Q9; `03` §8 rule 3).
+`prompts/list` is **empty**. `create-runbook` becomes the `propose_runbook` **tool**. `review-mined-runbook` is not a prompt (`06` §5.3). Skills are not prompts (`01` §9 Q9; `03` §8 rule 3). The session-mining **skill** is a `SKILL.md` that execs `dops mine`, not an MCP prompt (`06` §5.2).
 
 Server name: `dops`. Version: ldflags / `CARGO_PKG_VERSION`. Transport: **stdio default**. HTTP is `--transport http --bind 127.0.0.1:8808` (loopback only; refuse `0.0.0.0`) (`03` §1 rule 6, §10 rule 5).
 
@@ -316,7 +323,7 @@ Eager-loading clients (Cursor without tool search, naive CI) only ever see four 
 
 ### 5.3 Multi-catalog addressing
 
-`id` is `catalog.runbook` or an alias. Optional `catalog` filter on list. Inactive catalogs absent. A second catalog does not add tools (`01` §9 Q14).
+`id` is `catalog.runbook` or an alias. Optional `catalog` filter on list. Inactive catalogs absent from list **except** staging (`mined`, `proposed`) when `include_staging=true` or `catalog` is that name (decision 14–15). A second catalog does not add tools (`01` §9 Q14). `run_runbook` on a staging id returns `error=staging` and does not execute.
 
 ### 5.4 Tool input schemas (JSON Schema draft 2020-12)
 
@@ -358,6 +365,11 @@ Description: `List runbooks the current agent ceiling can see. Returns names and
       "type": "integer",
       "minimum": 0,
       "default": 0
+    },
+    "include_staging": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, also list inactive staging catalogs (mined, proposed). Staging ids are not executable. Equivalent to catalog=mined for the mine_list use case (06 §5.3) without a fifth tool."
     }
   }
 }
@@ -485,7 +497,8 @@ All tool results are a **single JSON text content block** (pretty-printed, UTF-8
       "catalog": "starter",
       "description": "Show disk usage for a path",
       "risk_level": "low",
-      "aliases": ["du"]
+      "aliases": ["du"],
+      "staging": false
     }
   ],
   "total": 6,
@@ -495,7 +508,7 @@ All tool results are a **single JSON text content block** (pretty-printed, UTF-8
 }
 ```
 
-`truncated` is true when `offset+len < total`. Hidden (above-ceiling) runbooks are absent, not listed as denied (`03` §10 rule 3).
+`truncated` is true when `offset+len < total`. Hidden (above-ceiling) runbooks are absent, not listed as denied (`03` §10 rule 3). Staging entries set `staging: true` and never appear unless `include_staging` or `catalog` names a staging catalog. List payloads still have **no scripts** (`06` §5.3 mine_list).
 
 #### `describe_runbook` result
 
@@ -532,7 +545,7 @@ All tool results are a **single JSON text content block** (pretty-printed, UTF-8
 
 `parameters` **omits** secret fields' values and defaults. `secret_param_names` tells the agent the vault will inject them. `json_schema` per param uses the same mapping as today's `paramToSchemaProperty` minus confirm fields (`01` §5.1, `internal/mcp/schema.go`). `include_script: false` drops `script` but keeps path and sha256.
 
-Unknown id or above-ceiling: JSON-RPC tool error, message `no such runbook` (do not distinguish hidden vs missing — same as load-time hide).
+Unknown id or above-ceiling: JSON-RPC tool error, message `no such runbook` (do not distinguish hidden vs missing — same as load-time hide). Staging ids **are** describable (redacted yaml + script) so agents can review drafts (`06` §5.3 mine_get). `describe_runbook` on staging must not include source session bodies, cwd, or raw commands (`06` §4.1).
 
 #### `run_runbook` results
 
@@ -590,6 +603,17 @@ Invalid args:
   "error": "invalid_args",
   "message": "unknown arg \"cmd\"; runbooks do not take a shell string",
   "expected": { "type": "object", "properties": { "…": {} }, "required": ["branch"] }
+}
+```
+
+Staging (mined/proposed) — **does not run**, even with a grant (`06` §2.9, decision 15):
+
+```json
+{
+  "status": "error",
+  "error": "staging",
+  "runbook_id": "mined.k8s-pod-logs",
+  "message": "staging catalog; a human must run: dops catalog accept mined.k8s-pod-logs"
 }
 ```
 
@@ -722,6 +746,37 @@ Paths: `~/.local/state/dops/history/`. 10 MB log archives. **90-day TTL** and 
 
 The product never `git commit`, `git push`, or `catalog install`s an agent-invented URL (`03` §11 rule 6).
 
+### 6.8 Session mining (crate + CLI, not extra MCP tools)
+
+Contract: `06-session-mining.md` (pipeline, redaction, bounds, review gate). **Packaging override:** `06` §5.1 assumes Go `cmd/mine.go` and `internal/mine/*.go`. dops-next implements that engine as **`crates/dops-mine`** and **`dops mine …`** on the existing clap tree. One binary (`03` charter 13). The skill (`06` §5.2) stays a `SKILL.md` that execs `dops mine`, never parses `~/Documents/Sessions` itself.
+
+**XDG paths** (not `$DOPS_HOME/mine` as a second hidden dir — `03` §1 rule 1, §6):
+
+| `06` path | dops-next path |
+|---|---|
+| `$DOPS_HOME/mine/` | `~/.local/state/dops/mine/` |
+| `$DOPS_HOME/mine/queue/<fingerprint>/` | `~/.local/state/dops/mine/queue/<fingerprint>/{meta.json,runbook.yaml,script.sh}` |
+| `$DOPS_HOME/catalogs/mined/` | `~/.local/share/dops/catalogs/mined/` (registered inactive) |
+| `$DOPS_HOME/mine/redact-extra.txt` | `~/.config/dops/mine/redact-extra.txt` |
+
+Pipeline, redaction ids R1–R13, rank cutoff, LaunchAgent `dev.dops.mine`, bounds (20 min / 512 MB RSS / 2 GB scan), and fail-closed secret drop are **as specified in `06` §2–4**. This PRD does not repeat the survey or the synthetic kubectl example.
+
+**MCP mapping (decision 15)** — `06` §5.3 proposed four tools plus two resources plus a prompt. That is a second eager surface. Fold into the existing four:
+
+| `06` §5.3 | dops-next |
+|---|---|
+| Resource `dops://mine/queue` | **Not registered.** `list_runbooks` with `catalog=mined` or `include_staging=true` |
+| Resource `dops://mine/proposal/{fingerprint}` | **Not registered.** `describe_runbook` id `mined.<slug>` (redacted yaml+sh already on disk; no session refs) |
+| Tool `mine_list` | `list_runbooks` |
+| Tool `mine_get` | `describe_runbook` |
+| Tool `mine_run` (`_confirm_id`, hidden unless `--allow-mine-run`) | **CLI only:** `dops mine run --once`. Not a starter runbook (starter is low-risk and must not read transcripts — `03` §10 rule 6). Skill may exec the CLI; MCP does not. |
+| Tool `mine_review` (reject/skip; approve off by default, `_confirm_id`) | **Human CLI only:** `dops mine approve\|reject\|skip`. No MCP accept (`03` §11). Schema confirm strings stay forbidden (decision 4). |
+| Prompt `review-mined-runbook` | **Not registered.** Operator uses `dops mine review` / `dops info mined.<slug>` |
+
+Approve copies the draft into the inactive `mined` staging catalog (`06` §2.9). `dops catalog accept mined.<name>` (or flipping `active = true` after a human read) is what makes it executable. Miner never assigns `low` or `critical` (`06` §4.4). Drafts use v2 types (`integer` not `number`; `file_path` on the v1 import path only — `06` §2.8's `file_path`/`number` map to `string`/`integer` at write time).
+
+`dops-mine` is not on the slice-5 critical path. Slice 9.
+
 ---
 
 ## 7. TUI / CLI UX
@@ -752,6 +807,15 @@ dops grant list
 dops grant approve <pending_id>
 dops grant deny <pending_id>
 dops grant allow <runbook_id>
+dops mine run [--once | --watch | --since <iso>]
+dops mine status
+dops mine list
+dops mine show <fingerprint>
+dops mine review
+dops mine approve <fingerprint>
+dops mine reject <fingerprint> --reason …
+dops mine install-schedule
+dops mine install-catalog
 dops completion <shell>
 ```
 
@@ -809,7 +873,7 @@ Homebrew / Nix / cargo-binstall / winget must produce the **same first-run state
 | User config | `~/.config/dops/config.toml` | `DOPS_HOME` replaces the config **root** for tests/containers (`03` §1 rule 1). When `DOPS_HOME` is set: `$DOPS_HOME/config.toml`, `$DOPS_HOME/share/`, `$DOPS_HOME/state/`. |
 | User catalogs / user themes | `~/.config/dops/catalogs/`, `~/.config/dops/themes/` | |
 | Product data (vault, keys, cloned catalogs) | `~/.local/share/dops/` | |
-| State (history, pending, proposed) | `~/.local/state/dops/` | |
+| State (history, pending, proposed, mine) | `~/.local/state/dops/` | |
 | Starter catalog / bundled themes | embedded in the binary | |
 
 Example `config.toml` (comments welcome; this file is the API — `03` §6):
@@ -829,6 +893,10 @@ allowed_runbooks = []             # catalog.runbook ids the agent may execute ab
 
 [mcp]
 max_output_lines = 50
+
+[mine]
+catalog = "mined"                 # staging catalog name (06 open Q3)
+# index defaults to ~/Documents/Sessions/index.jsonl
 
 [vault]
 keyring = false
@@ -893,6 +961,10 @@ The PRD does not grow these. A later phase that wants one is a principles revisi
 - Auto-commit / auto-push / auto-install of agent-invented catalogs.
 - Becoming a distro or theme shop.
 - Unopinionated defaults.
+- `mine_list` / `mine_get` / `mine_run` / `mine_review` as extra MCP tools, `dops://mine/*` resources, or a `review-mined-runbook` prompt (`06` §5.3 vs `03` §8).
+- Walking `~/Documents/Sessions` artifact dumps, ledger files, or tool stdout as a mining corpus (`06` §1.6, §4.1).
+- Wiki-ingest from the miner (`06` non-goals).
+- Executing mined scripts before human approve (`06` opening contract).
 
 From `01` §3.1 also dropped: MCP file watcher, `DecryptingVarResolver`, stub progress notifications, `dops://history` resource, integer-vs-number as two author types, demo runner as runtime.
 
@@ -908,13 +980,15 @@ From `01` §3.1 also dropped: MCP file watcher, `DecryptingVarResolver`, stub pr
 | Pending-grant queue ignored by operators | TUI first-class pending list; MCP result tells the agent to wait |
 | HTTP MCP accidentally bound to `0.0.0.0` | Refuse non-loopback binds |
 | Token budget creep in tool descriptions | insta snapshot of compact `tools/list` bytes; CI fails > 3200 bytes (~800 tokens @ 4 chars) |
+| Mining adds four MCP tools (`06` §5.3) | Decision 15: reuse list/describe; CLI for run/review. Snapshot still 4 tools after slice 9 |
+| Miner copies raw transcript lines into `$DOPS_HOME` | Fail closed (`06` §4.1); tests in `dops-mine` with synthetic `ghp_` fixtures; no Sessions bodies in this repo |
 | Publishing install URL / crates / GitHub release | Out of scope here; repo Gates require Mason |
 
 ---
 
 ## 9. MVP slice plan
 
-Eight slices. **Slice 5 is the first shippable agent path:** `list_runbooks` / `describe_runbook` / `run_runbook` over the Sesami catalog. No product code in *this* phase; these slices are the implementation DAG after this PRD.
+Nine slices. **Slice 5 is the first shippable agent path:** `list_runbooks` / `describe_runbook` / `run_runbook` over the Sesami catalog. Mining is slice 9 and must not grow `tools/list`. No product code in *this* phase; these slices are the implementation DAG after this PRD.
 
 ### Slice 1 — Workspace, domain, XDG config
 
@@ -964,7 +1038,13 @@ Eight slices. **Slice 5 is the first shippable agent path:** `list_runbooks` / `
 **Tests:** first-run with empty config shows 5 starter runbooks; key `?` overlay; no `init` command; installer dry-run on a temp prefix.
 **Done:** `curl | sh` shape is in-tree; `dops` after install is a finished TUI; `dops mcp serve` still the agent path.
 
-Slice order keeps **MCP over Sesami** at slice 5, before TUI polish, matching `01` rank 1–6 and `03` "8, 10, 11 are load-bearing."
+### Slice 9 — Session mining (`dops-mine`)
+
+**Scope:** `crates/dops-mine` + `dops mine` subcommands per `06` §2–4 and this PRD §6.8. Staging catalog `mined` (inactive). `list_runbooks include_staging` / `catalog=mined` and `describe_runbook` on `mined.*`. `run_runbook` on staging → `error=staging`. LaunchAgent installer. Table-driven redaction tests (`06` §4.3) with **synthetic** inputs only. No Go `internal/mine`.
+**Tests:** `tools/list` still 4 tools and ≤ 3200 bytes; `mine_list` is not a registered tool; fixture cluster of 3 synthetic sessions proposes one draft; `ghp_` fixture never appears in mine logs; `dops mine approve` copies into inactive `mined`; MCP run of `mined.*` fails staging; missing Claude transcript → `skip: transcript_missing`.
+**Done:** scheduled `dops mine run --once` can queue a redacted draft; agents can list/describe it; they cannot execute or approve it.
+
+Slice order keeps **MCP over Sesami** at slice 5, before TUI polish, matching `01` rank 1–6 and `03` "8, 10, 11 are load-bearing." Mining is later because it is not required to run the Sesami catalog (`02` §7.13 is delayed adoption).
 
 ---
 
@@ -999,6 +1079,7 @@ Retrieved from `https://crates.io/api/v1/crates/<name>` on **2026-09-11**. User-
 | camino | 1.2.5 | MIT OR Apache-2.0 |
 | fs-err | 3.3.1 | MIT OR Apache-2.0 |
 | sha2 | 0.11.0 | MIT OR Apache-2.0 |
+| regex | 1.13.1 | MIT OR Apache-2.0 |
 | humantime | 2.4.0 | MIT OR Apache-2.0 |
 | insta | 1.48.0 | Apache-2.0 |
 | assert_cmd | 2.2.2 | MIT OR Apache-2.0 |
@@ -1023,6 +1104,7 @@ Retrieved from `https://crates.io/api/v1/crates/<name>` on **2026-09-11**. User-
 12. Official `rmcp` 3.3.0, not a third-party MCP crate; `serde-yaml-ng` not deprecated `serde_yaml`.
 13. Starter catalog embedded; install = ready — `03` §2–3.
 14. Token budgets: ≤800 connect, ≤1500 typical run, ≤60s to first runbook.
+15. Session mining is `dops-mine` + `dops mine`, not four MCP tools; drafts live in inactive catalog `mined` and are list/info only until a human accepts — `06` §5 vs `03` §8.
 
 ---
 
@@ -1031,7 +1113,8 @@ Retrieved from `https://crates.io/api/v1/crates/<name>` on **2026-09-11**. User-
 - This document does not implement code. Crate versions will drift after 2026-09-11.
 - Token-per-connect target is a budget on **our** `tools/list` payload, not a billed-token measurement from Claude/Cursor.
 - Go vault import is specified as best-effort (`unverified` crypto-format).
-- `04-naming.md` does not exist yet; binary remains `dops`.
+- `04-naming.md` may exist on another branch; this PRD still does not pick a product name; binary remains `dops`.
 - Publishing `install.sh` to a stable URL, crates.io, and GitHub Releases is gated on Mason (repo README Gates).
+- `06` §5.1 Go layout is explicitly ignored (planner note, inbox 002).
 - Did not wiki-ingest (assignment). Did not push.
 )
