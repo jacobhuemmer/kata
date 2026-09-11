@@ -535,6 +535,8 @@ pub fn run_run(id: Option<String>, kv: Vec<String>, dry_run: bool) -> ExitCode {
         cwd: ctx.dir.clone(),
         env,
         timeout,
+        // CLI keeps the full parent environment — a human's own shell context (§6.1).
+        env_clear: false,
     };
 
     match kadou_exec::run_blocking(spec) {
@@ -701,6 +703,76 @@ pub fn run_vault_list() -> ExitCode {
     for (name, secret) in names {
         let kind = if secret { "secret" } else { "plain" };
         println!("{name:<28} {kind}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `kadou mcp serve [--transport stdio|http] [--bind ...] [--max-risk LEVEL]` (§5.1, §7.1, §9
+/// slice 5). HTTP stays behind a cargo feature this slice does not enable (§5.1 "HTTP stays
+/// behind a build-time cargo feature"), so any transport other than `stdio` is a clean
+/// refusal rather than a silent fallback.
+pub fn run_mcp_serve(
+    transport: String,
+    _bind: Option<String>,
+    max_risk: Option<String>,
+) -> ExitCode {
+    if transport != "stdio" {
+        eprintln!("error: --transport {transport} is not available in this build");
+        eprintln!(
+            "  = HTTP transport stays behind a cargo feature not yet shipped (docs/design/05-prd.md §5.1); use --transport stdio"
+        );
+        return ExitCode::from(2);
+    }
+
+    let max_risk_flag = match max_risk.as_deref() {
+        None => None,
+        Some(s) => match parse_risk(s) {
+            Some(r) => Some(r),
+            None => {
+                eprintln!("error: unknown risk level `{s}`");
+                eprintln!("  = risk is one of low, medium, high, critical");
+                return ExitCode::from(2);
+            }
+        },
+    };
+
+    let paths = resolve_paths();
+    if let Err(err) = starter::materialize_if_needed(&paths.kata_dir()) {
+        eprintln!(
+            "warning: failed to materialize the starter kata into {}: {err}",
+            paths.kata_dir().display()
+        );
+    }
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // Default concurrency limit of 2 (§6.1 "A per-server concurrency limit (default 2)").
+    let state = kadou_mcp::ServerState::new(paths, max_risk_flag, 2, &cwd);
+    let server = kadou_mcp::KadouMcpServer::new(state);
+
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(err) => {
+            eprintln!("error: failed to start the async runtime: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match rt.block_on(server.serve_stdio()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("error: MCP server failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `kadou mcp schema [--bytes]` (§7.1): prints the served `tools/list` JSON, and — with
+/// `--bytes` — its byte size, the same number the CI byte gate checks (§1.3).
+pub fn run_mcp_schema(bytes: bool) -> ExitCode {
+    let json_bytes = kadou_mcp::schema::tools_list_bytes();
+    println!("{}", String::from_utf8_lossy(&json_bytes));
+    if bytes {
+        println!("bytes: {}", json_bytes.len());
     }
     ExitCode::SUCCESS
 }

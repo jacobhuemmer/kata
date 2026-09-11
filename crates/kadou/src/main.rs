@@ -234,6 +234,14 @@ fn main() -> std::process::ExitCode {
             VaultAction::List => commands::run_vault_list(),
             VaultAction::Rm { name } => commands::run_vault_rm(name),
         },
+        Some(Command::Mcp(cmd)) => match cmd.action {
+            McpAction::Serve {
+                transport,
+                bind,
+                max_risk,
+            } => commands::run_mcp_serve(transport, bind, max_risk),
+            McpAction::Schema { bytes } => commands::run_mcp_schema(bytes),
+        },
         Some(command) => {
             let (name, slice) = match &command {
                 Command::Run(_) => unreachable!("handled above"),
@@ -252,7 +260,7 @@ fn main() -> std::process::ExitCode {
                 Command::History { .. } => ("history", 5),
                 Command::Grant(_) => ("grant", 6),
                 Command::Mine(_) => ("mine", 9),
-                Command::Mcp(_) => ("mcp", 5),
+                Command::Mcp(_) => unreachable!("handled above"),
                 Command::Completion { .. } => ("completion", 8),
                 Command::Version => unreachable!("handled above"),
             };
@@ -806,11 +814,24 @@ parameters:
     }
 
     #[test]
-    fn mcp_serve_stub_names_its_slice() {
+    fn mcp_serve_refuses_an_unbuilt_http_transport() {
         kadou()
-            .args(["mcp", "serve"])
+            .args(["mcp", "serve", "--transport", "http"])
             .assert()
             .code(2)
-            .stderr(predicate::str::contains("not yet implemented (slice 5)"));
+            .stderr(predicate::str::contains("not available in this build"));
+    }
+
+    #[test]
+    fn mcp_schema_prints_the_tools_list_and_byte_count() {
+        kadou()
+            .args(["mcp", "schema", "--bytes"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("\"list_kata\""))
+            .stdout(predicate::str::contains("\"describe_kata\""))
+            .stdout(predicate::str::contains("\"run_kata\""))
+            .stdout(predicate::str::contains("\"propose_kata\""))
+            .stdout(predicate::str::contains("bytes: 2028"));
     }
 }
