@@ -1,12 +1,16 @@
-//! Real implementations of the slice-2 (`list`, `check`, `import`) and slice-3 (`run`,
-//! `show`) commands — the rest of the command tree in `main.rs` stays a stub until its own
-//! slice lands (`docs/design/05-prd.md` §9).
+//! Real implementations of the slice-2 (`list`, `check`, `import`) and slice-3/4 (`run`,
+//! `show`, `vault`) commands — the rest of the command tree in `main.rs` stays a stub until
+//! its own slice lands (`docs/design/05-prd.md` §9).
 
 use std::collections::BTreeMap;
+use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use kadou_core::{Config, KadouPaths, Kata, LookupResult, RiskLevel};
+use kadou_core::{
+    Config, GoVaultSource, KadouPaths, Kata, LastArgsStore, LookupResult, RiskLevel, Vault,
+    VaultStore,
+};
 
 use crate::starter;
 
@@ -35,6 +39,111 @@ fn load_config(paths: &KadouPaths) -> Config {
         );
         Config::default()
     })
+}
+
+fn vault_store(paths: &KadouPaths) -> VaultStore {
+    VaultStore::new(&paths.data_dir)
+}
+
+/// Auto-imports a legacy Go `~/.dops` vault into kadou's own, once (§6.5, §7.4 "Go import:
+/// ... or auto-import on first vault use" — this worker's interpretation call, noted in the
+/// handoff: auto-import beat a separate `kadou vault import` subcommand). A no-op when
+/// `$HOME` can't be resolved, the marker already exists, or `~/.dops` is incomplete.
+fn auto_import_go_vault(store: &VaultStore) {
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let source = GoVaultSource::under_home(Path::new(&home));
+    match store.import_go_vault_once(&source) {
+        Ok(Some(summary)) => {
+            eprintln!(
+                "imported {} secret(s) from ~/.dops (dropped {} catalog-scoped value(s); see kadou vault list)",
+                summary.imported.len(),
+                summary.dropped_catalog_keys.len()
+            );
+        }
+        Ok(None) => {}
+        Err(err) => {
+            eprintln!("warning: failed to auto-import ~/.dops vault: {err}");
+        }
+    }
+}
+
+/// Loads the vault store, first giving the Go auto-import a chance to run (§6.5, §9 slice
+/// 4). A load failure (e.g. a corrupted envelope, or the wrong identity) is reported but not
+/// fatal for commands that can still make progress without it (`check`, `show`); `run`
+/// treats every need as `missing` in that case, same as an empty vault.
+fn load_vault(paths: &KadouPaths) -> Vault {
+    let store = vault_store(paths);
+    auto_import_go_vault(&store);
+    store.load().unwrap_or_else(|err| {
+        eprintln!("warning: failed to load the vault: {err}");
+        Vault::default()
+    })
+}
+
+/// The human ceiling for `folder`, per §6.2's formula: `folder[f].max_risk ?? max_risk`.
+fn human_ceiling(config: &Config, folder: &str) -> RiskLevel {
+    config
+        .folder
+        .get(folder)
+        .and_then(|f| f.max_risk)
+        .unwrap_or(config.max_risk)
+}
+
+/// Slice 4's stopgap safety gate (planner decision, `docs/design/05-prd.md` §9 slice 4):
+/// until slice 6 ships the full confirm protocol (§6.3, §6.4), `kadou run` never actually
+/// executes a high or critical kata, and never a kata above the human ceiling either. Both
+/// are exit-2 refusals with a fix line; neither applies to `--dry-run`, which never spawns
+/// (§6.1 "`dry_run` does not spawn").
+fn stopgap_gate(kata: &Kata, config: &Config) -> Result<(), ExitCode> {
+    if matches!(kata.risk, RiskLevel::High | RiskLevel::Critical) {
+        eprintln!(
+            "error: {} is {} risk; confirmation lands in slice 6",
+            kata.id, kata.risk
+        );
+        eprintln!(
+            "  = high and critical kata cannot run yet (docs/design/05-prd.md §6.3, §9 slice 6)"
+        );
+        return Err(ExitCode::from(2));
+    }
+
+    let folder = kata.id.split('/').next().unwrap_or(&kata.id);
+    let ceiling = human_ceiling(config, folder);
+    if kata.risk > ceiling {
+        eprintln!(
+            "error: {} is {} risk, above the max_risk ceiling {ceiling} for folder {folder}",
+            kata.id, kata.risk
+        );
+        eprintln!("  = raise it with `max_risk` (or `[folder.{folder}] max_risk`) in kadou.toml");
+        return Err(ExitCode::from(2));
+    }
+
+    Ok(())
+}
+
+/// Reads a vault value from a TTY prompt (masked unless `plain`) or, off a TTY, from stdin
+/// to EOF — never argv (§6.5 "reads the value from a TTY prompt or stdin, never argv").
+fn read_vault_value(name: &str, plain: bool) -> Result<String, String> {
+    if std::io::stdin().is_terminal() {
+        let message = format!("value for {name}");
+        let result = if plain {
+            inquire::Text::new(&message).prompt()
+        } else {
+            inquire::Password::new(&message)
+                .without_confirmation()
+                .with_display_mode(inquire::PasswordDisplayMode::Masked)
+                .prompt()
+        };
+        return result.map_err(|err| err.to_string());
+    }
+
+    use std::io::Read as _;
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .map_err(|err| err.to_string())?;
+    Ok(buf.trim_end_matches(['\n', '\r']).to_string())
 }
 
 fn parse_risk(s: &str) -> Option<RiskLevel> {
@@ -136,13 +245,14 @@ pub fn run_check(folder_or_path: Option<String>, verbose: bool) -> ExitCode {
     let paths = resolve_paths();
     let kata_dir = paths.kata_dir();
     let display_root = paths.config_dir.clone();
+    let vault = load_vault(&paths);
 
     let Some(arg) = folder_or_path else {
-        return check_all(&kata_dir, &display_root, verbose);
+        return check_all(&kata_dir, &display_root, verbose, &vault);
     };
 
     if kata_dir.join(&arg).is_dir() {
-        return check_one_folder(&kata_dir, &arg, &display_root, verbose);
+        return check_one_folder(&kata_dir, &arg, &display_root, verbose, &vault);
     }
 
     let path = PathBuf::from(&arg);
@@ -169,8 +279,8 @@ pub fn run_check(folder_or_path: Option<String>, verbose: bool) -> ExitCode {
     ExitCode::from(2)
 }
 
-fn check_all(kata_dir: &Path, display_root: &Path, verbose: bool) -> ExitCode {
-    match kadou_core::check_all(kata_dir) {
+fn check_all(kata_dir: &Path, display_root: &Path, verbose: bool, vault: &Vault) -> ExitCode {
+    match kadou_core::check_all(kata_dir, vault) {
         Ok(mut report) => {
             for folder in &mut report.folders {
                 add_interpreter_warnings(folder);
@@ -192,8 +302,14 @@ fn check_all(kata_dir: &Path, display_root: &Path, verbose: bool) -> ExitCode {
     }
 }
 
-fn check_one_folder(kata_dir: &Path, folder: &str, display_root: &Path, verbose: bool) -> ExitCode {
-    match kadou_core::check_folder(kata_dir, folder) {
+fn check_one_folder(
+    kata_dir: &Path,
+    folder: &str,
+    display_root: &Path,
+    verbose: bool,
+    vault: &Vault,
+) -> ExitCode {
+    match kadou_core::check_folder(kata_dir, folder, vault) {
         Ok(mut report) => {
             add_interpreter_warnings(&mut report);
             print!(
@@ -334,7 +450,13 @@ pub fn run_run(id: Option<String>, kv: Vec<String>, dry_run: bool) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let resolved_needs = kadou_core::resolve_needs(&kata);
+    let vault_store_handle = vault_store(&paths);
+    auto_import_go_vault(&vault_store_handle);
+    let mut vault = vault_store_handle.load().unwrap_or_else(|err| {
+        eprintln!("warning: failed to load the vault: {err}");
+        Vault::default()
+    });
+    let mut resolved_needs = kadou_core::resolve_needs(&kata, &vault);
 
     if dry_run {
         let result = kadou_exec::dry_run(&resolved_args, &resolved_needs);
@@ -355,21 +477,43 @@ pub fn run_run(id: Option<String>, kv: Vec<String>, dry_run: bool) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let missing_needs: Vec<&str> = resolved_needs
+    if let Err(code) = stopgap_gate(&kata, &config) {
+        return code;
+    }
+
+    let missing_needs: Vec<String> = resolved_needs
         .iter()
         .filter(|n| n.value.is_none())
-        .map(|n| n.name.as_str())
+        .map(|n| n.name.clone())
         .collect();
     if !missing_needs.is_empty() {
-        eprintln!(
-            "error: {} needs {} but the vault isn't set up yet",
-            kata.id,
-            missing_needs.join(", ")
-        );
-        for name in &missing_needs {
-            eprintln!("  = kadou vault set {name}");
+        if std::io::stdin().is_terminal() {
+            for name in &missing_needs {
+                let value = match read_vault_value(name, false) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        eprintln!("error: failed to read a value for `{name}`: {err}");
+                        return ExitCode::from(2);
+                    }
+                };
+                vault.set(name.clone(), value, true);
+            }
+            if let Err(err) = vault_store_handle.save(&vault) {
+                eprintln!("error: failed to save the vault: {err}");
+                return ExitCode::FAILURE;
+            }
+            resolved_needs = kadou_core::resolve_needs(&kata, &vault);
+        } else {
+            eprintln!(
+                "error: {} needs {} but the vault isn't set up yet",
+                kata.id,
+                missing_needs.join(", ")
+            );
+            for name in &missing_needs {
+                eprintln!("  = kadou vault set {name}");
+            }
+            return ExitCode::from(2);
         }
-        return ExitCode::from(2);
     }
 
     let ctx = kadou_exec::kata_context(&paths.kata_dir(), &kata);
@@ -399,7 +543,21 @@ pub fn run_run(id: Option<String>, kv: Vec<String>, dry_run: bool) -> ExitCode {
                 println!("{line}");
             }
             match outcome.status {
-                kadou_exec::RunStatus::Success => ExitCode::SUCCESS,
+                kadou_exec::RunStatus::Success => {
+                    // Last-used args are a prefill convenience (§6.6 D5): args are never
+                    // secret by construction, so writing them plainly is safe.
+                    let mut last = BTreeMap::new();
+                    for arg in &resolved_args {
+                        last.insert(arg.name.clone(), arg.value.clone());
+                    }
+                    if !last.is_empty()
+                        && let Err(err) =
+                            LastArgsStore::new(&paths.state_dir).write(&kata.id, &last)
+                    {
+                        eprintln!("warning: failed to save last-used args: {err}");
+                    }
+                    ExitCode::SUCCESS
+                }
                 kadou_exec::RunStatus::Failed => ExitCode::FAILURE,
                 kadou_exec::RunStatus::TimedOut => {
                     eprintln!("error: {} timed out after {timeout:?}", kata.id);
@@ -451,7 +609,8 @@ pub fn run_show(id: Option<String>) -> ExitCode {
     // Missing-required-arg is not a `show`-time failure: the point of `show` is to tell a
     // human which args they still need to pass, not to refuse to describe the kata.
     let resolved_args = kadou_core::resolve_args(&kata, &BTreeMap::new()).unwrap_or_default();
-    let resolved_needs = kadou_core::resolve_needs(&kata);
+    let vault = load_vault(&paths);
+    let resolved_needs = kadou_core::resolve_needs(&kata, &vault);
 
     println!("{}   {}   {}", kata.id, kata.risk, kata.about);
     println!();
@@ -464,7 +623,8 @@ pub fn run_show(id: Option<String>) -> ExitCode {
         for need in &resolved_needs {
             match &need.value {
                 Some(value) if !need.secret => println!("  {} = {value}", need.name),
-                _ => println!("  {} (secret; kadou vault set {})", need.name, need.name),
+                Some(_) => println!("  {} (secret)", need.name),
+                None => println!("  {} (missing; kadou vault set {})", need.name, need.name),
             }
         }
     }
@@ -490,4 +650,83 @@ pub fn run_show(id: Option<String>) -> ExitCode {
     println!("env     {}", env_names.join(" "));
 
     ExitCode::SUCCESS
+}
+
+/// `kadou vault set [--plain] <name>` (§6.5, §7.1, §9 slice 4). Reads the value from a TTY
+/// prompt or stdin, never argv — `main.rs`'s `VaultAction::Set` has no `value` field, so
+/// there is nowhere on the command line a value could even go.
+pub fn run_vault_set(name: String, plain: bool) -> ExitCode {
+    let paths = resolve_paths();
+    let store = vault_store(&paths);
+    auto_import_go_vault(&store);
+
+    let value = match read_vault_value(&name, plain) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("error: failed to read a value for `{name}`: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut vault = store.load().unwrap_or_else(|err| {
+        eprintln!("warning: failed to load the existing vault: {err}; starting empty");
+        Vault::default()
+    });
+    vault.set(name.clone(), value, !plain);
+
+    match store.save(&vault) {
+        Ok(()) => {
+            println!("saved {name}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: failed to save the vault: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `kadou vault list` (§6.5, §7.1): names and the secret bit, never values.
+pub fn run_vault_list() -> ExitCode {
+    let paths = resolve_paths();
+    let vault = load_vault(&paths);
+
+    if vault.is_empty() {
+        println!("no vault entries");
+        return ExitCode::SUCCESS;
+    }
+
+    let mut names: Vec<(&str, bool)> = vault.names().collect();
+    names.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, secret) in names {
+        let kind = if secret { "secret" } else { "plain" };
+        println!("{name:<28} {kind}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `kadou vault rm <name>` (§7.1).
+pub fn run_vault_rm(name: String) -> ExitCode {
+    let paths = resolve_paths();
+    let store = vault_store(&paths);
+    let mut vault = store.load().unwrap_or_else(|err| {
+        eprintln!("warning: failed to load the vault: {err}");
+        Vault::default()
+    });
+
+    if !vault.remove(&name) {
+        eprintln!("error: no vault entry named `{name}`");
+        return ExitCode::from(2);
+    }
+
+    match store.save(&vault) {
+        Ok(()) => {
+            println!("removed {name}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: failed to save the vault: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }

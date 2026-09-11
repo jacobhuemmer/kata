@@ -229,6 +229,11 @@ fn main() -> std::process::ExitCode {
         Some(Command::Import { dir, as_folder }) => commands::run_import(dir, as_folder),
         Some(Command::Run(args)) => commands::run_run(args.id, args.kv, args.dry_run),
         Some(Command::Show { id }) => commands::run_show(id),
+        Some(Command::Vault(cmd)) => match cmd.action {
+            VaultAction::Set { name, plain } => commands::run_vault_set(name, plain),
+            VaultAction::List => commands::run_vault_list(),
+            VaultAction::Rm { name } => commands::run_vault_rm(name),
+        },
         Some(command) => {
             let (name, slice) = match &command {
                 Command::Run(_) => unreachable!("handled above"),
@@ -243,7 +248,7 @@ fn main() -> std::process::ExitCode {
                 Command::Import { .. } => ("import", 2),
                 Command::Accept { .. } => ("accept", 7),
                 Command::Trust { .. } => ("trust", 5),
-                Command::Vault(_) => ("vault", 4),
+                Command::Vault(_) => unreachable!("handled above"),
                 Command::History { .. } => ("history", 5),
                 Command::Grant(_) => ("grant", 6),
                 Command::Mine(_) => ("mine", 9),
@@ -428,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn sesami_dry_run_lists_jenkins_token_as_secret_with_no_defaults_leaked() {
+    fn sesami_dry_run_reports_default_less_needs_as_missing_not_guessed_secret_without_a_vault() {
         let home = tempfile::tempdir().unwrap();
         let src = home.path().join("catalog/src/cc4-aaa");
         std::fs::create_dir_all(&src).unwrap();
@@ -482,19 +487,27 @@ parameters:
             .assert()
             .success();
 
+        // Without any vault set up, jenkins_user and jenkins_token (no header default) are
+        // `missing` — reported missing, not guessed secret (§4.4, §9 slice 4 replacing the
+        // slice-3 stopgap): they appear in `env_names` but in neither `env_public` nor
+        // `secret_env_names`. Only `kadou vault set` gives them a resolved value at all,
+        // and only then does their secret bit show up (see
+        // `needs_resolve_vault_before_default_and_dry_run_reflects_it`).
         kadou()
             .env("KADOU_HOME", home.path())
             .args(["run", "sesami/cc4-aaa", "--dry-run"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("JENKINS_TOKEN"))
             .stdout(predicate::str::contains(
-                "secret_env_names: JENKINS_USER, JENKINS_TOKEN",
+                "env_names: JENKINS_URL, JENKINS_USER, JENKINS_TOKEN, BRANCH",
             ))
+            .stdout(predicate::str::contains("secret_env_names: (none)"))
             .stdout(predicate::str::contains("env_public: BRANCH=dev"))
             .stdout(predicate::str::contains(
                 "env_public: JENKINS_URL=https://ci.example.com",
-            ));
+            ))
+            .stdout(predicate::str::contains("JENKINS_USER=").not())
+            .stdout(predicate::str::contains("JENKINS_TOKEN=").not());
     }
 
     #[test]
@@ -581,12 +594,215 @@ parameters:
     }
 
     #[test]
-    fn vault_stub_names_its_slice() {
+    fn vault_list_with_no_entries_says_so() {
+        let home = tempfile::tempdir().unwrap();
         kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
             .args(["vault", "list"])
             .assert()
+            .success()
+            .stdout(predicate::str::contains("no vault entries"));
+    }
+
+    #[test]
+    fn vault_set_plain_and_secret_round_trip_via_stdin_never_argv() {
+        let home = tempfile::tempdir().unwrap();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["vault", "set", "jenkins_user", "--plain"])
+            .write_stdin("ci-user")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("saved jenkins_user"));
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["vault", "set", "jenkins_token"])
+            .write_stdin("not-a-real-token")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("saved jenkins_token"));
+
+        let assert = kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["vault", "list"])
+            .assert()
+            .success();
+        let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+        assert!(stdout.contains("jenkins_user") && stdout.contains("plain"));
+        assert!(stdout.contains("jenkins_token") && stdout.contains("secret"));
+        assert!(
+            !stdout.contains("not-a-real-token"),
+            "vault list must never print values: {stdout}"
+        );
+
+        // Vault files are 0600, keys/data dirs 0700 (§6.5).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let vault_file = home.path().join(".local/share/kadou/vault.json");
+            let mode = std::fs::metadata(&vault_file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["vault", "rm", "jenkins_user"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("removed jenkins_user"));
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["vault", "rm", "jenkins_user"])
+            .assert()
             .code(2)
-            .stderr(predicate::str::contains("not yet implemented (slice 4)"));
+            .stderr(predicate::str::contains("no vault entry named"));
+    }
+
+    #[test]
+    fn needs_resolve_vault_before_default_and_dry_run_reflects_it() {
+        let home = tempfile::tempdir().unwrap();
+        let src = home.path().join("catalog/src/cc4-aaa");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("runbook.yaml"),
+            r#"
+name: cc4-aaa
+description: Trigger a SES/CC4/cc4-aaa branch pipeline
+risk_level: medium
+script: script.sh
+parameters:
+  - name: jenkins_url
+    type: string
+    required: true
+    scope: global
+    default: "https://ci.example.com"
+    secret: false
+  - name: jenkins_user
+    type: string
+    required: true
+    scope: global
+    secret: false
+  - name: jenkins_token
+    type: string
+    required: true
+    scope: global
+    secret: true
+"#,
+        )
+        .unwrap();
+        std::fs::write(src.join("script.sh"), "#!/bin/sh\necho hi\n").unwrap();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args([
+                "import",
+                home.path().join("catalog/src").to_str().unwrap(),
+                "--as",
+                "sesami",
+            ])
+            .assert()
+            .success();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["vault", "set", "jenkins_user", "--plain"])
+            .write_stdin("ci-user")
+            .assert()
+            .success();
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["vault", "set", "jenkins_token"])
+            .write_stdin("not-a-real-token")
+            .assert()
+            .success();
+
+        // check's missing-need warning consults the vault: only unset needs still warn.
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["check", "sesami"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "checked 1 kata in sesami   0 errors  0 warnings",
+            ));
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["run", "sesami/cc4-aaa", "--dry-run"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "env_public: JENKINS_URL=https://ci.example.com",
+            ))
+            .stdout(predicate::str::contains("env_public: JENKINS_USER=ci-user"))
+            .stdout(predicate::str::contains("secret_env_names: JENKINS_TOKEN"));
+    }
+
+    #[test]
+    fn stopgap_gate_refuses_high_and_critical_but_dry_run_still_works() {
+        let home = tempfile::tempdir().unwrap();
+        let kata_dir = home.path().join(".config/kadou/kata/sesami");
+        std::fs::create_dir_all(&kata_dir).unwrap();
+        std::fs::write(
+            kata_dir.join("ses-deploy.sh"),
+            "#!/bin/sh\n# ---\n# about: Deploy SES\n# risk:  critical\n# ---\necho would-deploy\n",
+        )
+        .unwrap();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["run", "sesami/ses-deploy", "--dry-run"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("sesami/ses-deploy"));
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["run", "sesami/ses-deploy"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("confirmation lands in slice 6"));
+    }
+
+    #[test]
+    fn stopgap_gate_refuses_a_kata_above_the_folder_ceiling() {
+        let home = tempfile::tempdir().unwrap();
+        let kata_dir = home.path().join(".config/kadou/kata/team");
+        std::fs::create_dir_all(&kata_dir).unwrap();
+        std::fs::write(
+            kata_dir.join("medium-task.sh"),
+            "#!/bin/sh\n# ---\n# about: A medium task\n# risk:  medium\n# ---\necho ran\n",
+        )
+        .unwrap();
+        std::fs::write(
+            home.path().join(".config/kadou/kadou.toml"),
+            "max_risk = \"low\"\n",
+        )
+        .unwrap();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["run", "team/medium-task"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("max_risk"));
     }
 
     #[test]
