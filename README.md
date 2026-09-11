@@ -1,11 +1,13 @@
-# dops-next (codename)
+# kadou
 
-Rust rewrite of [dops](https://github.com/rundops/dops) as a renamed product:
+Rust rewrite of [dops](https://github.com/rundops/dops) as **kadou** (稼働):
 a script library that serves as an MCP server for AI agents, built to cut
 tokens and prefer scripts and automation over model reasoning.
 
-`dops-next` is a working codename. The product name is chosen by Mason from
-the shortlist in `docs/design/04-naming.md`.
+`kadou` is the product name, chosen by Mason. The prior working codename is
+retired; binary, crates, config/data/state directories, env prefix, MCP
+server name, and keyring service are all named `kadou` (see
+`docs/design/05-prd.md` §10/§13 for the full rename map).
 
 ## Design docs
 
@@ -14,10 +16,9 @@ the shortlist in `docs/design/04-naming.md`.
 | 1 | `docs/design/01-audit.md` |
 | 2 | `docs/design/02-competitors.md` |
 | 3 | `docs/design/03-principles.md` |
-| 4 | `docs/design/04-naming.md` |
 | 5 | `docs/design/05-prd.md` |
 | 6 | `docs/design/06-session-mining.md` |
-| 7 | `docs/design/07-review.md` |
+| 7 | `docs/design/07-review.md` — independent review of the phase-5 PRD draft; its blocking items are resolved in `05-prd.md`'s Revision log (§13). |
 
 ## Gates
 
