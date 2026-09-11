@@ -7,14 +7,17 @@
 mod check;
 mod config;
 mod digest;
+mod fsutil;
 mod header;
 mod import;
 mod kata;
+mod last_args;
 mod lookup;
 mod paths;
 mod resolve;
 mod risk;
 mod scan;
+mod vault;
 
 pub use check::{CheckReport, FolderReport, check_all, check_folder, check_path, render_report};
 pub use config::{
@@ -27,8 +30,15 @@ pub use header::{
 };
 pub use import::{ImportError, ImportSummary, import_catalog};
 pub use kata::{Arg, ArgDefault, ArgType, Kata, Need};
+pub use last_args::{LastArgsError, LastArgsStore};
 pub use lookup::{LookupResult, find_kata, kata_from_scanned};
 pub use paths::{KadouPaths, PathsError, Resolved, discover, resolve};
 pub use resolve::{ResolveError, ResolvedNeed, ResolvedVar, resolve_args, resolve_needs};
 pub use risk::RiskLevel;
 pub use scan::{ScanError, ScannedFile, scan_folder, scan_kata_dir};
+pub use vault::{
+    GoImportSummary, GoVaultSource, Vault, VaultEntry, VaultError, VaultStore, decrypt_go_vault,
+};
+
+#[cfg(feature = "keyring")]
+pub use vault::keyring_backend;

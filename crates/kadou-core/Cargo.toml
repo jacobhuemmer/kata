@@ -5,16 +5,26 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+keyring = ["dep:keyring-core", "dep:apple-native-keyring-store", "dep:uuid"]
+
 [dependencies]
+age.workspace = true
+apple-native-keyring-store = { workspace = true, optional = true, features = ["keychain"] }
+base64.workspace = true
 etcetera.workspace = true
 humantime.workspace = true
+keyring-core = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 serde_yaml_ng.workspace = true
 sha2.workspace = true
 similar.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+uuid = { workspace = true, features = ["v4"], optional = true }
+zeroize.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
