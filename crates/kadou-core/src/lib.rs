@@ -7,6 +7,7 @@
 mod check;
 mod config;
 mod header;
+mod import;
 mod kata;
 mod paths;
 mod risk;
@@ -20,6 +21,7 @@ pub use config::{
 pub use header::{
     Diagnostic, ParsedHeader, Severity, looks_like_kata_candidate, parse_header, render_header,
 };
+pub use import::{ImportError, ImportSummary, import_catalog};
 pub use kata::{Arg, ArgDefault, ArgType, Kata, Need};
 pub use paths::{KadouPaths, PathsError, Resolved, discover, resolve};
 pub use risk::RiskLevel;

@@ -1,0 +1,45 @@
+name: device-log-metrics
+version: 1.0.0
+description: Collect ES write volume metrics for SES device logs — report on a single environment or compare two environments
+risk_level: low
+script: script.sh
+parameters:
+  - name: mode
+    type: select
+    required: true
+    description: "Report on a single environment, or compare two environments"
+    scope: runbook
+    default: "report"
+    secret: false
+    options:
+      - report
+      - compare
+  - name: env
+    type: select
+    required: true
+    description: "Environment to report on (or baseline environment when comparing)"
+    scope: runbook
+    default: "preprod"
+    secret: false
+    options:
+      - preprod
+      - uat
+      - prod
+  - name: compare_env
+    type: select
+    required: false
+    description: "Target environment to compare against (only used in compare mode)"
+    scope: runbook
+    default: "prod"
+    secret: false
+    options:
+      - preprod
+      - uat
+      - prod
+  - name: since
+    type: string
+    required: false
+    description: "Time window start — ISO 8601 or shorthand like 2h, 24h, 7d"
+    scope: runbook
+    default: "24h"
+    secret: false

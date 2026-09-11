@@ -1,0 +1,40 @@
+name: ses-argocd-sync
+version: 1.0.0
+description: Force-refresh an ArgoCD application on OKE and verify the new revision is synced
+risk_level: medium
+script: script.sh
+parameters:
+  - name: k8s_context
+    type: select
+    required: true
+    description: Kubernetes context for the target cluster
+    scope: runbook
+    default: "dev"
+    secret: false
+    options:
+      - dev
+      - qa
+      - uat
+      - prep
+      - prod
+  - name: argocd_namespace
+    type: string
+    required: true
+    description: Namespace where ArgoCD applications are stored
+    scope: runbook
+    default: "argocd"
+    secret: false
+  - name: app_name
+    type: string
+    required: true
+    description: ArgoCD application name (e.g. dev-ses, qa-ses, uat-ses)
+    scope: local
+    default: ""
+    secret: false
+  - name: timeout
+    type: number
+    required: false
+    description: Seconds to wait for sync to complete
+    scope: runbook
+    default: "60"
+    secret: false

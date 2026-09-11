@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "env_label": "uat-real-devices",
+  "collected_at": "2026-04-01T12:00:00Z",
+  "window": {
+    "since": "2026-03-31T12:00:00Z",
+    "until": "2026-04-01T12:00:00Z",
+    "hours": 24.0
+  },
+  "device_types": [
+    {
+      "device_type_id": 24,
+      "device_type_name": "Dove",
+      "device_count": 150,
+      "device_count_source": "cardinality",
+      "evt_docs_per_device_per_day": 200.0,
+      "com_docs_per_device_per_day": 55.0,
+      "total_docs_per_device_per_day": 255.0,
+      "evt_avg_doc_bytes": 350,
+      "com_avg_doc_bytes": 420,
+      "kb_per_device_per_day": 90.2
+    }
+  ],
+  "totals": {
+    "weighted_avg_kb_per_device_per_day": 90.2
+  }
+}

@@ -1,0 +1,25 @@
+name: sdo-k8s-ses
+version: 1.0.0
+description: Trigger the sdo-k8s-ses pipeline — packages Helm charts and publishes to Oracle Container Registry
+risk_level: low
+script: script.sh
+parameters:
+  - name: jenkins_url
+    type: string
+    required: true
+    description: Jenkins server URL
+    scope: global
+    default: "https://ci.example.com"
+    secret: false
+  - name: jenkins_user
+    type: string
+    required: true
+    description: Jenkins username or service account ID
+    scope: global
+    secret: false
+  - name: jenkins_token
+    type: string
+    required: true
+    description: Jenkins API token
+    scope: global
+    secret: true

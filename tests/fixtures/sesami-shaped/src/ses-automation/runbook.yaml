@@ -1,0 +1,36 @@
+name: ses-automation
+version: 1.0.0
+description: Trigger the SES Automation pipeline — runs automated UI and API test suites against UAT
+risk_level: low
+script: script.sh
+parameters:
+  - name: jenkins_url
+    type: string
+    required: true
+    description: Jenkins server URL
+    scope: global
+    default: "https://ci.example.com"
+    secret: false
+  - name: jenkins_user
+    type: string
+    required: true
+    description: Jenkins username or service account ID
+    scope: global
+    secret: false
+  - name: jenkins_token
+    type: string
+    required: true
+    description: Jenkins API token
+    scope: global
+    secret: true
+  - name: test_suite
+    type: select
+    required: true
+    description: Test suite to run (maps to a package.json script)
+    scope: runbook
+    default: "uatCompleteUiAndAPI"
+    secret: false
+    options:
+      - uatCompleteUiAndAPI
+      - uatUiOnly
+      - uatApiOnly

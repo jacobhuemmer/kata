@@ -1,0 +1,20 @@
+name: clone-ses-repos
+version: 1.0.1
+description: Clone or update all SES Bitbucket repositories to a local directory for development reference
+risk_level: low
+script: script.sh
+parameters:
+  - name: target_dir
+    type: string
+    required: false
+    description: Local directory to clone repos into
+    scope: runbook
+    default: "/tmp/example-org/repos"
+    secret: false
+  - name: ref
+    type: string
+    required: false
+    description: Branch, tag, or ref to checkout after cloning (e.g. release/26.4.1.0). If not set, uses the default branch. If the ref is unavailable for a repo, a warning is printed and that repo is skipped.
+    scope: runbook
+    default: ""
+    secret: false

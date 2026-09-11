@@ -1,0 +1,39 @@
+name: ras-release-build
+version: 1.0.0
+description: Trigger the SES RAS-Release Build pipeline — builds the Remote Access Service with a specific release version
+risk_level: medium
+script: script.sh
+parameters:
+  - name: jenkins_url
+    type: string
+    required: true
+    description: Jenkins server URL
+    scope: global
+    default: "https://ci.example.com"
+    secret: false
+  - name: jenkins_user
+    type: string
+    required: true
+    description: Jenkins username or service account ID
+    scope: global
+    secret: false
+  - name: jenkins_token
+    type: string
+    required: true
+    description: Jenkins API token
+    scope: global
+    secret: true
+  - name: version
+    type: string
+    required: false
+    description: RAS version to build (e.g. 26.4.1.0)
+    scope: runbook
+    default: "latest"
+    secret: false
+  - name: branch
+    type: string
+    required: false
+    description: RAS branch to build
+    scope: runbook
+    default: "master"
+    secret: false

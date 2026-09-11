@@ -1,0 +1,67 @@
+name: cc4-ext
+version: 1.0.0
+description: Trigger a SES/CC4/cc4-ext branch pipeline — CC4 Extension service build
+risk_level: medium
+script: script.sh
+parameters:
+  - name: jenkins_url
+    type: string
+    required: true
+    description: Jenkins server URL
+    scope: global
+    default: "https://ci.example.com"
+    secret: false
+  - name: jenkins_user
+    type: string
+    required: true
+    description: Jenkins username or service account ID
+    scope: global
+    secret: false
+  - name: jenkins_token
+    type: string
+    required: true
+    description: Jenkins API token
+    scope: global
+    secret: true
+  - name: branch
+    type: string
+    required: true
+    description: "Branch, release tag, or PR to trigger (e.g. dev, release/26.4.1.0, PR-85)"
+    scope: runbook
+    default: "dev"
+    secret: false
+  - name: version
+    type: string
+    required: false
+    description: "Custom version applied as image tag. Falls back to branch name if blank."
+    scope: runbook
+    default: ""
+    secret: false
+  - name: send_email
+    type: boolean
+    required: false
+    description: "Send email notifications on build completion"
+    scope: runbook
+    default: "true"
+    secret: false
+  - name: publish_image
+    type: boolean
+    required: false
+    description: "Publish Docker image to OCR"
+    scope: runbook
+    default: "true"
+    secret: false
+  - name: publish_api
+    type: boolean
+    required: false
+    description: "Publish API to Maven repo"
+    scope: runbook
+    default: "true"
+    secret: false
+  - name: allow_image_override
+    type: boolean
+    required: false
+    description: "Override image if version already exists in the registry"
+    scope: runbook
+    default: "false"
+    secret: false

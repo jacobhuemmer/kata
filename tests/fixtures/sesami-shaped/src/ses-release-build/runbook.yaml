@@ -1,0 +1,53 @@
+name: ses-release-build
+version: 1.0.0
+description: Trigger the SES-Release Build pipeline — builds all SES modules for a specific release version
+risk_level: high
+script: script.sh
+parameters:
+  - name: jenkins_url
+    type: string
+    required: true
+    description: Jenkins server URL
+    scope: global
+    default: "https://ci.example.com"
+    secret: false
+  - name: jenkins_user
+    type: string
+    required: true
+    description: Jenkins username or service account ID
+    scope: global
+    secret: false
+  - name: jenkins_token
+    type: string
+    required: true
+    description: Jenkins API token
+    scope: global
+    secret: true
+  - name: release_branch
+    type: string
+    required: true
+    description: Release branch name without 'release/' prefix (e.g. 26.4.1.0)
+    scope: runbook
+    default: ""
+    secret: false
+  - name: version
+    type: string
+    required: false
+    description: Version to pass to all builds (falls back to RELEASE_BRANCH if blank)
+    scope: runbook
+    default: ""
+    secret: false
+  - name: allow_image_override
+    type: boolean
+    required: false
+    description: Override Docker image if the version already exists in the registry
+    scope: runbook
+    default: "false"
+    secret: false
+  - name: send_email
+    type: boolean
+    required: false
+    description: Send email notifications on build completion
+    scope: runbook
+    default: "true"
+    secret: false

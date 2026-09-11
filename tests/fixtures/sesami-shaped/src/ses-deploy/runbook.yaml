@@ -1,0 +1,53 @@
+name: ses-deploy
+version: 1.0.0
+description: Trigger the SES Deploy pipeline — deploys SES modules to a target OKE cluster (production-impacting)
+risk_level: critical
+script: script.sh
+parameters:
+  - name: jenkins_url
+    type: string
+    required: true
+    description: Jenkins server URL
+    scope: global
+    default: "https://ci.example.com"
+    secret: false
+  - name: jenkins_user
+    type: string
+    required: true
+    description: Jenkins username or service account ID
+    scope: global
+    secret: false
+  - name: jenkins_token
+    type: string
+    required: true
+    description: Jenkins API token
+    scope: global
+    secret: true
+  - name: version
+    type: string
+    required: true
+    description: Container image tag to deploy (e.g. 25.6.1.2)
+    scope: runbook
+    default: ""
+    secret: false
+  - name: oke_cluster
+    type: string
+    required: true
+    description: Target OKE cluster for deployment (e.g. prod, uat)
+    scope: runbook
+    default: ""
+    secret: false
+  - name: namespace
+    type: string
+    required: false
+    description: Target namespace(s) — comma-separated if multiple
+    scope: runbook
+    default: ""
+    secret: false
+  - name: modules
+    type: string
+    required: false
+    description: Comma-separated list of modules to deploy (default deploys all)
+    scope: runbook
+    default: "aaa,admin,assistant,biz,cam,cash,cash-ops,cms,device,device-fm,device-rm,edge,export,ext,hall,monitoring,prestage,ras,reports,retail,system"
+    secret: false
