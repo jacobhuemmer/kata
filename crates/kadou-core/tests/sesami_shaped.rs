@@ -27,7 +27,8 @@ fn sanitized_fixture_imports_and_checks_clean() {
     assert_eq!(summary.booleans_coerced, 86, "boolean default coercions");
     assert_eq!(summary.integers_coerced, 1, "integer default coercions");
 
-    let report = kadou_core::check_folder(&kata_dir, "sesami").expect("check");
+    let report = kadou_core::check_folder(&kata_dir, "sesami", &kadou_core::Vault::default())
+        .expect("check");
     assert_eq!(report.kata_count(), 32, "checked kata count");
     assert_eq!(
         report.error_count(),

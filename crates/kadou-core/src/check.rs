@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::header::{Diagnostic, Severity};
 use crate::scan::{self, ScanError, ScannedFile};
+use crate::vault::Vault;
 
 /// One folder's check result.
 #[derive(Debug, Clone)]
@@ -53,14 +54,19 @@ impl CheckReport {
 }
 
 /// Checks one folder (an immediate subdirectory of `kata_dir`), including needs and alias
-/// conflicts within that folder alone.
-pub fn check_folder(kata_dir: &Path, folder: &str) -> Result<FolderReport, ScanError> {
+/// conflicts within that folder alone. `vault` decides which needs are actually missing
+/// (§4.7, §9 slice 4 "`kadou check`'s missing-need warning now consults the vault").
+pub fn check_folder(
+    kata_dir: &Path,
+    folder: &str,
+    vault: &Vault,
+) -> Result<FolderReport, ScanError> {
     let files = scan::scan_folder(kata_dir, folder)?;
     let wrapped = vec![(folder.to_string(), files)];
     let extra = cross_kata_diagnostics(&wrapped);
     let mut files = wrapped.into_iter().next().expect("just built").1;
     files.extend(extra.into_iter().map(|(_, d)| d));
-    add_missing_vault_warnings(&mut files);
+    add_missing_vault_warnings(&mut files, vault);
     Ok(FolderReport {
         folder: folder.to_string(),
         files,
@@ -69,8 +75,9 @@ pub fn check_folder(kata_dir: &Path, folder: &str) -> Result<FolderReport, ScanE
 
 /// Checks every folder under `kata_dir`, plus needs and alias conflicts across folder
 /// boundaries (§4.4 "kadou check errors when two folders declare the same need with
-/// different defaults"; §4.2 "Aliases ... unique across all folders, checked").
-pub fn check_all(kata_dir: &Path) -> Result<CheckReport, ScanError> {
+/// different defaults"; §4.2 "Aliases ... unique across all folders, checked"). `vault`
+/// decides which needs are actually missing (§4.7).
+pub fn check_all(kata_dir: &Path, vault: &Vault) -> Result<CheckReport, ScanError> {
     let scanned = scan::scan_kata_dir(kata_dir)?;
     let mut extra_by_folder: HashMap<String, Vec<ScannedFile>> = HashMap::new();
     for (folder, diag_file) in cross_kata_diagnostics(&scanned) {
@@ -83,7 +90,7 @@ pub fn check_all(kata_dir: &Path) -> Result<CheckReport, ScanError> {
             if let Some(extra) = extra_by_folder.remove(&folder) {
                 files.extend(extra);
             }
-            add_missing_vault_warnings(&mut files);
+            add_missing_vault_warnings(&mut files, vault);
             FolderReport { folder, files }
         })
         .collect();
@@ -91,11 +98,11 @@ pub fn check_all(kata_dir: &Path) -> Result<CheckReport, ScanError> {
     Ok(CheckReport { folders })
 }
 
-/// A need with no header default has nowhere to resolve from until a human runs `kadou
-/// vault set` — this slice has no vault yet, so every such need warns unconditionally
-/// (§4.7 "a need with no vault entry and no default"; noted as an interpretation call in
-/// the handoff: slice 4 adds the vault this warning will eventually query).
-fn add_missing_vault_warnings(files: &mut [ScannedFile]) {
+/// A need with no header default and no vault entry has nowhere to resolve from until a
+/// human runs `kadou vault set` (§4.7 "a need with no vault entry and no default"; §9 slice
+/// 4 replaces the slice-3 stopgap, which warned on every default-less need unconditionally
+/// because there was no vault yet to ask).
+fn add_missing_vault_warnings(files: &mut [ScannedFile], vault: &Vault) {
     for file in files.iter_mut() {
         let Some(header) = &file.header else {
             continue;
@@ -103,7 +110,7 @@ fn add_missing_vault_warnings(files: &mut [ScannedFile]) {
         let missing: Vec<String> = header
             .needs
             .iter()
-            .filter(|n| n.default.is_none())
+            .filter(|n| n.default.is_none() && vault.get(&n.name).is_none())
             .map(|n| n.name.clone())
             .collect();
         for name in missing {
@@ -356,7 +363,7 @@ mod tests {
     fn clean_folder_reports_zero_errors() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "kata/starter/hello.sh", HELLO);
-        let report = check_folder(&dir.path().join("kata"), "starter").unwrap();
+        let report = check_folder(&dir.path().join("kata"), "starter", &Vault::default()).unwrap();
         assert_eq!(report.kata_count(), 1);
         assert_eq!(report.error_count(), 0);
         assert!(report.is_ok());
@@ -371,7 +378,7 @@ mod tests {
             "#!/bin/sh\n# ---\n# risk:  low\n# ---\necho hi\n",
         );
         write(dir.path(), "kata/starter/hello.sh", HELLO);
-        let report = check_all(&dir.path().join("kata")).unwrap();
+        let report = check_all(&dir.path().join("kata"), &Vault::default()).unwrap();
         let broken = report
             .folders
             .iter()
@@ -400,7 +407,7 @@ mod tests {
             "kata/b/y.sh",
             "#!/bin/sh\n# ---\n# about: B\n# risk:  low\n# needs: token=two\n# ---\necho hi\n",
         );
-        let report = check_all(&dir.path().join("kata")).unwrap();
+        let report = check_all(&dir.path().join("kata"), &Vault::default()).unwrap();
         for name in ["a", "b"] {
             let folder = report.folders.iter().find(|f| f.folder == name).unwrap();
             assert!(!folder.is_ok(), "{name} should have a conflict error");
@@ -420,7 +427,7 @@ mod tests {
             "kata/b/y.sh",
             "#!/bin/sh\n# ---\n# about: B\n# risk:  low\n# needs: token=one\n# ---\necho hi\n",
         );
-        let report = check_all(&dir.path().join("kata")).unwrap();
+        let report = check_all(&dir.path().join("kata"), &Vault::default()).unwrap();
         assert!(report.is_ok());
     }
 
@@ -437,7 +444,7 @@ mod tests {
             "kata/b/y.sh",
             "#!/bin/sh\n# ---\n# about: B\n# risk:  low\n# alias: deploy\n# ---\necho hi\n",
         );
-        let report = check_all(&dir.path().join("kata")).unwrap();
+        let report = check_all(&dir.path().join("kata"), &Vault::default()).unwrap();
         assert!(!report.is_ok());
     }
 
@@ -445,8 +452,27 @@ mod tests {
     fn render_report_includes_summary_line() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "kata/starter/hello.sh", HELLO);
-        let report = check_folder(&dir.path().join("kata"), "starter").unwrap();
+        let report = check_folder(&dir.path().join("kata"), "starter", &Vault::default()).unwrap();
         let text = render_report(&report, dir.path(), false);
         assert!(text.contains("checked 1 kata in starter   0 errors  0 warnings"));
+    }
+
+    #[test]
+    fn missing_need_warns_without_a_vault_entry_but_not_with_one() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "kata/team/secret-task.sh",
+            "#!/bin/sh\n# ---\n# about: Needs a secret\n# risk:  low\n# needs: api_token\n# ---\necho hi\n",
+        );
+
+        let without_entry =
+            check_folder(&dir.path().join("kata"), "team", &Vault::default()).unwrap();
+        assert_eq!(without_entry.warning_count(), 1);
+
+        let mut vault = Vault::default();
+        vault.set("api_token", "not-a-real-token", true);
+        let with_entry = check_folder(&dir.path().join("kata"), "team", &vault).unwrap();
+        assert_eq!(with_entry.warning_count(), 0);
     }
 }

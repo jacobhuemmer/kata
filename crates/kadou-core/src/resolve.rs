@@ -1,14 +1,18 @@
-//! Needs/args resolution for a run (`docs/design/05-prd.md` §4.4, §9 slice 3).
+//! Needs/args resolution for a run (`docs/design/05-prd.md` §4.4, §6.5, §9 slice 4).
 //!
-//! The vault lands in slice 4: needs resolve from header defaults only here. A need with no
-//! default is `missing` — not prompted, not silently skipped — and the caller (`kadou run`)
-//! turns a missing need into the fix line `kadou vault set <name>` (§4.4 "Missing needs").
-//! Args always resolve here: a required arg with no value is a hard error, same as `describe_kata`
-//! would report `invalid_args`.
+//! Needs resolve vault-before-default's inverse order, precisely: a header default always
+//! wins first (a default in a git-tracked file is by definition not a secret, §4.4), then the
+//! vault, else `missing` — not prompted, not silently skipped, and never guessed secret.
+//! Secret status comes from the vault's own bit on the entry it supplied, not from whether
+//! the need merely lacked a default (that stopgap lived here through slice 3; the vault now
+//! decides). The caller (`kadou run`) turns a missing need into the fix line `kadou vault set
+//! <name>` (§4.4 "Missing needs"). Args always resolve here: a required arg with no value is
+//! a hard error, same as `describe_kata` would report `invalid_args`.
 
 use std::collections::BTreeMap;
 
 use crate::kata::{Arg, ArgDefault, ArgType, Kata, Need};
+use crate::vault::Vault;
 
 /// One resolved `args:` entry: the env var kadou-exec will set on the child.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,12 +22,13 @@ pub struct ResolvedVar {
     pub value: String,
 }
 
-/// One resolved `needs:` entry. `value` is `None` when the header gave no default and there
-/// is (yet) no vault to ask — that is `missing`, not an empty string (§4.4).
+/// One resolved `needs:` entry. `value` is `None` when the header gave no default and the
+/// vault has no entry either — that is `missing`, not an empty string (§4.4).
 ///
-/// `secret` mirrors [`Need::is_secret`]: a need with no header default is secret-shaped until
-/// a vault entry says otherwise (slice 4). This is the same rule `describe_kata`'s
-/// `secret_env_names` will use once the vault exists.
+/// `secret` is the rule `describe_kata`'s `secret_env_names` uses (§6.5): a header default is
+/// always plain (`false`); a vault-supplied value carries the vault entry's own bit; a
+/// missing need is reported missing, not guessed secret, so `secret` is `false` there too —
+/// callers detect "missing" via `value.is_none()`, not via this field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedNeed {
     pub name: String,
@@ -120,17 +125,37 @@ fn coerce(arg: &Arg, raw: &str) -> Result<String, ResolveError> {
     }
 }
 
-/// Resolves every `needs:` entry from the header alone (no vault in this slice, §4.4).
-pub fn resolve_needs(kata: &Kata) -> Vec<ResolvedNeed> {
-    kata.needs.iter().map(resolve_one_need).collect()
+/// Resolves every `needs:` entry: header default, else the vault, else `missing` (§4.4).
+pub fn resolve_needs(kata: &Kata, vault: &Vault) -> Vec<ResolvedNeed> {
+    kata.needs
+        .iter()
+        .map(|need| resolve_one_need(need, vault))
+        .collect()
 }
 
-fn resolve_one_need(need: &Need) -> ResolvedNeed {
+fn resolve_one_need(need: &Need, vault: &Vault) -> ResolvedNeed {
+    let env_name = need.env_name();
+    if let Some(default) = &need.default {
+        return ResolvedNeed {
+            name: need.name.clone(),
+            env_name,
+            value: Some(default.clone()),
+            secret: false,
+        };
+    }
+    if let Some(entry) = vault.get(&need.name) {
+        return ResolvedNeed {
+            name: need.name.clone(),
+            env_name,
+            value: Some(entry.value.clone()),
+            secret: entry.secret,
+        };
+    }
     ResolvedNeed {
         name: need.name.clone(),
-        env_name: need.env_name(),
-        value: need.default.clone(),
-        secret: need.is_secret(),
+        env_name,
+        value: None,
+        secret: false,
     }
 }
 
@@ -268,14 +293,14 @@ mod tests {
                 default: Some("https://ci.example.com".to_string()),
             }],
         );
-        let resolved = resolve_needs(&k);
+        let resolved = resolve_needs(&k, &Vault::default());
         assert_eq!(resolved[0].env_name, "JENKINS_URL");
         assert_eq!(resolved[0].value.as_deref(), Some("https://ci.example.com"));
         assert!(!resolved[0].secret);
     }
 
     #[test]
-    fn need_without_default_is_missing_and_secret_shaped() {
+    fn need_without_default_and_no_vault_entry_is_missing_not_guessed_secret() {
         let k = kata(
             vec![],
             vec![Need {
@@ -283,8 +308,61 @@ mod tests {
                 default: None,
             }],
         );
-        let resolved = resolve_needs(&k);
+        let resolved = resolve_needs(&k, &Vault::default());
         assert_eq!(resolved[0].value, None);
+        assert!(
+            !resolved[0].secret,
+            "missing is reported missing, not guessed secret"
+        );
+    }
+
+    #[test]
+    fn need_without_default_resolves_from_the_vault_with_the_vaults_own_secret_bit() {
+        let k = kata(
+            vec![],
+            vec![Need {
+                name: "jenkins_token".to_string(),
+                default: None,
+            }],
+        );
+        let mut vault = Vault::default();
+        vault.set("jenkins_token", "not-a-real-token", true);
+        let resolved = resolve_needs(&k, &vault);
+        assert_eq!(resolved[0].value.as_deref(), Some("not-a-real-token"));
         assert!(resolved[0].secret);
+    }
+
+    #[test]
+    fn need_with_header_default_ignores_a_vault_entry_and_stays_plain() {
+        let k = kata(
+            vec![],
+            vec![Need {
+                name: "jenkins_url".to_string(),
+                default: Some("https://ci.example.com".to_string()),
+            }],
+        );
+        let mut vault = Vault::default();
+        // Even a secret-flagged vault entry can't override a header default: a default in
+        // a git-tracked file is by definition not a secret (§4.4).
+        vault.set("jenkins_url", "https://vault.example.com", true);
+        let resolved = resolve_needs(&k, &vault);
+        assert_eq!(resolved[0].value.as_deref(), Some("https://ci.example.com"));
+        assert!(!resolved[0].secret);
+    }
+
+    #[test]
+    fn a_plain_vault_entry_resolves_as_plain() {
+        let k = kata(
+            vec![],
+            vec![Need {
+                name: "jenkins_user".to_string(),
+                default: None,
+            }],
+        );
+        let mut vault = Vault::default();
+        vault.set("jenkins_user", "ci-user", false);
+        let resolved = resolve_needs(&k, &vault);
+        assert_eq!(resolved[0].value.as_deref(), Some("ci-user"));
+        assert!(!resolved[0].secret);
     }
 }
