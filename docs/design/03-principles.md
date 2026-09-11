@@ -1,6 +1,6 @@
 # dops-next design principles
 
-This is the contract the PRD must obey. It applies Omarchy's omakase philosophy — opinionated defaults, batteries included, fast install, beauty, keyboard-first, dotfiles, convention over configuration — to a **Rust CLI + TUI + MCP server that is a script library for AI agents**. Codename: **dops-next**. No product-name proposals live here.
+This is the contract the PRD must obey. It applies Omarchy's omakase philosophy — opinionated defaults, batteries included, fast install, beauty, keyboard-first, dotfiles, convention over configuration — to a **Rust CLI + MCP server that is a script library for AI agents**. Codename: **dops-next**. No product-name proposals live here.
 
 **Sources (2026-09-11):**
 
@@ -20,10 +20,10 @@ dops-next is not a distro. The mapping is:
 | Omarchy | dops-next |
 | --- | --- |
 | ISO + five questions → finished desktop | One install command → `dops` and `dops mcp serve` already work |
-| Neovim, Foot, Hyprland, theme, agents pre-wired | Starter catalog, TUI, CLI, MCP, vault, risk, history, default theme — one binary |
-| `Super + Space` / `Super + K` | TUI is fully keyboard-operable; `?` and a command palette cover every action |
+| Neovim, Foot, Hyprland, theme, agents pre-wired | starter folder, styled CLI with a built-in picker, MCP, vault, risk, history, default theme — one binary |
+| `Super + Space` / `Super + K` | every action is a completable command; the picker and prompts are keystrokes; no mouse path exists |
 | `~/.config` is yours; `~/.local/share/omarchy` is the product | User config vs product data; catalogs are directories of yaml + `script.sh` |
-| Theme restyles the whole system | One theme restyles TUI, CLI help, and errors together |
+| Theme restyles the whole system | One theme restyles every CLI frame, help, and errors |
 | Agents are first-class on the OS | Agents are first-class on the script library — through a **small, lazy MCP**, not a tool per script |
 
 Omarchy welcomes agents everywhere. dops-next welcomes them as **callers of reviewed scripts**, not as free-form operators. That gap is why this document adds token frugality, scripts over reasoning, safety gates, and human review.
@@ -106,16 +106,16 @@ Omarchy welcomes agents everywhere. dops-next welcomes them as **callers of revi
 
 **Omarchy:** "Beauty is truth. Great tools are beautiful because they're right." One theme restyles terminal, bar, notifications, wallpaper. The first boot looks finished. "There's enough desaturated brutalism in this world already."
 
-**For dops-next:** The first TUI frame should look like a product, not a scaffold. CLI help and errors share the same palette. Empty states are designed, not blank.
+**For dops-next:** The first `kadou` frame should look like a product, not a scaffold. CLI help and errors share the same palette. Empty states are designed, not blank.
 
 ### Rules
 
 1. **Product theme is the default.** Ship `doop` (or successor) as default. Bundled alternatives (Catppuccin, Gruvbox, Nord, …) are one config key away. Random-on-launch is opt-in, never default.
-2. **One theme, all human surfaces.** TUI, CLI help, CLI errors, and confirm copy share the theme. A theme file is the single source of color. No unstyled debug chrome in default `View()`.
-3. **First-run layout is finished.** Sidebar shows the starter catalog, metadata pane shows a selected runbook, footer shows key hints. An empty catalog is a designed empty state with one line of next action, not a vacant panel.
-4. **Help is beautiful and complete.** `?` is a first-class overlay, not an afterthought. Footer key hints stay accurate to focus/mode.
+2. **One theme, all human surfaces.** CLI output, help, errors, and confirm copy share the theme. A theme file is the single source of color. No unstyled debug chrome in default output.
+3. **First-run layout is finished.** `kadou` lists the starter folder and the next command; the picker shows a header preview; nothing is an empty panel.
+4. **Help is beautiful and complete.** `kadou --help` and the picker's key line are complete and styled, not an afterthought.
 5. **Theme files are drop-in.** Bundled themes are embedded. A user theme is a file in `~/.config/dops/themes/<name>.toml` (or `.json`). Activating it is `theme = "<name>"`.
-6. **Visual tests guard the default.** Any change to `View()`, styles, footer, or wizard is accompanied by a visual check (VHS/Freeze or Rust equivalent). Beauty is enforced, not hoped for.
+6. **Snapshot tests guard the default.** Any change to a frame, style, or prompt is accompanied by a snapshot test of the styled and plain output. Beauty is enforced, not hoped for.
 
 ### dops today
 
@@ -130,16 +130,14 @@ Omarchy welcomes agents everywhere. dops-next welcomes them as **callers of revi
 
 **Omarchy:** "Everything happens via the keyboard — EVERYTHING." First boot cannot be operated with the mouse alone. `Super + Space` launcher, `Super + Alt + Space` menu, `Super + K` hotkeys. Mouse is allowed; it is never required.
 
-**For dops-next:** A human operates the TUI without touching the mouse. Agents operate MCP/CLI and do not need a keyboard. Keyboard-first does not mean "no pointing device"; it means every action has a key.
+**For dops-next:** A human operates kadou without touching the mouse because there is nothing to touch: every flow is a command the shell completes, and every interactive step is a keystroke. Agents operate MCP and do not need a keyboard.
 
 ### Rules
 
-1. **Keyboard completes every TUI flow.** Navigate, search, parameterize, confirm, execute, cancel, theme, help, quit. Mouse may scroll, focus, and select text. Mouse must not be the only path.
-2. **Default bindings (convention).** `j`/`k` or arrows move; `Enter` runs; `/` searches; `Tab` switches panes; `?` help; `q` quits; `Esc` backs out; `Ctrl+c` / a documented chord cancels execution. These defaults are the product. Document them in `?` and the footer.
-3. **Command palette is the menu.** One chord (`Ctrl+Shift+P` or successor) reaches every action (theme, catalog, help, quit, confirm policy). Analog of Omarchy's control menu.
-4. **Bindings are data.** Defaults live in code. Overrides live in `config.toml` as a map. Users do not fork the binary to swap `q` for `Ctrl+q`. Unbound keys do nothing surprising.
-5. **Wizards are keyboard forms.** Select, multi-select, boolean, secret, confirm — all keys. No click-only control.
-6. **MCP and CLI are the non-keyboard interfaces.** They must be complete for agents and scripts. The TUI is not a gate in front of `dops run` or MCP.
+1. **Every id-taking command without an id opens the picker on a TTY**, and errors with the non-interactive form otherwise.
+2. **Picker and prompt keys are fixed** and documented in `--help`.
+3. **`dops completion`** completes ids, folders, and arg names.
+4. **MCP is complete without a terminal.** It must be complete for agents and scripts on its own.
 
 ### dops today
 
@@ -327,7 +325,8 @@ Anything an agent wants to add, change, or run above its grant is a **proposal**
 | Install | `curl -fsSL <url>/install.sh \| sh` | brew / nix / winget, same first-run state |
 | Runbook files | `runbook.yaml` + `script.sh` | `script:` only if not `script.sh` |
 | Script runtime | POSIX `sh` | not on the default path |
-| Keybindings | product map (`Enter`, `/`, `?`, `q`, palette) | override map in config |
+| Picker and prompt keys | fixed | not configurable |
+| Notifications | on | `[notify] enabled = false` |
 | Starter catalog | embedded, auto-registered | additional catalogs via install/path |
 | Vault | age blob, 0600 | not optional on; values via TUI/CLI save |
 | Agent config writes | off | human-only (no MCP setter) |
@@ -340,17 +339,18 @@ The PRD (and every subsequent spec) must obey this page. If a feature fights a l
 
 1. **Omakase first.** dops-next ships decided: paths, theme, catalog layout, risk ceilings, MCP surface, script contract. First run asks nothing.
 2. **Install is one line, then it works.** `curl | sh` (or the package-manager peer) leaves `dops` and `dops mcp serve` usable. No `init` ritual, no empty catalog, no compiler.
-3. **Batteries are in the binary.** Starter catalog, themes, TUI, CLI, MCP, vault, history, risk. Git catalogs are how teams grow, not how the product becomes real.
+3. **Batteries are in the binary.** starter folder, theme, CLI with picker, MCP, vault, history, risk. Git catalogs are how teams grow, not how the product becomes real.
 4. **Beautiful by default.** Product theme on first paint. Finished layout. Styled help and errors. Visual tests on View/style changes.
-5. **Keyboard-first TUI.** Every human flow has a key. Palette + `?`. Mouse is extra. MCP/CLI are complete without a terminal UI.
+5. **Keyboard-first terminal.** Every human flow is one command the shell completes; every interactive step is a keystroke in an inline picker or prompt. No screen to learn, no mouse path. MCP is complete without a terminal.
 6. **Dotfiles are the API.** Commentable config in `~/.config/dops`. Catalogs are yaml+sh directories. Product files are not user files. Secrets are not config.
 7. **Convention over configuration.** Two-file runbooks, `catalog.runbook` ids, `UPPER_SNAKE` env, four risk words. Configure taste and policy, not the engine.
 8. **MCP is small and lazy.** At most the four meta-tools by default. Schema on describe, not on list. Skills on demand. Short results. Token cost is a product constraint.
 9. **Scripts over reasoning.** Agents call runbooks. No shell tool. No runbook → propose, don't improvise. Read the script before running it.
 10. **Agents are gated.** Default agent risk is `low`. High/critical need a human grant, not a confirm string in a schema. Secrets never cross MCP. HTTP is loopback.
-11. **Humans accept.** Agent-authored runbooks, config diffs, and over-grant executions are proposals. Accept lives in the TUI/`dops catalog accept`. History shows who initiated.
+11. **Humans accept.** Agent-authored runbooks, config diffs, and over-grant executions are proposals. Accept lives in `dops accept`, `dops grant approve`, `dops mine review`; the agent's result and a notification tell the human it is waiting. History shows who initiated.
 12. **Own the machine.** Local-first, files on disk, no required cloud, no tollbooth, no telemetry as a feature. The operator can read every script the product will run.
-13. **One binary, three interfaces.** CLI, TUI, MCP. Same engine, same catalogs, same vault, same risk. A fourth interface is not implied.
+13. **One binary, two interfaces.** CLI and MCP. Same engine, same folders, same vault, same risk. The picker and prompts are the CLI on a TTY, not a third interface. A full-screen TUI is a later revision, not an implied one.
+14. **One word, one file, one folder.** The unit has one name (`08` §5: a single Japanese word, not a mixed vocabulary). It is one script with a closed-grammar header, not a directory of paired files. A folder of units is a namespace because it is a folder on disk, not because it is registered — there is no `catalog.yaml`, no format version, no second identity system. `ls` is the library listing.
 
 ---
 
@@ -364,7 +364,8 @@ The PRD must not grow these. If a later phase wants one, it is a new principles 
 - **One MCP tool per runbook** as the default surface.
 - **Required `dops init`** or any first-run questionnaire.
 - **Empty-by-default install.** If the binary has no starter catalog, the build is wrong.
-- **Web UI / SPA as a core interface.** dops today has `dops open` (Vue). dops-next's charter is CLI + TUI + MCP. A browser app is not required for v1 and must not drive the architecture.
+- **Web UI / SPA as a core interface.** dops today has `dops open` (Vue). kadou's charter is CLI + MCP. A browser app is not required for v1 and must not drive the architecture.
+- **A full-screen TUI in v1.** Alternate screen, panes, palette, and key maps are a later principles revision (`09` §7), taken only if humans start more runs interactively than agents start over MCP.
 - **SaaS, accounts, multi-tenant server, hosted control plane.**
 - **Cloud-required features.** No mandatory network except install/update and explicit `catalog install`.
 - **Unattended high/critical execution** by agents without a prior human grant.
@@ -396,4 +397,4 @@ The PRD must not grow these. If a later phase wants one, it is a new principles 
 | 10. Safety gates for agents | **Violates on the agent path** — default `--allow-risk critical` + copyable confirms |
 | 11. Human review of proposals | **Violates** — MCP executes; no draft/accept |
 
-The rewrite (Rust CLI + TUI + MCP) should treat **8, 10, and 11** as load-bearing product changes, not as a port of current MCP behavior. Port the runbook format, vault split, risk enum, keyboard TUI, and single-binary idea. Do not port "every runbook is a tool" or "agents default to critical."
+The rewrite (Rust CLI + MCP) should treat **8, 10, and 11** as load-bearing product changes, not as a port of current MCP behavior. Port the runbook format, vault split, risk enum, and single-binary idea. Do not port "every runbook is a tool" or "agents default to critical."

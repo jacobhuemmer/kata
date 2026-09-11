@@ -1,22 +1,25 @@
 # kadou PRD and architecture
 
 **Date:** 2026-09-11
-**Status:** design (phase 5, revised after independent review)
-**Product name:** **kadou** (稼働), chosen by Mason. This revision retires the prior codename (see the Revision log, §13, for the exact string) and applies the name throughout: binary `kadou`, crates `kadou-*`, config/data/state dirs `~/.config/kadou` / `~/.local/share/kadou` / `~/.local/state/kadou`, env prefix `KADOU_*`, MCP server name `kadou`, keyring service `kadou`, LaunchAgent label `dev.kadou.mine`. The legacy Go product's on-disk paths (`~/.dops/`) are named **literally** wherever this document imports from them — that product is not renamed.
+**Status:** design (phase 5, second revision — single-file kata shape)
+**Product name:** **kadou** (稼働), chosen by Mason. Binary `kadou`, crates `kadou-*`, config/data/state dirs `~/.config/kadou` / `~/.local/share/kadou` / `~/.local/state/kadou`, env prefix `KADOU_*`, MCP server name `kadou`, keyring service `kadou`, LaunchAgent label `dev.kadou.mine`. The legacy Go product's on-disk paths (`~/.dops/`) are named **literally** wherever this document imports from them — that product is not renamed.
 
-This is the product and architecture contract for the Rust rewrite. It obeys `docs/design/03-principles.md`. Every numbered decision cites `01-audit.md`, `02-competitors.md`, or `03-principles.md`. Session-mining rows also cite `06-session-mining.md`. This revision resolves every blocking item raised by the independent review in `07-review.md` §8.1 and adopts its concrete proposals; see the **Revision log** (§13).
+This is the product and architecture contract for the Rust rewrite. It obeys `docs/design/03-principles.md`, with `docs/design/08-shape-review.md` and `docs/design/09-tui-decision.md` winning over this document and `docs/design/07-review.md` wherever they conflict (Mason's decisions, 2026-09-11). Every numbered decision cites `01-audit.md`, `02-competitors.md`, `03-principles.md`, `08-shape-review.md`, or `09-tui-decision.md`. Session-mining rows also cite `06-session-mining.md`. This revision applies the single-file **kata** shape from `08` and the no-TUI decision from `09`; `07`'s safety findings (B1–B15) are re-verified against the new shape in `08` §6.2 and carried through unchanged in substance (§6, §8.2 below). See the **Revision log** (§13) for the full delta map.
 
 **Inputs (read-only):**
 
 - `docs/design/01-audit.md` — Go product at `~/origin/dops` `795d2d2` (tag `v0.13.1`, feature-complete at v0.12.0)
 - `docs/design/02-competitors.md` — adjacent MCP / task-runner / skills products
-- `docs/design/03-principles.md` — charter and non-goals
+- `docs/design/03-principles.md` — charter and non-goals, as revised by `09` §6.1
+- `docs/design/04-naming.md` — naming research; the product name `kadou` and the unit name `kata` are Mason's choices (`08` §5)
 - `docs/design/06-session-mining.md` — pipeline, redaction, review gate (engine packaging in `06` §5 is Go `cmd/` + `internal/`; **ignore that layout** — kadou is Rust)
-- `docs/design/07-review.md` — independent review of the prior draft (`sd/dops/prd` at `72d7e49`). Verdict: revise before implementation, with 15 ranked blocking items. This PRD is that revision.
-- Reference catalog `~/Bitbucket/sdo-dops-catalog` — 32 `src/*/runbook.yaml` (disk count 2026-09-11)
+- `docs/design/07-review.md` — independent review of the prior draft. Its blocking items (B1–B15) are resolved in the first PRD revision and re-verified against the kata shape in `08` §6.2.
+- `docs/design/08-shape-review.md` — single-file kata, folders as namespaces, no registry. Adopted in full (§1 verdict).
+- `docs/design/09-tui-decision.md` — drops the full-screen TUI for a styled CLI with a built-in picker. Adopted in full (§1 verdict, decision D7).
+- Reference workload `~/Bitbucket/sdo-dops-catalog` — 32 `src/*/runbook.yaml` (disk count 2026-09-11), 29 wrappers share `scripts/trigger-pipeline.sh` via an identical `REPO_ROOT` idiom, three global params incl. secret `jenkins_token`, `device-log-metrics` multi-file
 - crates.io versions and licenses, retrieved 2026-09-11 (see §10). Anything not retrieved is marked **unverified**.
 
-No secrets appear in this document. The Sesami catalog secret is named `jenkins_token` only. No internal hostnames or Bitbucket workspace identifiers appear in examples (`07` B15) — Jenkins and git remote examples below use placeholder domains.
+No secrets appear in this document. The Sesami kata secret is named `jenkins_token` only. No internal hostnames or Bitbucket workspace identifiers appear in examples (`07` B15) — Jenkins and git remote examples below use placeholder domains.
 
 ---
 
@@ -26,325 +29,306 @@ No secrets appear in this document. The Sesami catalog secret is named `jenkins_
 
 kadou is a **script library** that is also an **MCP server for AI agents**. The job is to cut model tokens by preferring reviewed POSIX scripts over free-form reasoning (`03` charter 8–9; `02` §7.3).
 
-One binary exposes three interfaces over one engine (`03` charter 13; `01` §2.1):
+The unit is a **kata**: one script with a header. Kata live in **folders** under `~/.config/kadou/kata/`. There is no registry (`08` §1).
+
+One binary exposes two interfaces over one engine (`03` charter 13, as revised by `09` §6.1; `01` §2.1):
 
 | Interface | Entry | Who |
 |---|---|---|
-| TUI | `kadou` (no args) | DevOps operators |
-| CLI | `kadou run`, `kadou list`, `kadou info`, `kadou catalog`, `kadou mine`, … | Operators, scripts, CI, scheduled mining |
+| CLI | `kadou` (library frame), `kadou run` (picker when no id), `kadou list/show/new/edit/check/get/update/accept/trust/vault/history/grant/mine` | Operators, scripts, CI, scheduled mining |
 | MCP | `kadou mcp serve` (stdio default) | Mason's agents (Claude Code, Cursor, Codex, Grok, …) |
 
-It is not a general agent harness, not a web app, and not a hosted control plane (`03` non-goals).
+There is no full-screen TUI in v1 (`09` D7). The CLI has a built-in picker and inline prompts on a TTY (`09` §3). It is not a general agent harness, not a web app, and not a hosted control plane (`03` non-goals).
 
-The migratable unit is today's catalog: a directory of `runbook.yaml` + `script.sh`, parameters as `UPPER_SNAKE` env vars, four risk words, age-encrypted vault, git-installable catalogs (`01` §2.2–2.6). The rewrite **ports that unit** and **does not port** one-MCP-tool-per-runbook or agent-default-`critical` (`03` scoreboard; `01` §2.9, §8 rank 7).
+The migratable unit is today's dops catalog: a directory of `runbook.yaml` + `script.sh`, parameters as `UPPER_SNAKE` env vars, four risk words, age-encrypted vault, git-installable catalogs (`01` §2.2–2.6). The rewrite **ports that convention** — one script, one set of env vars, four risk words — and **replaces the container**: a runbook directory becomes a kata file, a catalog registry becomes a folder on disk, and `catalog add/install` becomes `kadou get`/`kadou import` (`08` §1 table). It **does not port** one-MCP-tool-per-runbook, agent-default-`critical`, or the format-version loader (`03` scoreboard; `01` §2.9, §8 rank 7; `08` §1).
 
 ### 1.2 Users
 
-**Mason's agents.** Local stdio MCP clients. They list, describe, and run runbooks. They may draft new runbooks. They never raise their own risk ceiling, never see secret values, never write the vault (`07` B2; §4.6, §6.5), and never accept their own proposals (`03` §10–11).
+**Mason's agents.** Local stdio MCP clients. They list, describe, and run kata; they may propose one as a single file. They never raise their own risk ceiling, never see secret values, never write the vault (`07` B2; §4.4, §6.5), and never accept their own proposals (`03` §10–11).
 
-**DevOps operators.** Humans at a keyboard (TUI) or in a shell (CLI). They install team catalogs (Sesami's 32 Jenkins-trigger runbooks first), save `jenkins_url` / `jenkins_user` / `jenkins_token` once in the vault with **`kadou vault set <key>`** (`07` B13; §6.5 — not `kadou config set`, which refuses vault-scoped keys), raise ceilings, grant specific high/critical ids to agents, and accept proposed or **mined** runbooks (`06` §2.9).
+**DevOps operators.** Humans in a shell. They `kadou get` the team folder (Sesami's 32 Jenkins-trigger kata first), save `jenkins_url` / `jenkins_user` / `jenkins_token` once in the vault with **`kadou vault set [--plain] <name>`** (`07` B13; §6.5), raise ceilings, grant specific high/critical ids to agents, and are told by the agent's own message, a desktop notification, or `kadou`'s `needs you` block that a grant, draft, or proposal is waiting — and act with one command (`09` §4).
 
-Same engine, same catalogs, same vault, same risk policy. A fourth interface (Vue web UI) is deferred and is not a v1 driver (`01` §3.2, §9 Q10; `03` non-goals).
+Same engine, same folders, same vault, same risk policy. A web UI is deferred and is not a v1 driver (`01` §3.2, §9 Q10; `03` non-goals).
 
 ### 1.3 Success metrics (numbers)
 
 Token figures for *today* are schema-replay, not a live MCP wire trace (`01` §6, §10). Targets below are product constraints (`03` §8 rule 6).
 
-| Metric | Today (Sesami 32-runbook catalog) | kadou target | Why |
+| Metric | Today (Sesami 32-kata folder) | kadou target | Why |
 |---|---|---|---|
-| **Tokens per connect** (`tools/list` only — `resources/list` and `prompts/list` are not called; §5.1) | ~8 800 (`01` §6.1: 33 940-byte `tools/list` ≈ 8 500 tokens @ 4 chars) | **≤ 800 tokens**, stretch **≤ 500**. CI gate: compact `tools/list` ≤ **2 800 bytes** (`07` B1; not 3 200 — that gate is loose at any tokenizer stricter than 4 B/token). The measured payload is `docs/design/tools-list.json`: **2 330 compact bytes ≈ 583 tokens @ 4 B/token, ≈ 666 @ 3.5 B/token.** Both under budget with headroom for tool annotations. | Four constant meta-tools, hand-authored `inputSchema` (Appendix A of `07`, adopted verbatim with two additions). GitHub MCP's 93-tool ~55k dump is the failure mode (`02` §5, §7.1). |
-| **Tokens per run** (tool result body) | Last 50 lines, unstructured-ish JSON (`01` §4.11, `internal/mcp/tools.go`) | **≤ 1 500 tokens** typical (last **50** lines + exit code + duration_ms + log_path + history_id), **compact JSON, not pretty-printed** (`07` §3.3 — pretty adds ~28%). Hard cap **8 192** output UTF-8 bytes before truncation notice | Server-side truncate; full log on disk, and the fresh-tier log is a plain-text file an agent's own tools can read (`07` B3). |
-| **Time to first runbook after install** | curl installer, then `dops init`, then empty-or-hello-world (`03` §3 dops-today) | **≤ 60 s** wall clock from `curl \| sh` to `kadou` showing the starter catalog on a warm network. **≤ 10 s** from a completed install to first TUI frame / first `list_runbooks` on a local SSD | Install = ready (`03` §3). Empty catalog is a product bug (`03` §9 rule 6). |
-| **Connect cost vs catalog size** | Linear: 32 runbooks ~8.5k tokens; SPEC's 370 pipelines extrapolate ~98k (`01` §6.2 item 4) | **O(1)** in runbook count. 32 and 370 pay the same `tools/list` | Meta-tools (`02` §1.5, mise MCP in `02` §2.3). |
-| **Sesami import** | n/a | All **32** `runbook.yaml` files load. `kadou info` / `describe_runbook` round-trip is tested with **catalog policy `max_risk_level = critical`** — the compatibility-suite ceiling, not the shipped default. At the default agent ceiling (`low`) only 5 of 32 runbooks are visible over MCP (`helm-package`, `sdo-k8s-ses`, `ses-automation`, `clone-ses-repos`, `device-log-metrics`; §6.2) — that is by design, not an import failure. `kadou run --dry-run` resolves env for all 32 without calling Jenkins. | `01` §9 Q11; `07` §1 row "1.3", B1. |
+| **Tokens per connect** (`tools/list` only — `resources/list` and `prompts/list` are not called; §5.1) | ~8 800 (`01` §6.1: 33 940-byte `tools/list` ≈ 8 500 tokens @ 4 chars) | **≤ 800 tokens**, stretch **≤ 500**. CI gate: compact `tools/list` ≤ **2 800 bytes** (`07` B1). The measured payload is `docs/design/tools-list.json`: **2 028 compact bytes ≈ 507 tokens @ 4 B/token, ≈ 579 @ 3.5 B/token.** Both under budget with ~772 bytes of headroom — smaller than the first revision's 2 330 bytes because `propose_kata`'s schema shrank from six properties to two (`08` §6.2). | Four constant meta-tools, hand-authored `inputSchema` (§5.4). GitHub MCP's 93-tool ~55k dump is the failure mode (`02` §5, §7.1). |
+| **Tokens per run** (tool result body) | Last 50 lines, unstructured-ish JSON (`01` §4.11, `internal/mcp/tools.go`) | **≤ 1 500 tokens** typical (last **50** lines + exit code + duration_ms + log_path + history_id), **compact JSON, not pretty-printed** (`07` §3.3). Hard cap **8 192** output UTF-8 bytes before truncation notice | Server-side truncate; full log on disk, and the fresh-tier log is a plain-text file an agent's own tools can read (`07` B3). |
+| **Time to first kata after install** | curl installer, then `dops init`, then empty-or-hello-world (`03` §3 dops-today) | **≤ 60 s** wall clock from `curl \| sh` to `kadou` showing the starter folder on a warm network. **≤ 10 s** from a completed install to the first `kadou` frame / first `list_kata` on a local SSD (`09` §3.2 — there is no TUI frame to wait for) | Install = ready (`03` §3). Empty folder is a product bug (`03` §9 rule 6). |
+| **Connect cost vs library size** | Linear: 32 runbooks ~8.5k tokens; SPEC's 370 pipelines extrapolate ~98k (`01` §6.2 item 4) | **O(1)** in kata count. 32 and 370 pay the same `tools/list` | Meta-tools (`02` §1.5, mise MCP in `02` §2.3). |
+| **Sesami import** | n/a | All **32** `runbook.yaml` files convert with `kadou import`, check with **0 errors**, `describe_kata` round-trips, and `kadou run --dry-run` yields the same env names as today (`08` §6.1, §6.2). At the default agent ceiling (`low`) only 5 of 32 kata are visible over MCP (`08` §6.1 risk mix: medium 25, low 5, high 1, critical 1) — that is by design, not an import failure. | `01` §9 Q11; `08` §6.1; `07` §1 row "1.3", B1. |
 
 A change that grows the default `tools/list` past the 2 800-byte gate is a principles violation, not a feature (`03` §8 rule 6).
 
 ---
 
-## 2. Decision table (01 §9 plus mining, revised)
+## 2. Decision table (revised for the kata shape)
 
-Each row is a closed decision. One-line reason plus citations. Rows 1–14 close `01` §9. Row 15 closes how `06` §5.3 fits the `03` §8 tool budget. Changes from the prior draft are marked **[rev]** with the blocking id from `07` §8.1.
+Each row is a closed decision. Rows 1–15 close `01` §9 as before; rows 16–17 are new, closing `08` §8 and `09` §5. Changes from the first PRD revision are marked **[shape]** (from `08`) or **[tui]** (from `09`).
 
 | # | Question | Decision | Reason | Cite |
 |---|---|---|---|---|
-| 1 | MCP tool shape | **Four meta-tools only:** `list_runbooks`, `describe_runbook`, `run_runbook`, `propose_runbook`. No tool per runbook. No resource-only catalog. No `select_catalog` that then registers tools. No history tool. **No `mine_*` tools** (decision 15). | Constant-size surface is ~37× cheaper than 32 eager schemas and stays flat at 370 pipelines; a second four-tool mine surface would double connect cost. | `01` §6.2, §9 Q1; `02` §7.1, §7.8, mise in `02` §2.3; `03` §8 rules 1–2, convention table |
-| 2 | Format versioning | **`runbook.yaml` v2** with a **v1 compatibility loader**. v1 files (no `format_version`) load without rewrite. v2 adds optional `format_version: 2`, omittable `script:` (defaults to `script.sh`), omittable `name:` (defaults to directory), and optional catalog-root `catalog.yaml` **opt-in** shared `parameters:` groups (`uses:`). **[rev, B9]** String-typed defaults (`"true"`, `"60"`) coerce to the declared type; uncoercible values are a load error. `integer` and `number` both import; v2 authors write `integer` (any whole) or `float`. | Must ingest 32 Sesami files as-is (all 176 declared defaults are YAML strings, including 86 booleans); catalog-level params kill 29 copies of `jenkins_*` for *new* catalogs without breaking old ones, and must not silently push `JENKINS_TOKEN` into non-Jenkins runbooks. | `01` §4.2–4.3, §7, §9 Q2; `03` §7 rules 1–3; `07` §6, B9 |
-| 3 | Catalog identity | **`name` is the stable id.** `display_name` is cosmetic. Recommended Sesami register: `--name jenkins-pipelines` with `sub_path = "src"` (matches SPEC.md comment, not `filepath.Base` → `src`). Renames are operator-explicit and break vault keys / history ids by design. | IDs are `catalog.runbook`; silent rename is data loss. | `01` §2.6, §4.9, §9 Q3; `03` §7 rule 2 |
-| 4 | Confirm protocol | **One visibility-and-grant state machine, three faces.** low/medium: none. high: human must affirm (TUI: y/N, default No; CLI: `--confirm <id>`). critical: human must type the runbook id (TUI input; CLI `--confirm <id>`). **MCP: no confirm strings in schemas.** **[rev, B4]** `pending_grant` happens **only** when a runbook is *visible* to the agent (§6.2 formula) **and** is high/critical **and** its id is not in `[agent].allowed_runbooks` at a sufficient ceiling. A runbook the agent cannot see returns `no_such_runbook`, never `pending_grant` (a `pending_grant` reply would itself leak that the id exists). The pending record is pinned to a script digest and catalog HEAD, expires after 24h, and dedupes on `(runbook_id, args_hash)` (§6.4). | Schema `_confirm_id` / `_confirm_word` is copyable theater; Sesami `ses-deploy` is production-impacting; the prior draft's §5.5 example and §6.4 step 1 contradicted the §6.3 table and the §6.2 visibility rule. | `01` §4.6, §9 Q4; `02` §7.7; `03` §10 rules 2–3, §11 rule 4; `07` C3, B4 |
-| 5 | Default risk ceiling | **Human `max_risk_level = "medium"` per catalog, overridable per catalog.** **Agent `allow_risk = "low"`.** `--allow-risk` on `mcp serve` cannot exceed config. **[rev, B4]** Ceiling formula, stated precisely (matches Go semantics — catalog policy *replaces* the global default, it does not intersect with it): `human_ceiling(c) = c.policy.max_risk_level ?? defaults.max_risk_level`; `agent_ceiling(c) = min(agent.allow_risk, --allow-risk, human_ceiling(c))`; a runbook is visible to the agent iff `rank(risk_level) ≤ agent_ceiling(c)`. `allowed_runbooks` never raises visibility — it only decides run-vs-`pending_grant` for a runbook that is already visible and high/critical (§6.3 table). High/critical hidden at list/describe/run above that ceiling. | Today's MCP default `critical` is inverted omakase-safe; the prior draft's `min(agent, catalog, human)` formula silently capped the human ceiling at the global default, contradicting Go (`internal/catalog/loader.go:55-58`) and the PRD's own §7.5 comment ("raise to critical to even see ses-deploy"). | `01` §4.6, §9 Q5; `03` §1 rule 4, §10 rules 1 and 3; `07` C2 (row 2.5), B4 |
-| 6 | Vault portability | **Age X25519 identity, local-first (default).** Identity file `0600` under the data dir. **[rev, B12]** **Optional** keyring wrap of the identity's **passphrase** (not the identity itself — the two prior drafts of this decision disagreed) via `keyring-core` + `apple-native-keyring-store` on macOS. **Verified**: import of Go `vault.json` v1 works; the envelope is specified byte-for-byte in §6.5. No required 1Password / cloud KMS. | Own the machine; secrets never in config; per-machine keys are the safe default; keyring is the portable overlay; the bare `keyring` crate is wrong per its own docs and breaks Linux MSRV. | `01` §2.4, §4.7, §9 Q6; `02` §7.11; `03` §6 rules 4–5, charter 12; `07` §4.5, B12 |
-| 7 | Script contract | **Exec a file with env vars.** `script:` is a path relative to the runbook directory (default `script.sh`). Shared files **outside** runbook dirs (e.g. `scripts/trigger-pipeline.sh`) are first-class as *catalog tree files*, not as a second `script:` URI scheme. Loader must not assume a two-file directory is the whole program. POSIX `/bin/sh`. No `run_shell` tool. cwd is the runbook directory — a documented change from Go, which inherits the caller's cwd; harmless for Sesami. | 29 Sesami wrappers `dirname "$0"` up to repo `scripts/`; rewriting 32 scripts is out of scope. | `01` §2.2, §7, §9 Q7; `03` §1 rule 5, §7 rule 6, §9 rules 1–2; `07` C16 |
-| 8 | History policy | **Implement the documented policy, not the ignored size-cap.** JSON records + gzip-tar log archives. **[rev, B3]** Keep the v0.12 spec's **fresh tier**: the last **7 days** of logs are plain `0600` text files (not gzip-tar), so a running or recent run's `log_path` is a file an agent's own tools can open; older logs compress into 10 MB gzip-tar archives. **90-day TTL** and **50 MB total cap** (oldest records+archives first) unchanged. Secrets masked `****` in parameter maps, and the raw output stream is redacted **before** it is written to the log or returned to MCP (§6.6). `interface` is `tui` \| `cli` \| `mcp`. Pending and proposed records: 30-day retention. | Audit of Jenkins triggers needs retention; the prior draft dropped the fresh plain-text tier without saying so, which made `log_path` a tar entry no agent file tool can open. | `01` §2.8, §4.10, §9 Q8; `03` §11 rule 5; `07` C15, B3 |
-| 9 | Skills | **Parse `type: skill` so load does not break.** Do **not** register skill prompts or dump skill bodies on the default MCP surface in MVP. Product later. | Zero `skill.md` in origin catalogs or sdo-dops-catalog; registering all skills violates lazy MCP. | `01` §3.2, §4.8, §9 Q9; `02` §4.1; `03` §8 rule 3 |
-| 10 | Web / TUI in v1 | **CLI + MCP ship first** (slices 1–5, re-cut — §9). **TUI is in MVP** on the same engine. **Web UI is a non-goal.** No `kadou open`. | Charter is three interfaces; four on day one is how today's MCP/TUI confirm drifted. Vue is extra surface. | `01` §3.1–3.2, §9 Q10; `03` charter 13, non-goals |
-| 11 | Compatibility tests | **Yes.** 32 Sesami YAML files are the acceptance suite: parse, strict-load, schema round-trip, `describe`, `run --dry-run` env map. **Do not execute Jenkins in CI.** Optional live dry-run behind `KADOU_TEST_CATALOG`. **[rev, B15]** CI cannot read `~/Bitbucket/sdo-dops-catalog` (no such path in the runner). Vendor **sanitized, shape-preserving fixtures** under `tests/fixtures/sesami-shaped/` (32 stub runbooks with the same key set, type mix, and default-string shapes, no real hostnames or Bitbucket workspace names) for CI, and run the real tree locally / on a self-hosted runner via `KADOU_TEST_CATALOG=~/Bitbucket/sdo-dops-catalog`. | The catalog is the compatibility target (`01` §1), but CI must not depend on a path that only exists on Mason's machine. | `01` §7, §9 Q11; `07` §2 row "2 row 11", B15 |
-| 12 | Loader strictness | **Fail closed, per catalog.** `name` (after defaulting) **must** equal the directory. `risk_level` required and valid. `select` / `multi_select` require `options`. `script` file must exist for non-skill entries. Unknown `type` is a load error (v1 `number`/`integer`/`file_path`/`resource_id` are known aliases — §4.3). YAML that does not unmarshal is a load error. Unknown top-level or parameter keys are load errors against the **complete** known-key list (§4.3). **[rev, B9]** A load failure in one catalog does not take down another catalog, the starter catalog, or the server — it fails that catalog only and is reported per catalog. A `required: true` parameter with an empty-string `default` does not satisfy "required" (Sesami's `ses-argocd-sync.app_name`). | Today's "unmarshal and hope" makes `name` ≠ dirname a silent wrong script path; per-process failure would let one bad team catalog brick the starter catalog and MCP. | `01` §4.1–4.2, §9 Q12; `03` §7 rule 1; `07` §2 rows "2 row 12"/"4.7", B9 |
-| 13 | Secret parameter vs type | **Keep `secret: true` on any type.** Do not add `type: secret`. | Catalog uses the flag (e.g. `jenkins_token`); a new type would not exist in today's YAML. | `01` §2.4, §9 Q13; `03` §10 rule 4 |
-| 14 | Inactive catalogs and multi-catalog MCP | Inactive catalogs are skipped for **execution**. Addressing is the **id** `catalog.runbook` (or an alias). `list_runbooks.catalog` is an optional filter. `run_runbook` / `describe_runbook` take `id`, not a separate required catalog argument. **[rev, B14]** **Staging exception (decision 15):** `mined` and `proposed` are **reserved** catalog names (not configurable — `[mine] catalog` is removed from config). Staging entries are listed/described **regardless of the risk ceiling**, because they are never executable — the miner never assigns `low`, so ceiling-filtering staging would hide everything from a default agent. `run_runbook` always refuses staging ids. Drafts live at `~/.local/share/kadou/catalogs/proposed/<catalog>--<name>/` (flattened, one level, so the one-level loader can scan it) and are addressed as `proposed.<catalog>--<name>`. The only path from staging to executable is `kadou catalog accept <staging-id> --into <user-catalog>` (default `user`); there is no `active = true` shortcut on `mined`. | Dispatcher still needs a stable id; mined drafts must be reviewable without becoming executable tools; the prior draft's `proposed/<catalog>/<name>/` was two levels deep (the loader only scans one) and its `active = true` path bypassed `kadou catalog accept` entirely. | `01` §2.6–2.7, §9 Q14; `03` §7 rule 2; `06` §2.9, §5.3; `07` §3.6, C7, C8, B14 |
-| 15 | Session mining MCP (`mine_list` / `mine_get` / `mine_run` / `mine_review`) | **Do not add those tools, resources, or prompts.** Engine is crate `kadou-mine` + CLI `kadou mine` (not Go `cmd/mine.go`). Map: `mine_list` → `list_runbooks` (`catalog=mined` or `include_staging=true`); `mine_get` → `describe_runbook` on `mined.<slug>`; `mine_run` → **CLI/LaunchAgent only** (`kadou mine run --once`); `mine_review` approve → human `kadou mine approve` / `kadou catalog accept … --into <user-catalog>`; reject/skip → human `kadou mine reject\|skip`. No `kadou://mine/*` on `resources/list`. No MCP approve. **[rev, B14]** The miner writes `format_version: 2` drafts (the prior `06` §6.4 draft example was v1-shaped with `type: number`). | Four extra tools would break the ≤4 budget; inactive `mined` catalog is already the review gate; schema `_confirm_id` on mine_review is the same theater decision 4 rejected. | `06` §5 (ignore Go layout), §5.3, §2.9; `03` §8 rules 1 and 6, §11 rules 1–2; `02` §7.13; `07` §6.8, B14 |
+| 1 | MCP tool shape | **Four meta-tools only:** `list_kata`, `describe_kata`, `run_kata`, `propose_kata`. No tool per kata. No resource-only library. No history tool. **No `mine_*` tools** (decision 15). **[shape]** Renamed from `*_runbook`; `propose_kata`'s schema shrinks from six properties to two. | Constant-size surface stays flat at any folder count; short names save bytes on every connect. | `01` §6.2, §9 Q1; `02` §7.1, §7.8; `03` §8 rules 1–2; `08` §2.8, §6.2 |
+| 2 | Format versioning | **[shape, replaced]** One header grammar (§4.3). No `format_version`. Old dops catalogs are converted once by `kadou import`; the product never loads `runbook.yaml`. | A closed six-key comment header is the whole schema; a v1/v2 loader and `catalog.yaml` opt-in groups added surface without adding safety. | `08` §1 items 1–2, §3, §7 |
+| 3 | Folder identity | **[shape, replaced]** Folder name is the id prefix and is the directory name. Rename by renaming the directory; history ids and last-used args follow the old id and are not migrated. | Ids are paths on disk; a folder exists because it is on disk, not because it is registered. | `08` §4.1, §7 |
+| 4 | Confirm protocol | **One visibility-and-grant state machine, two faces: CLI and MCP.** **[tui]** CLI: high prompts `run? [y/N]` on a TTY (default No), else requires `--confirm <id>`; critical prompts for the typed id on a TTY, else requires `--confirm <id>`. **MCP: no confirm strings in schemas.** `pending_grant` happens **only** when a kata is *visible* to the agent (§6.2 formula) **and** is high/critical **and** its id is not in `[agent].allow` at a sufficient ceiling. A kata the agent cannot see returns `no_such_kata`, never `pending_grant`. The pending record is pinned to the kata file's sha256 (+ folder git HEAD when present), expires after 24h, and dedupes on `(id, args_hash)` (§6.4). | Schema `_confirm_id` is copyable theater; a TUI overlay was a third face that could drift from the CLI/MCP pair (`01` §2.1). Dropping it collapses three faces to two. | `01` §4.6, §9 Q4; `03` §10 rules 2–3; `07` C3, B4; `09` §3.4, §6.2 |
+| 5 | Default risk ceiling | **Human `max_risk = "medium"` per folder, overridable.** **Agent `max_risk = "low"`.** `--allow-risk` on `mcp serve` cannot exceed config. **[shape]** Formula with `folder` substituted for catalog (`08` §4.4): `human_ceiling(f) = folder[f].max_risk ?? max_risk`; `agent_ceiling(f) = min(agent.max_risk, folder[f].agent_max_risk ?? agent.max_risk, --max-risk, human_ceiling(f))`. **[tui]** Project-local trust (§6.2) is a visibility term alongside ceiling. | Today's MCP default `critical` is inverted omakase-safe; per-folder policy matches the per-catalog formula it replaces. | `01` §4.6, §9 Q5; `03` §1 rule 4, §10 rules 1 and 3; `07` B4; `08` §4.4 |
+| 6 | Vault portability | **Age X25519 identity, local-first (default).** Identity file `0600` under the data dir. Optional keyring wrap of the identity's **passphrase** via `keyring-core` + `apple-native-keyring-store` on macOS. **[shape]** Payload is now a **flat** `{ "<name>": { "value", "secret" } }` map (§6.5) — needs are one namespace, not scoped per folder. Go `vault.json` v1 import maps `global.*` to entries and reports/drops `catalog.*` runbook-scope values (or writes them as last-used args). | Needs replace scopes structurally (`08` §1 item 2), so the vault payload no longer needs a scope tree. | `01` §2.4, §4.7, §9 Q6; `03` §6 rules 4–5, charter 12; `07` §4.5, B12; `08` §6.2 |
+| 7 | Script contract | **Exec the kata file; the shebang is the runtime.** **[tui, D2]** `argv` is `<interpreter-from-shebang> <file>` or `/bin/sh <file>` when there is no shebang. `kadou check` warns when the interpreter is not on `PATH`. cwd is the kata's directory. Shared helpers **outside** the kata file (e.g. `scripts/trigger-pipeline.sh`) are reached via `$KADOU_ROOT`, not a second `script:` field. No `run_shell` tool. | 29 Sesami wrappers `dirname "$0"` up to a shared script; a single-file kata sits one level shallower, so `kadou import` rewrites the idiom once instead of the product carrying a two-file contract forever. | `01` §2.2, §7, §9 Q7; `03` §1 rule 5 (widened), §7 rule 6, §9 rules 1–2; `07` C16; `08` §1 item 4, §3.7, §6.1; `09` D2 |
+| 8 | History policy | **Implement the documented policy, not the ignored size-cap.** JSON records + gzip-tar log archives. Fresh tier: the last **7 days** of logs are plain `0600` text files, so a running or recent run's `log_path` is a file an agent's own tools can open; older logs compress into 10 MB gzip-tar archives. **90-day TTL** and **50 MB total cap** unchanged. Secrets masked `****`; the raw output stream is redacted **before** it is written to the log or returned to MCP (§6.6). **[shape]** `catalog_name` → `folder`; `runbook_id` → `id`; `runbook_name` dropped. **[tui]** `interface` is `cli` \| `mcp` (no `tui`). | Audit of Jenkins triggers needs retention; `log_path` must stay a file, not a tar entry, for an agent's own file tools. | `01` §2.8, §4.10, §9 Q8; `03` §11 rule 5; `07` C15, B3; `08` §6.2; `09` §6.2 |
+| 9 | Skills | **`*.md` beside kata are ignored by the loader. Skills are not a header type.** | Zero `skill.md` in origin catalogs or sdo-dops-catalog; registering all skills violates lazy MCP. | `01` §3.2, §4.8, §9 Q9; `02` §4.1; `03` §8 rule 3; `08` §7 |
+| 10 | CLI/MCP in v1, TUI dropped | **[tui, D7]** **CLI + MCP are the product.** No full-screen TUI in v1; the CLI has a built-in picker and inline prompts on a TTY (§7; `09` §3). Web UI is a non-goal. No `kadou open`. | Two interfaces, not three; a fourth interface (a third confirm face) is how today's MCP/TUI confirm drifted (`01` §2.1). An operator who mostly reviews what agents did needs to be told, not to be somewhere (`09` §5, §7 reversal condition). | `01` §3.1–3.2, §9 Q10; `03` charter 13 (revised); `09` §1, §5 |
+| 11 | Compatibility tests | **Yes.** 32 Sesami YAML files are the acceptance suite: `kadou import`, check with 0 errors, `describe_kata` round-trip, `run --dry-run` env map. **Do not execute Jenkins in CI.** CI cannot read `~/Bitbucket/sdo-dops-catalog`; it uses **sanitized, shape-preserving fixtures** under `tests/fixtures/sesami-shaped/` (32 stub `.sh` kata, no real hostnames or workspace names), and the real tree is used locally via `KADOU_TEST_CATALOG=~/Bitbucket/sdo-dops-catalog`. | The catalog is the compatibility target (`01` §1), but CI must not depend on a path that only exists on Mason's machine. | `01` §7, §9 Q11; `07` §2 row "2 row 11", B15; `08` §7 |
+| 12 | Loader strictness | **`kadou check` is the loader.** A folder with any header error is listed with `✗` and none of its kata run; other folders are unaffected. Unknown keys, unknown types, missing `about`/`risk`, tabs, an unclosed header are errors with a fix line (§4.3, §4.7). | A bad file in one team's folder must not brick the starter folder or the server; cargo-shaped diagnostics are the same text a human and an agent both see. | `01` §4.1–4.2, §9 Q12; `03` §7 rule 1; `07` §2 rows "2 row 12"/"4.7", B9; `08` §2.7, §6.2, §7 |
+| 13 | Secret parameter vs need | **[shape, replaced]** Secrets are **needs**. Args cannot be secret. An arg is settable by an agent through `run_kata`; a secret must never be, so a secret is never an arg — it is a need the vault supplies. | This is the whole of `07` B2 expressed as a grammar (`08` §1 item 2), not a runtime check. | `01` §2.4, §9 Q13; `03` §10 rule 4; `08` §1, §3.4, §3.6 |
+| 14 | Staging / inactive folders | **[shape, replaced]** No active flag. Project-local `./kata/` is human-runnable without the vault and agent-invisible until `kadou trust` (§4.5; `09` D3). Drafts live in the state dir under `proposed/<folder>/<name>` and `mined/<name>`, are listable with `include_drafts`, and are never runnable; `kadou accept <id>` is the only path in, and it refuses a target folder that is a git checkout (§6.7). | No registry means no `active = true` shortcut to reuse; the trust gate and the accept gate replace it with two narrower rules. | `01` §2.6–2.7, §9 Q14; `03` §7 rule 2; `06` §2.9, §5.3; `07` §3.6, C7, C8, B14; `08` §1, §4.2, §6.2 |
+| 15 | Session mining MCP mapping | **Do not add those tools, resources, or prompts.** Engine is crate `kadou-mine` + CLI `kadou mine` (not Go `cmd/mine.go`). `mine_list` → `list_kata` (`folder=mined` or `include_drafts=true`); `mine_get` → `describe_kata` on `mined.<slug>`; `mine_run` → **CLI/LaunchAgent only** (`kadou mine run --once`); `mine_review` approve → human `kadou mine approve` / `kadou accept … --into <folder>`; reject/skip → human `kadou mine reject\|skip`. No `kadou://mine/*` on `resources/list`. No MCP approve. **[shape]** The miner writes a **single-file draft with a header**, not `format_version: 2` YAML. | Four extra tools would break the ≤4 budget; an inactive `mined` folder is already the review gate. | `06` §5 (ignore Go layout), §5.3, §2.9; `03` §8 rules 1 and 6, §11 rules 1–2; `02` §7.13; `07` §6.8, B14; `08` §6.2 |
+| 16 | **[new, shape]** Kata is one file | **Kata is one file with a closed-grammar header; folders are namespaces; no registry.** A folder of kata looks like a folder of scripts, because it is one. | Removes the four things people found confusing (runbook vs catalog, v1 vs v2, `catalog.yaml` groups, `catalog add` vs `install`) and replaces them with things people already know: a script, a folder, `git clone`. | `08` §1, §11 |
+| 17 | **[new, tui]** Human review is told, not housed | **The agent's MCP result carries the exact human command (`approve`, `accept`), the server posts a desktop notification, and `kadou`'s `needs you` block is the durable copy.** No screen to sit in. | An operator whose main job is reviewing what agents did needs to be told, not to be somewhere; a badge in a TUI footer required being inside kadou to see it. | `09` §4, §5, §6.2 §11 |
 
 ---
 
 ## 3. Rust workspace layout
 
-Edition 2024. **MSRV 1.88** (required by `rmcp` 3.3.0 and `ratatui`). One binary named `kadou`. Workspace at repo root.
+Edition 2024. **MSRV 1.88** (required by `rmcp` 3.3.0). One binary named `kadou`. Workspace at repo root.
 
 ```
 kadou/
   Cargo.toml                 # workspace
   crates/
-    kadou/                   # bin: clap CLI, wires TUI + MCP
-      starter/                # embedded starter catalog, inside the bin crate (07 §5.5) so `cargo package` works for rust-embed
-    kadou-core/              # domain, config, catalog loader, vault, vars, history, risk
-    kadou-exec/              # process group, POSIX sh, env injection, dry-run
+    kadou/                   # bin: clap CLI, ui module (style, frames, picker, prompts, notify), wires MCP
+      starter/                # embedded starter kata, inside the bin crate so `cargo package` works for rust-embed
+    kadou-core/              # domain, config, header parser, folder scanner, `check` diagnostics, vault, last-used args, history
+    kadou-exec/              # process group, shebang runtime, env injection, dry-run
     kadou-mcp/               # rmcp server, 4 tools, result truncation
-    kadou-tui/               # ratatui app
     kadou-mine/              # session mining engine (ingest/parse/cluster/redact/propose)
   docs/design/
-  tests/fixtures/            # v1 YAML, v2 YAML, sesami-shaped stub catalog for CI (decision 11)
+  tests/fixtures/            # sesami-shaped stub folder for CI (decision 11), headers/{good,bad}/ (bad-header snapshot corpus, 08 §6.2 risk 1)
 ```
+
+**[shape]** No `kadou-tui/` crate. There is no ratatui app; the picker and prompts live in the `ui` module of the `kadou` bin crate (`09` §3.7).
 
 | Crate | Responsibility | Depends on |
 |---|---|---|
-| `kadou-core` | `Runbook`, `Parameter`, `RiskLevel`, XDG paths, TOML config, catalog registry, v1/v2 loader, vault, 3-layer var merge, history store | serde, toml, serde-yaml-ng, age, **etcetera** (XDG, not `directories` — B10), uuid, thiserror, zeroize, base64 |
-| `kadou-exec` | `Runner::run(ctx, script_path, env)`, cwd = runbook dir, **MCP env allowlist**, `exec.timeout`, cancel via process group (SIGTERM then SIGKILL) | kadou-core, tokio, **libc/nix/rustix** (process-group kill) |
+| `kadou-core` | header parser, folder scanner, `check` diagnostics, vault, last-used args, history, XDG paths, TOML config | serde, toml, **serde-yaml-ng (import path only — see below)**, age, etcetera (XDG, not `directories` — B10), uuid, thiserror, zeroize, base64 |
+| `kadou-exec` | `Runner::run(ctx, kata_path, env)`, cwd = kata dir, **MCP env allowlist**, `[exec] timeout` / per-kata `timeout:` header key, cancel via process group (SIGTERM then SIGKILL) | kadou-core, tokio, libc/nix/rustix (process-group kill) |
 | `kadou-mcp` | stdio (default) + loopback HTTP (opt-in, gated — §5.1); the four tools with **hand-authored** `inputSchema`; no resources/prompts on the default list | kadou-core, kadou-exec, rmcp, tokio, serde_json |
-| `kadou-tui` | keyboard-first catalog / wizard / confirm / output / palette / `?` | kadou-core, kadou-exec, ratatui, crossterm |
-| `kadou-mine` | index.jsonl ingest, per-agent parsers, normalize/cluster/rank/redact/propose; **no MCP types**; writes `format_version: 2` drafts | kadou-core, serde_json, regex, sha2, tokio, **similar** (diff) |
-| `kadou` | `main`, clap command tree including `kadou mine`, rust-embed starter (embedded under this crate — see workspace layout above), install-time version | all of the above, clap, clap_complete, rust-embed |
+| `kadou-mine` | index.jsonl ingest, per-agent parsers, normalize/cluster/rank/redact/propose; **no MCP types**; writes single-file header drafts | kadou-core, serde_json, regex, sha2, tokio, similar (diff) |
+| `kadou` | `main`, clap command tree including `kadou mine`, `ui` module (style, frames, picker, prompt, notify), rust-embed starter, install-time version | all of the above, clap, clap_complete, rust-embed |
 
-**Why split this way:** one engine (`kadou-core` + `kadou-exec`) shared by CLI, TUI, and MCP so confirm/risk/vault cannot drift again (`01` §2.1). Mining is a local batch job (`06` §3) that writes drafts; it must not sit inside `kadou-mcp`. Ignore `06` §5.1 Go `cmd/mine.go` + `internal/mine/` — that layout is not this repo.
+**Why split this way:** one engine (`kadou-core` + `kadou-exec`) shared by CLI and MCP so confirm/risk/vault cannot drift (`01` §2.1; `09` §6.2 — two interfaces, not three). Mining is a local batch job (`06` §3) that writes drafts; it must not sit inside `kadou-mcp`. `serde-yaml-ng` moves to the `kadou import` conversion path only — the product's own loader never parses YAML again (`08` §7 §3 row).
 
-### 3.1 Key dependencies (crates.io 2026-09-11, re-verified per `07` §5)
+### 3.1 Key dependencies (crates.io, re-verified 2026-09-11)
 
-Versions are **max stable on crates.io on 2026-09-11**. Pin in `Cargo.toml` with `^` of the major.minor recorded here; bump only with a design note if a major moves. Changes from the prior draft are marked **[rev]**.
+Versions are **max stable on crates.io on 2026-09-11**. Pin in `Cargo.toml` with `^` of the major.minor recorded here; bump only with a design note if a major moves. **[shape]** changes from the first PRD revision are marked.
 
 | Crate | Version | License | Why |
 |---|---|---|---|
 | **clap** | 4.6.6 | MIT OR Apache-2.0 | CLI tree, derive, completions. |
 | **clap_complete** | 4.6.9 | MIT OR Apache-2.0 | Shell completions. |
-| **ratatui** | 0.30.2 | MIT | TUI. Replaces Bubble Tea / Lip Gloss. |
-| **crossterm** | 0.29.0 | MIT | ratatui default backend; keyboard + terminal. |
+| **crossterm** | 0.29.0 | MIT | **[shape, kept]** Picker raw mode and prompts (`09` §3.7, §6.2 — no longer a ratatui backend, since ratatui is gone). |
+| **anstyle** | 1.0.14 | MIT OR Apache-2.0 | **[new, shape]** Styled terminal output that strips itself on a pipe or with `NO_COLOR`; clap already depends on it, so it is free (`09` §3.7). |
+| **anstream** | 1.0.0 | MIT OR Apache-2.0 | **[new, shape]** Auto-detecting stream wrapper paired with `anstyle` for the `style` printer module. |
+| **nucleo-matcher** | 0.3.1 | MPL-2.0 | **[new, shape]** Helix's fuzzy matcher; scores the inline picker's filter (`09` §3.3, §3.7). |
+| **inquire** | 0.9.4 | MIT | **[new, shape]** Text/int/bool/select prompts for `kadou run`'s missing-arg flow (`09` §3.4, §3.7); hand-rolled ~300 lines is the documented fallback if its look cannot follow the theme. |
 | **rmcp** | 3.3.0 | Apache-2.0 | **Official** Rust MCP SDK. Build with `default-features = false`, features `["server", "macros", "transport-io"]`; HTTP (`transport-streamable-http-server`) behind a `kadou` cargo feature so stdio builds carry no HTTP stack (`07` §5.3). |
 | **rmcp-macros** | 3.3.0 | Apache-2.0 | Tool impl macros; same repo. |
 | **tokio** | 1.53.1 | MIT | Async runtime. Features: `rt-multi-thread`, `process`, `signal`, `io-util`, `macros` (`07` §5.1). |
 | **serde** | 1.0.229 | MIT OR Apache-2.0 | Serde. |
 | **serde_json** | 1.0.151 | MIT OR Apache-2.0 | MCP JSON (compact, not pretty — `07` §3.3) + history records. |
-| **serde-yaml-ng** | 0.10.0 | MIT | YAML for `runbook.yaml`. **Not** `serde_yaml` 0.9.34+deprecated. **Not** `serde_yml` 0.0.13. Verified 32/32 on the real Sesami tree; watch maintenance (last release 2024-05-26), keep the 32-file round-trip as the swap guard for `serde-saphyr` or `serde_norway` if needed. |
-| **toml** | 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 | Config parse. |
-| **toml_edit** | 0.25.15+spec-1.1.0 | MIT OR Apache-2.0 | Comment-preserving `kadou config set`. |
-| **age** | 0.12.1 | MIT OR Apache-2.0 | Vault. crates.io description still says **[BETA]**; it is the Rust port of the same age (X25519 + ChaCha20-Poly1305) Go uses. **Go import verified** (`07` Appendix B): `age::IdentityFile::from_buffer` reads a dops-written `keys.txt`; decrypting the Go `vault.json` envelope requires stripping the literal `age1` prefix and unpadded standard base64 (§6.5). |
-| **etcetera** | 0.11.0 | MIT OR Apache-2.0 | **[rev, B10]** XDG base directories on macOS/Linux. **Replaces `directories` 6.0.0**, which maps config *and* data to `~/Library/Application Support` on macOS and returns no state dir at all — wrong for a product whose convention table names `~/.config/kadou` as canonical (`03` §6 rule 2). |
+| **serde-yaml-ng** | 0.10.0 | MIT | **[shape]** Used only by `kadou import` to read old dops `runbook.yaml`. **Not** `serde_yaml` 0.9.34+deprecated. **Not** `serde_yml` 0.0.13. Verified 32/32 against the real Sesami tree; watch maintenance (last release 2024-05-26), keep the 32-file import as the swap guard for `serde-saphyr` or `serde_norway` if needed. |
+| **toml** | 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 | Config parse (`kadou.toml`). |
+| **toml_edit** | 0.25.15+spec-1.1.0 | MIT OR Apache-2.0 | Comment-preserving `kadou trust` / `kadou grant allow` config edits. |
+| **age** | 0.12.1 | MIT OR Apache-2.0 | Vault. crates.io description still says **[BETA]**; it is the Rust port of the same age (X25519 + ChaCha20-Poly1305) Go uses. **Go import verified** (`07` Appendix B). |
+| **etcetera** | 0.11.0 | MIT OR Apache-2.0 | **[B10]** XDG base directories on macOS/Linux. Replaces `directories` 6.0.0, which maps config *and* data to `~/Library/Application Support` on macOS and returns no state dir at all. |
 | **thiserror** | 2.0.20 | MIT OR Apache-2.0 | Typed errors in libraries. |
-| **uuid** | 1.26.1 | Apache-2.0 OR MIT | Execution / pending / history ids (v4). |
-| **schemars** | 1.2.2 | MIT | Used only to **deserialize** tool arguments into typed Rust structs. `inputSchema` on the wire is **hand-authored JSON** (`docs/design/tools-list.json`), not schema-derived — rmcp/schemars derivation adds `$schema`, renders `Option<T>` as a two-element type array, and expands optional enums into `$defs`/`anyOf`, none of which fits the budget (`07` §3.1). |
-| **rust-embed** | 8.12.0 | MIT | Embed starter catalog + bundled themes. |
+| **uuid** | 1.26.1 | Apache-2.0 OR MIT | Pending / history ids (v4). |
+| **schemars** | 1.2.2 | MIT | Used only to **deserialize** tool arguments into typed Rust structs. `inputSchema` on the wire is **hand-authored JSON** (`docs/design/tools-list.json`), not schema-derived. |
+| **rust-embed** | 8.12.0 | MIT | Embed starter kata + bundled themes. |
 | **zeroize** | 1.9.0 | Apache-2.0 OR MIT | Wipe decrypted vault buffers. |
-| **keyring-core** | 1.0.0 | MIT OR Apache-2.0 | **[rev, B12]** **Replaces bare `keyring` 4.2.0.** The `keyring` crate's own docs say applications should link `keyring-core` plus a specific store, not the umbrella crate; the umbrella's default `v1` feature pulls in a dependency chain (`aes` 0.9.3 via `zbus-secret-service-keyring-store` → `secret-service`) whose `rust-version` is 1.89, above this workspace's declared 1.88 MSRV. |
-| **apple-native-keyring-store** | 1.0.2 | MIT OR Apache-2.0 | **[new, B12]** macOS Keychain backend for `keyring-core`. Mason's target platform. A Linux `zbus-secret-service-keyring-store` 1.0.1 backend goes behind its own opt-in feature if Linux support is ever needed; it is not required for MVP and keeps the 1.89 MSRV bump out of the default build. |
-| **tracing** / **tracing-subscriber** | 0.1.44 / 0.3.23 | MIT | Structured logs to stderr (MCP must not write on stdout — a stray byte on stdout corrupts the stdio transport). |
+| **keyring-core** | 1.0.0 | MIT OR Apache-2.0 | **[B12]** Replaces bare `keyring` 4.2.0, whose default dependency chain forces a higher MSRV than this workspace declares. |
+| **apple-native-keyring-store** | 1.0.2 | MIT OR Apache-2.0 | **[B12]** macOS Keychain backend for `keyring-core`. |
+| **tracing** / **tracing-subscriber** | 0.1.44 / 0.3.23 | MIT | Structured logs to stderr (MCP must not write on stdout). |
 | **camino** | 1.2.5 | MIT OR Apache-2.0 | UTF-8 paths. |
 | **fs-err** | 3.3.1 | MIT OR Apache-2.0 | IO errors with paths. |
-| **sha2** | 0.11.0 | MIT OR Apache-2.0 | Script digest in `describe_runbook`; grant-approval pin (§6.4). |
-| **humantime** | 2.4.0 | MIT OR Apache-2.0 | Duration display. |
-| **regex** | 1.13.1 | MIT OR Apache-2.0 | Mining redaction rules (`06` §4.2); history stream redaction (§6.6). |
-| **flate2** | 1.1.10 | MIT OR Apache-2.0 | **[new, B3]** History `.log.gz` tar archives (aged-out tier). |
-| **tar** | 0.4.46 | MIT OR Apache-2.0 | **[new, B3]** Same. |
-| **similar** | 3.2.0 | Apache-2.0 | **[new, B7]** `propose_runbook` diff generation, and the accept-time diff shown to a human (§6.7). |
-| **libc** | 0.2.189 | MIT | **[new, B5]** `killpg` for process-group SIGTERM/SIGKILL. |
-| **nix** | 0.31.3 | MIT | **[new, B5]** Higher-level process-group / signal wrapper over `libc` where it saves hand-rolled `unsafe`. |
-| **base64** | 0.23.1 | MIT OR Apache-2.0 | **[new, B12]** Go vault import: the envelope is `"age1" + base64::STANDARD_NO_PAD(<ciphertext>)` (§6.5), not plain age armor. |
-| **tempfile** | 3.27.0 | MIT OR Apache-2.0 | **[rev]** Also a **runtime** dependency now, not dev-only: atomic config/vault/proposal writes (write-to-temp, fsync, rename). |
+| **sha2** | 0.11.0 | MIT OR Apache-2.0 | Kata file digest in `describe_kata`; grant-approval pin (§6.4). |
+| **humantime** | 2.4.0 | MIT OR Apache-2.0 | Duration display; header `timeout:` parsing. |
+| **regex** | 1.13.1 | MIT OR Apache-2.0 | Mining redaction rules (`06` §4.2); history stream redaction (§6.6); header arg-line parsing helpers. |
+| **flate2** | 1.1.10 | MIT OR Apache-2.0 | History `.log.gz` tar archives (aged-out tier). |
+| **tar** | 0.4.46 | MIT OR Apache-2.0 | Same. |
+| **similar** | 3.2.0 | Apache-2.0 | `propose_kata` diff generation, and the accept-time diff shown to a human (§6.7). |
+| **libc** | 0.2.189 | MIT | `killpg` for process-group SIGTERM/SIGKILL. |
+| **nix** | 0.31.3 | MIT | Higher-level process-group / signal wrapper over `libc`. |
+| **base64** | 0.23.1 | MIT OR Apache-2.0 | Go vault import: the envelope is `"age1" + base64::STANDARD_NO_PAD(<ciphertext>)` (§6.5). |
+| **tempfile** | 3.27.0 | MIT OR Apache-2.0 | Atomic config/vault/proposal writes (write-to-temp, fsync, rename). |
 
-**Dev / test:** `assert_cmd` 2.2.2, `predicates` 3.1.4, `insta` 1.48.0 (snapshot the exact `tools/list` bytes against `docs/design/tools-list.json`), `proptest` 1.11.0 — all MIT OR Apache-2.0 except insta (Apache-2.0). `cargo-deny` 0.20.2 (rust-version 1.88) in CI for license/advisory gating (`07` §5.4, suggestion 6).
+**Dev / test:** `assert_cmd` 2.2.2, `predicates` 3.1.4, `insta` 1.48.0 (snapshot the exact `tools/list` bytes against `docs/design/tools-list.json`, plus the `kadou` frame, `kadou run` frame, `kadou check` frame, and the picker preview — styled and plain, `09` §3.7), `proptest` 1.11.0 — all MIT OR Apache-2.0 except insta (Apache-2.0). `cargo-deny` 0.20.2 (rust-version 1.88) in CI for license/advisory gating.
 
 **Explicitly not used**
 
 | Crate | Why not |
 |---|---|
+| `ratatui` 0.30.2 | **[shape, removed]** No full-screen TUI in v1 (`09` D7). The picker and prompts are inline CLI components over `crossterm`, not a ratatui app. Reversal: adding a TUI later is one new crate `kadou-tui`, one slice, no format or config change (`09` §7). |
 | `serde_yaml` 0.9.34+deprecated | Deprecated on crates.io. |
-| `directories` 6.0.0 | **[rev, B10]** Wrong macOS paths, no state dir. See `etcetera` above. |
-| `keyring` 4.2.0 (bare) | **[rev, B12]** Upstream says link `keyring-core` + a store instead; breaks Linux MSRV. See `keyring-core` above. |
-| `git2` / `gix` | Catalog install shells out to `git` (same as today, `01` §4.9). No libgit2 in the binary. |
+| `directories` 6.0.0 | **[B10]** Wrong macOS paths, no state dir. See `etcetera` above. |
+| `keyring` 4.2.0 (bare) | **[B12]** Upstream says link `keyring-core` + a store instead; breaks Linux MSRV. See `keyring-core` above. |
+| `git2` / `gix` | Kata folder install shells out to `git` (same as today, `01` §4.9). No libgit2 in the binary. |
 | `axum` / `hyper` as first-party HTTP | rmcp's streamable HTTP feature is enough for opt-in loopback. |
-| Any GPL-3.0 runner (e.g. taking mcp-shell as a library) | Copyleft is a product constraint (`02` §7.15). |
+| Any GPL-3.0 runner | Copyleft is a product constraint (`02` §7.15). |
 
 ### 3.2 MSRV
 
-Declared **1.88**. The keyring-core swap (§3.1) removes the only dependency chain that forced 1.89 on Linux under the prior draft's `keyring` 4.2.0 choice. Add an MSRV CI job: `cargo +1.88 check --workspace --all-targets`, run on **macOS and Linux** (`07` §5.2, cross-cutting note in §7).
+Declared **1.88**. `anstyle` (1.66.0), `anstream` (1.66.0), and `inquire` (1.80.0) all declare a `rust-version` well below 1.88; `nucleo-matcher` declares none. None of the new picker/prompt/styled-output crates raise the MSRV. Add an MSRV CI job: `cargo +1.88 check --workspace --all-targets`, run on **macOS and Linux**.
 
 ### 3.3 Licenses
 
-Add `cargo-deny` with a license allowlist plus advisories to CI (`07` §5.4). Every dependency in this workspace offers a permissive option (MIT / Apache-2.0 / MPL-2.0 / BSD-family / Unicode). rmcp is Apache-2.0-only, which needs NOTICE handling in release archives (gated on Mason, §7.4).
+Add `cargo-deny` with a license allowlist plus advisories to CI. Every dependency in this workspace offers a permissive option (MIT / Apache-2.0 / MPL-2.0 / BSD-family / Unicode) — `nucleo-matcher`'s MPL-2.0 is file-level copyleft and already fits this list. rmcp is Apache-2.0-only, which needs NOTICE handling in release archives (gated on Mason, §7.4).
 
 ---
 
-## 4. Catalog format
+## 4. Kata format
 
-### 4.1 On-disk layout (unchanged unit)
+### 4.1 On-disk layout
 
 ```
-<catalog-root>/                    # Catalog.RunbookRoot() = path + optional sub_path
-  catalog.yaml                     # optional; v2 shared parameter groups (opt-in — §4.5)
-  <entry-dir>/                     # directory name = runbook name
-    runbook.yaml
-    script.sh                      # default; or whatever `script:` names
-    skill.md                       # only when type: skill (parsed, not executed)
-  scripts/                         # optional extra files; not scanned as runbooks
+~/.config/kadou/
+  kadou.toml              # may be empty; missing keys mean defaults
+  themes/                 # drop-in *.toml themes
+  kata/
+    starter/hello.sh      # written on first run; yours after that
+    sesami/                # `kadou get <git-url> --as sesami`; a git checkout
+      cc4-aaa.sh
+      ses-deploy.sh
+      device-log-metrics/
+        kata.sh
+        lib/  tests/  envs/
+      scripts/trigger-pipeline.sh
+~/.local/share/kadou/      # vault, keys
+~/.local/state/kadou/      # history, pending, proposed, mined, last-used args
+./kata/                    # project-local; found from cwd
 ```
 
-Loader scans **immediate subdirectories** of each catalog root that contain `runbook.yaml`. Nested catalogs are not supported (`01` §4.1). Extra files (Sesami `scripts/trigger-pipeline.sh`, `device-log-metrics/lib/`, tests) are preserved and not loaded as runbooks (`01` §7; decision 7).
+A kata is either:
 
-**Active vs staging.** Active catalogs are listed, described, and runnable (subject to risk). Inactive (non-staging) catalogs are skipped entirely, including for listing (`01` §2.6). **[rev, B14]** The **staging** catalogs `mined` and `proposed` are **reserved names** — not configurable, not renamable — and are the only inactive catalogs kadou will list/describe. They are listed/described **regardless of the risk ceiling** (§2 row 14) and are **never** runnable. The **only** way a staging draft becomes executable is:
+1. `<folder>/<name>.sh` (or any extension; the header decides), or
+2. `<folder>/<name>/kata.sh` plus anything else in that directory.
 
-```sh
-kadou catalog accept mined.<name> --into <user-catalog>   # --into defaults to "user"
-```
-
-which validates with the strict loader, shows a diff, prompts `y/N` (or `--yes`), and copies the runbook into an **existing user-owned catalog** under `~/.config/kadou/catalogs/<user-catalog>/`. There is **no** `active = true` shortcut on `mined` — flipping that flag would make every future `kadou mine approve` executable without a per-runbook review, which defeats the review gate (`06` §2.9–2.10; `07` C7).
-
-Drafts under `proposed/` are stored **flattened**, one level deep, so the same loader that scans catalog roots can scan the staging root too: `~/.local/share/kadou/catalogs/proposed/<catalog>--<name>/`, addressed as `proposed.<catalog>--<name>` (`07` §3.6 item 2, B14).
+Detection is by presence of `kata.sh`; nothing declares it (§4.3 has the full multi-file rule).
 
 ### 4.2 Identity
 
-- Catalog **`name`**: `[a-z0-9][a-z0-9-]*` recommended; stored in config; **stable**. `mined` and `proposed` are reserved and cannot be registered by an operator.
-- Runbook **id**: `<catalog>.<dirname>` if YAML `id` omitted. If YAML `id` is set, it must equal that.
-- **Aliases:** optional list, lowercase alnum / hyphen / dot, unique across loaded catalogs; first-loaded wins with a warning (`01` §2.7). CLI/MCP resolve id then alias. Sidebar shows `name`.
-- **Display name:** catalog-level, max 50 printable chars, never used in vault keys or history ids (`01` §4.5, §4.9).
+- `~/.config/kadou/kata/` is the library. Every immediate subdirectory is a **folder**. The folder name is the first id segment. There is no registry: a folder exists because it is on disk.
+- Ids are the path under `kata/` without the extension: `sesami/cc4-aaa`, `starter/hello`, `./deploy`. Nesting is allowed to any depth.
+- Id segments match `^[a-z0-9][a-z0-9-]*$`. Uppercase or underscore in a filename is a check error with a rename suggestion.
+- `/` is the separator, not `.` — ids are paths. Aliases have no slash and are unique across all folders, checked.
+- Reserved top-level names: `starter`, `proposed`, `mined`. `kadou get --as mined` is refused.
+- **Display:** `about` is the description everywhere (list, `kadou show`, MCP); there is no separate display-name field.
 
-Sesami import (recommended):
+### 4.3 Header spec
 
-```sh
-kadou catalog add --name jenkins-pipelines --path src ~/Bitbucket/sdo-dops-catalog
-```
+**YAML-in-comment, closed grammar, parsed by kadou's own ~200-line parser (not a general YAML library).** It looks like YAML so eyes and models parse it for free; it is small enough that a purpose-built parser is safer than a general one (`08` §3.1).
 
-IDs become `jenkins-pipelines.cc4-aaa`, not `src.cc4-aaa`. Operators who already registered as `src` keep `src.*` until they choose to re-add (`01` §4.9, decision 3). `sub_path` is how a monorepo installs without flattening. A later `kadou catalog rename --migrate-vault` (deferred; §13) would let an operator move `src` → `jenkins-pipelines` without losing saved runbook-scope values.
+**Placement and framing:**
 
-### 4.3 `runbook.yaml` v1 compatibility rule
+- Optional shebang on line 1.
+- The opening `# ---` must appear within the first 3 lines (allows a shebang plus one `# shellcheck` line).
+- Every line until the closing `# ---` starts with `#`. `#` alone is a blank line. A line that does not start with `#` before the close is an error ("header not closed").
+- Max 64 header lines. Tabs are an error with a fix. CRLF is an error with a fix. UTF-8 only.
+- The header is stripped by nothing; the interpreter sees comments.
+- The first comment paragraph *after* the closing `# ---` is `notes`: shown by `kadou show`, not required.
 
-A file **without** `format_version` is v1. The loader's known-key set is the **complete** union of every key that appears in the real Sesami catalog plus the Go product's schema — verified against 32/32 files on disk (`07` §6):
+**Keys.** Six keys, all lowercase, in any order. Unknown keys are errors.
 
-- **Top-level:** `name`, `id`, `version`, `description`, `risk_level`, `type`, `trigger`, `aliases`, `script`, `format_version`, `parameters`.
-- **Parameter:** `name`, `type`, `required`, `description`, `scope`, `default`, `secret`, `options`.
-
-Any other key is an unknown-key load error (decision 12). The v1→internal mapping:
-
-| v1 field | v2 internal | Rule |
-|---|---|---|
-| missing `format_version` | treat as 1 | Load; do not rewrite the file |
-| `name` missing | directory name | Then enforce name == dirname |
-| `name` present ≠ dirname | **load error** | Fixes the script-path footgun (`01` §4.1) |
-| `script` missing | `script.sh` | v1 files in Sesami all set `script: script.sh` |
-| `script` present | as written, relative to runbook dir | Must exist on disk |
-| `type` empty / `runbook` | executable | |
-| `type: skill` | parse, skip exec, require `skill.md` or warn-and-skip | Decision 9 |
-| `id` empty | `<catalog>.<dirname>` | |
-| `risk_level` empty / unknown | **load error** | Fail closed (decision 12). Today's `Exceeds` treated unknown as rank 0 (`01` §4.2) — do not copy that. |
-| `type: number` | integer, minimum 0 | Sesami `ses-argocd-sync.timeout` (`01` §4.3) |
-| `type: integer` | integer (negative ok) | Unused in Sesami; keep |
-| `type: file_path` / `resource_id` | string + original type recorded | Unused in Sesami; accept |
-| `secret: true` | flag | Never a type (decision 13) |
-| `scope` empty | save=local; resolve still global < catalog < runbook < input | `01` §4.4 |
-| **`default` present as a YAML string but the declared `type` is `boolean`, `integer`, `float`, or `number`** | **coerce**: `"true"`/`"false"` → boolean; numeric string → the declared numeric type | **[rev, B9]** All 176 Sesami defaults are YAML strings, including the 86 boolean defaults (`"false"`/`"true"`) and the `number` default `"60"`. A typed default field with no coercion fails 87 of them. An uncoercible string is a load error. |
-| **`required: true` with `default: ""`** | **does not satisfy required** | `ses-argocd-sync.app_name` is `required: true, default: "", scope: local` — an empty default is not a value. |
-| unknown keys | **load error** | Against the complete key list above. |
-
-v1 files are **not** rewritten on load. `kadou catalog migrate <name>` (slice, optional) can emit v2 + `catalog.yaml` shared params; it is not required to run Sesami.
-
-### 4.4 `runbook.yaml` v2
-
-```yaml
-format_version: 2          # required for v2
-name: disk-usage           # optional; defaults to directory
-version: "1.0.0"           # optional opaque string
-description: Show disk usage for a path
-risk_level: low            # required: low | medium | high | critical
-aliases: [du]
-# script omitted → script.sh
-parameters:
-  - name: path
-    type: string           # string | boolean | integer | float | select | multi_select
-    required: true
-    scope: local            # local | global | catalog | runbook
-    secret: false
-    default: "."
-    description: Path to measure
-    options: []            # required when type is select or multi_select
-```
-
-Author-facing types in v2: **six** (`string`, `boolean`, `integer`, `float`, `select`, `multi_select`). Import aliases `number`, `file_path`, `resource_id` exist only on the v1 path (`01` §3.1 "integer vs number", `03` §7 "too many knobs").
-
-`script:` if present must be a relative path **without** `..` escape from the runbook dir (reject absolute paths and `..`). Shared helpers live beside the catalog and are invoked from `script.sh` via `dirname "$0"` — that is the Sesami pattern and it keeps the exec contract one file (`01` §7).
-
-**Parameter name rule [new, B6]:** `^[a-z][a-z0-9_]*$`. The loader rejects any name whose ASCII-uppercase form is one of the reserved child-process names: `PATH`, `HOME`, `PWD`, `OLDPWD`, `IFS`, `SHELL`, `CDPATH`, `BASH_ENV`, `PS4`, or any name starting `LD_`, `DYLD_`, or `KADOU_`. All 24 distinct Sesami parameter names pass this rule, including `env` → `ENV` (non-interactive `sh` does not read `$ENV`, so that one is safe to keep).
-
-### 4.5 Optional `catalog.yaml` (v2 only)
-
-At `<catalog-root>/catalog.yaml`, shared parameters are grouped and **opt-in per runbook** — a runbook must declare `uses: [<group>]` to pull a group in (`07` B9). This prevents a Jenkins-credentials group from silently attaching to a non-Jenkins runbook:
-
-```yaml
-format_version: 2
-parameter_groups:
-  jenkins:
-    - name: jenkins_url
-      type: string
-      required: true
-      scope: global
-      default: "https://ci.example.com"
-      secret: false
-      description: Jenkins server URL
-    - name: jenkins_user
-      type: string
-      required: true
-      scope: global
-      secret: false
-      description: Jenkins username or service account ID
-    - name: jenkins_token
-      type: string
-      required: true
-      scope: global
-      secret: true
-      description: Jenkins API token
-```
-
-and in a runbook's `runbook.yaml`:
-
-```yaml
-format_version: 2
-uses: [jenkins]
-parameters:
-  - name: branch
-    type: string
-    default: dev
-```
-
-Merge rule: shared parameters named in `uses:` (in the listed order) load first; a runbook's own declaration of the same `name` **replaces the whole shared parameter**, not a field-by-field patch. v1 and v2 runbook files may coexist in one catalog, so a migration to `catalog.yaml` is incremental — a Sesami migration would add `uses: [jenkins]` to the 29 Jenkins-trigger runbooks and leave `clone-ses-repos`, `device-log-metrics`, and `ses-argocd-sync` without it, so they never require Jenkins credentials (`07` §6, C-list item on `catalog.yaml`).
-
-`catalog.yaml` does not change the catalog's stable `name` (that lives in config).
-
-### 4.6 Parameter resolution (carry as-is, with a scope lock for MCP)
-
-Order: vault global < vault catalog < vault runbook < CLI `--param` / TUI input / MCP `args` (`01` §2.5, §4.4). Then **filter to declared parameter names** so extra vault keys do not leak into the child env. Env var is `name.to_ascii_uppercase()` (subject to the reserved-name rejection in §4.4).
-
-**[rev, B2] MCP scope lock:** `args` sent through `run_runbook` may set only `local`- and `runbook`-scope parameter values. A `global`- or `catalog`-scope parameter can be supplied by an agent **only** as a per-parameter opt-in the runbook author sets (`agent_settable: false` is the default for `global`/`catalog` scope); attempting to set a locked-scope name in `args` is `invalid_args`. This closes the path where an agent sends `args: {"jenkins_url": "https://attacker.example"}` and the vault's `jenkins_token` is sent to that host under `-u user:token` (`07` C5). **MCP never writes the vault, in any scope** — persisting a resolved value is a human-CLI/TUI-only action (`kadou config set` / `kadou vault set`, or TUI save), tested explicitly in slice 5 (`07` C17, B2).
-
-Scopes (`01` §4.4):
-
-| Scope | Saved? | Vault key | MCP `args` may set it? |
+| Key | Required | Value | Notes |
 |---|---|---|---|
-| `global` | yes | `global.<param>` | No (locked; §4.6) |
-| `catalog` | yes | `catalog.<cat>.<param>` | No (locked; §4.6) |
-| `runbook` | yes | `catalog.<cat>.runbooks.<rb>.<param>` | Yes |
-| `local` | no | — | Yes |
+| `about` | yes | one line, 1–120 chars | the description everywhere: list, `kadou show`, MCP |
+| `risk` | yes | `low` `medium` `high` `critical` | four words, no scores |
+| `needs` | no | space-separated vault names; `name=default` allowed | see §4.4 |
+| `args` | no | block of arg lines, two-space indent | see §4.4 |
+| `alias` | no | space-separated short names | unique across all folders, checked |
+| `timeout` | no | `30s` `10m` `2h` | overrides `[exec] timeout` for this kata; never above 24h |
 
-Sesami: 87 `jenkins_*` global declarations, 146 runbook-scoped Jenkins toggles, 1 local (`ses-argocd-sync.app_name`). The catalog is unusable without global scope for a human operator (`01` §2.5); an agent still runs Sesami runbooks because the vault fills the global/catalog values it cannot set itself.
+Not keys: `name` (the filename), `id` (derived), `version` (git), `script` (the file), `type`, `format_version`, `scope`, `secret`.
 
-### 4.7 Loader strictness (decision 12)
+**Arg lines:**
 
-A catalog load **fails for that catalog only** (CLI/TUI/MCP refuse to activate it, but other active catalogs — including the embedded starter catalog — keep working) if any **active** runbook in it fails the checks in §4.3 (`07` B9, fixing the prior draft's "CLI/TUI/MCP all refuse to start" wording, which would have bricked the starter catalog too on an unrelated team catalog's bad file). Inactive non-staging catalogs are skipped entirely (`01` §2.6). Staging load errors fail that draft only (drop + audit). Warnings (non-fatal): alias collisions, skill missing `skill.md`.
+```
+<name>: <type>[ <options>][ = <default>][  # <help>]
+```
 
-Starter catalog is always loaded from embed and is guaranteed valid at compile time (tests).
+| Part | Rule |
+|---|---|
+| `name` | `^[a-z][a-z0-9_]*$`; env is its uppercase; rejects `path`, `home`, `pwd`, `ifs`, `shell`, `oldpwd`, `cdpath`, `bash_env`, `ps4`, anything becoming `LD_*`, `DYLD_*`, `KADOU_*` |
+| `type` | `text` `int` `bool` `select` |
+| `options` | only for `select`: `a\|b\|c`, words matching `^[A-Za-z0-9_.:/-]+$` |
+| `default` | bare token, `true`/`false`, integer, or `"quoted"`; `= ""` means optional and empty |
+| required | no default → required. That is the whole rule. |
+| `help` | free text to end of line after two spaces and `#` |
+
+Four arg types, not nine: `text`, `int`, `bool`, `select`. Sesami's real usage across 32 kata is `string` 142, `boolean` 86, `select` 5, `number` 1 — `float`, `file_path`, `resource_id`, `multi_select` are unused in every real catalog on disk, so they are not header types (`08` §3.4).
+
+Env serialization, per type: `text` as-is, `int` decimal, `bool` `true`/`false`, `select` the chosen option. Anything else in MCP `args` is `invalid_args`.
+
+Most kata have no args, or one; the block form is fine at one arg — there is no inline short form (one way, `08` §3.5).
+
+### 4.4 Needs and args resolution
+
+```
+# needs: jenkins_url=https://ci.example.com jenkins_user jenkins_token
+```
+
+- Each token is a vault name matching the arg name rule; env is the uppercase.
+- `name=default` gives a plain (non-secret) fallback used when the vault has no entry. A default in a git-tracked file is by definition not a secret, so a need with a default is always plain.
+- Resolution: vault entry, else default, else **missing**. Missing needs: CLI prompts once and saves (`kadou vault set` inline); MCP returns `error: missing_needs` with the names and the human command. Env of the agent host is never consulted.
+- Needs are one flat namespace across folders. Two folders that both want `token` collide on purpose: prefix (`jenkins_token`, `argocd_token`). `kadou check` errors when two folders declare the same need with different defaults.
+- `describe_kata` returns names and `needs_missing`. Never values.
+
+**Args are what an agent may set. Needs are what only the vault may supply.** There is no `agent_settable` flag and no scope lock to test, because the two sets never overlap by construction (decision 13; `08` §1 item 2). `run_kata` `args` naming a need is `invalid_args`.
+
+### 4.5 Project-local discovery and trust (decision D3)
+
+- From cwd, kadou walks up to the nearest `kata/` directory, stopping at the git root or `$HOME`. Kata found there have ids prefixed `./`: `./deploy`, `./db/migrate`.
+- A **human** can list, show, and run project-local kata immediately. Running one that has `needs:` is refused with "untrusted folder cannot use the vault; run `kadou trust`".
+- An **agent** does not see project-local kata at all until the folder is trusted. The threat is a cloned repository shipping `kata/tidy.sh` with `risk: low` and `needs: jenkins_token`.
+- `kadou trust` appends the folder's absolute path to `[trust] paths` in `kadou.toml`. `kadou trust --forget` removes it. This is direnv's `allow` model keyed by **path**, not by content hash — a folder of scripts changes constantly and re-trusting on every commit would train people to type `trust` reflexively.
+- MCP servers launched by an agent host inherit the host's cwd, so the same walk-up and trust gate apply.
+
+### 4.6 `kadou import` conversion rules
+
+`kadou import <dops-catalog-dir> --as <folder>` converts an old dops catalog once. It writes the new folder, prints per-file diffs, and refuses to overwrite an existing folder.
+
+- **The `REPO_ROOT`/`TRIGGER` idiom.** All 29 Sesami wrappers contain the identical two lines `REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"` and `TRIGGER="${REPO_ROOT}/scripts/trigger-pipeline.sh"` (verified 29 of 29 on disk). A single-file kata sits one level shallower than `src/<name>/script.sh`, so this **breaks** under a naive two-file copy. The importer replaces that pair with `TRIGGER="${KADOU_ROOT}/scripts/trigger-pipeline.sh"` and shows the diff. `KADOU_ROOT` is the folder root regardless of nesting, so a later reorganization (e.g. into `cc4/`) does not break it again.
+- **Boolean and numeric coercion.** CC4 booleans as strings (`"true"`) coerce to `bool = true` once, at conversion; an uncoercible value is a conversion error, not a load-time surprise (`type: number` timeout becomes `int = 60`; `required: true, default: ""` becomes a required arg with no default, which is what "required with empty default" meant).
+- **Multi-file kata.** `device-log-metrics` (with `lib/`, `tests/`, `envs/*.env`) converts to `sesami/device-log-metrics/kata.sh` (renamed from `script.sh`); `tests/` and `lib/` stay opaque. `clone-ses-repos` and `ses-argocd-sync` carry no helpers and become plain single files.
+- **Global params.** Three Sesami globals (`jenkins_url`, `jenkins_user`, `jenkins_token`) become one `needs:` line per kata; `jenkins_url` keeps its default; `jenkins_token` becomes a secret vault entry; `jenkins_user` is plain.
+- **Version and scope-saved values.** `version: 1.0.0` is dropped (git is the version). Runbook-scope saved values (Go's `catalog.*.runbooks.*`) are reported and either dropped or written as non-secret last-used args (§6.6, decision D5) — they are never silently kept as a vault scope, because scopes no longer exist.
+- **The 32-file compatibility check.** `kadou import ~/Bitbucket/sdo-dops-catalog/src --as sesami` writes the new folder; `kadou check` all 32 with zero errors; `kadou show` all 32; `kadou run --dry-run` all 32 with the same env names as today. This is the acceptance suite (decision 11).
+
+### 4.7 Check strictness (decision 12)
+
+`kadou check [folder|path] [-v]` is the loader. Cargo-shaped diagnostics: a line per error, a fix line per error, one summary line.
+
+```
+$ kadou check sesami
+error: unknown arg type `string`
+  --> kata/sesami/ses-argocd-sync.sh:8:14
+   |
+ 8 | #   app_name: string                  # ArgoCD application name
+   |               ^^^^^^ use `text`
+   = arg types are text, int, bool, select
+
+checked 32 kata in sesami   1 error  0 warnings
+```
+
+- A folder with any header error is listed with `✗` and none of its kata run; other folders — including `starter` — are unaffected.
+- Errors: unknown top-level key, unknown arg type, missing `about`/`risk`, tabs in the header, unclosed header, two folders declaring the same need with different defaults, `x.sh` and `x/kata.sh` colliding in one folder, alias collision.
+- Warnings: a need with no vault entry and no default (`kadou check` prints the fix: `kadou vault set <name>`), a file whose first comment block opens `# ---` and fails to parse (this is an **error**, not a warning — a bad header is loud, not silently treated as a helper file).
+- The bespoke parser's error messages are its user interface: a fixture corpus of bad headers under `tests/fixtures/headers/bad/` is snapshot-tested (`insta`) the way `tools/list` is snapshotted, per `08` §6.2 risk 1.
+- Starter is always loaded from embed and is guaranteed valid at compile time (tests).
 
 ---
 
@@ -352,59 +336,59 @@ Starter catalog is always loaded from embed and is guaranteed valid at compile t
 
 ### 5.1 Default surface
 
-`tools/list` returns **exactly these four tools**, in this order. No other tools. No per-runbook tools, including as an opt-in — the charter closed that list (`03` convention table; `02` §7.1 said opt-in for tiny catalogs, **`03` wins**). `06` §5.3's `mine_list` / `mine_get` / `mine_run` / `mine_review` are **not** registered (decision 15).
+`tools/list` returns **exactly these four tools**, in this order: `list_kata`, `describe_kata`, `run_kata`, `propose_kata`. No other tools, including as an opt-in. `06` §5.3's `mine_list` / `mine_get` / `mine_run` / `mine_review` are **not** registered (decision 15).
 
-**[rev, B1]** The server advertises **only the `tools` capability**. It does not declare `resources` or `prompts` at all, so a spec-compliant host never calls `resources/list` or `prompts/list` — cheaper than advertising those capabilities with empty lists. Catalog JSON, schema markdown, and `kadou://mine/*` are not registered (`01` §5.2; `02` §7.11; `03` §8; `06` §5.3 rejected as a connect-time dump). Agents that need a schema call `describe_runbook`.
+The server advertises **only the `tools` capability**. It does not declare `resources` or `prompts` at all, so a spec-compliant host never calls `resources/list` or `prompts/list`. Agents that need a schema call `describe_kata`.
 
-`prompts` is not advertised. `create-runbook` becomes the `propose_runbook` **tool**. `review-mined-runbook` is not a prompt (`06` §5.3). Skills are not prompts (`01` §9 Q9; `03` §8 rule 3). The session-mining **skill** is a `SKILL.md` that execs `kadou mine`, not an MCP prompt (`06` §5.2).
+`prompts` is not advertised. `propose_kata` is the create-kata path as a **tool**, not a prompt. Skills are not prompts. The session-mining skill is a `SKILL.md` that execs `kadou mine`, not an MCP prompt (`06` §5.2).
 
-`initialize` sends **no `instructions` field** — several hosts inject `instructions` into the system prompt, and any bytes spent there count against the budget just as much as `tools/list` (`07` §3.1). If a future revision adds `instructions`, it must be counted in the CI byte gate.
+`initialize` sends **no `instructions` field** — bytes spent there count against the budget the same as `tools/list`.
 
-Server name: `kadou`. Version: ldflags / `CARGO_PKG_VERSION`. Transport: **stdio default**. **[rev, B11]** HTTP is `--transport http --bind 127.0.0.1:8808` (loopback only; refuse `0.0.0.0`), and additionally: `allowed_origins` (rmcp's Origin allowlist) must be **non-empty** — rmcp 3.3.0 defaults it to empty, which *disables* Origin validation rather than enabling a safe default — and every HTTP request must present a per-launch random bearer token printed once at `kadou mcp serve --transport http` startup. Both are required before HTTP ships; until they are implemented, HTTP stays behind a build-time cargo feature and is not part of slice 5 (`03` §1 rule 6, §10 rule 5; `07` C14, B11).
+Server name: `kadou`. Version: `CARGO_PKG_VERSION`. Transport: **stdio default**. HTTP is `--transport http --bind 127.0.0.1:8808` (loopback only; refuse `0.0.0.0`), requires a non-empty `allowed_origins` and a per-launch random bearer token printed once at startup. Both are required before HTTP ships; until implemented, HTTP stays behind a build-time cargo feature (`03` §1 rule 6, §10 rule 5; `07` C14, B11).
 
 ### 5.2 Progressive disclosure
 
-1. **Connect:** four tool schemas (budget ≤ 2 800 bytes compact / ≤ 800 tokens).
-2. **`list_runbooks`:** id, name, catalog, one-line description, risk_level, aliases. Filterable. No parameter schemas (`03` §8 rules 2 and 5; Agent Skills layer 1, `02` §7.2).
-3. **`describe_runbook`:** args JSON Schema (secret values omitted, names listed separately), script path, sha256, script body (default on so agents can read before run — `03` §9 rule 3), capped at **16 KiB** with `script_truncated: true` past the cap, plus `catalog_root` and a list of sibling files the script references so an agent can read a shared helper like Sesami's 12.8 KB `trigger-pipeline.sh` with its own file tools (`07` C13, suggestion 2). This is layer 2.
-4. **`run_runbook`:** execute; result is last N lines + metadata. Script source is **not** in the result (`02` §7.2 layer 3; `03` §8 rule 4).
+1. **Connect:** four tool schemas (budget ≤ 2 800 bytes compact / ≤ 800 tokens; measured 2 028 B / ~507 tok).
+2. **`list_kata`:** id, about, risk. Filterable by `query`, `folder`, `risk`, `include_drafts`. No schemas (`03` §8 rules 2 and 5).
+3. **`describe_kata`:** `args` JSON Schema generated from the header (so the two cannot drift), `needs`, `needs_missing`, `source` (header first, capped at **16 KiB** with `source_truncated: true` past the cap — an agent pays for the schema once, as prose it can read, and once as `args` JSON Schema it can validate against), `file`, `sha256`, `files` (sibling helpers a kata references, e.g. Sesami's `scripts/trigger-pipeline.sh`, so an agent can read a shared helper with its own file tools). This is layer 2.
+4. **`run_kata`:** execute; result is last N lines + metadata. Source is **not** in the result (`03` §8 rule 4).
 
-Eager-loading clients (Cursor without tool search, naive CI) only ever see four schemas (`02` §7.8). There is nothing to defer.
+Eager-loading clients (Cursor without tool search, naive CI) only ever see four schemas.
 
-**[new, suggestion 1]** MCP tool annotations (`readOnlyHint` on `list_runbooks`/`describe_runbook`; `destructiveHint`/`openWorldHint` on `run_runbook`; `readOnlyHint: false`/`destructiveHint: false` on `propose_runbook`) are included on the wire — see `docs/design/tools-list.json`. Cost is folded into the 2 330-byte measured payload. Hosts use them to auto-approve reads.
+MCP tool annotations (`readOnlyHint` on `list_kata`/`describe_kata`; `destructiveHint`/`openWorldHint` on `run_kata`; `readOnlyHint: false`/`destructiveHint: false` on `propose_kata`) are included on the wire — see `docs/design/tools-list.json`. Cost is folded into the 2 028-byte measured payload.
 
-### 5.3 Multi-catalog addressing
+### 5.3 Folder addressing
 
-`id` is `catalog.runbook` or an alias. Optional `catalog` filter on list. Inactive catalogs absent from list **except** staging (`mined`, `proposed`) which are always listable/describable regardless of ceiling (decision 14–15; §4.1). A second catalog does not add tools (`01` §9 Q14). `run_runbook` on a staging id returns `error=staging` and does not execute.
+`id` is `folder/name`, `./name` (project-local), or an alias. Optional `folder` filter on `list_kata`. Non-trusted project-local folders are absent from an agent's view (§4.5) **except** drafts (`proposed`, `mined`), which are always listable/describable regardless of ceiling (decision 14–15; §4.1). A second folder does not add tools. `run_kata` on a draft id returns `error=draft` and does not execute.
 
 ### 5.4 Tool input schemas (JSON Schema draft 2020-12)
 
-**[rev, B1]** These are the **exact, hand-authored** `inputSchema` objects served on the wire — not a derive-macro rendering. The full `tools/list` payload, byte-for-byte, is checked in at `docs/design/tools-list.json` and covered by an `insta` snapshot test (§3.1). Compact size: **2 330 bytes** (≈ 583 tokens @ 4 B/token, ≈ 666 @ 3.5 B/token) — under the 2 800-byte CI gate with room to spare. Changes from the prior draft, applied to every tool: dropped `$schema` (MCP 2025-11-25 already defaults to 2020-12), dropped `$id` (no consumer, and a `dops://` URI scheme would have been a rename touchpoint), dropped `title` (duplicates `name`). Kept `additionalProperties: false` on every root.
+These are the **exact, hand-authored** `inputSchema` objects served on the wire. The full `tools/list` payload, byte-for-byte, is checked in at `docs/design/tools-list.json` and covered by an `insta` snapshot test (§3.1). Compact size: **2 028 bytes** (≈ 507 tokens @ 4 B/token, ≈ 579 @ 3.5 B/token) — under the 2 800-byte CI gate with ~772 bytes to spare. `additionalProperties: false` on every root; no `$schema`, `$id`, or `title`.
 
-#### `list_runbooks`
+#### `list_kata`
 
-Description: `Search runbooks visible to this agent. Returns id, one-line description, risk. No schemas.`
+Description: `Search kata (reviewed scripts) visible to this agent. Returns id, about, risk. No schemas.`
 
 ```json
 {
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "query": { "type": "string", "maxLength": 200, "description": "Substring of id, alias, or description." },
-    "catalog": { "type": "string" },
+    "query": { "type": "string", "maxLength": 200, "description": "Substring of id, alias, or about." },
+    "folder": { "type": "string" },
     "risk": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
     "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 },
     "offset": { "type": "integer", "minimum": 0, "default": 0 },
-    "include_staging": { "type": "boolean", "default": false, "description": "Also list non-runnable drafts (mined, proposed)." }
+    "include_drafts": { "type": "boolean", "default": false, "description": "Also list non-runnable drafts (mined, proposed)." }
   }
 }
 ```
 
-`[rev, B1]` `include_staging`'s description no longer cites internal doc sections or claims equivalence to `catalog=mined` (the prior wording was wrong: `include_staging` *adds* staging entries to the active list; `catalog=mined` lists *only* `mined`). `query` gained `maxLength: 200`.
+`folder` replaces `catalog`; `include_drafts` replaces `include_staging`.
 
-#### `describe_runbook`
+#### `describe_kata`
 
-Description: `Get one runbook: args schema, risk, script. Read it before run_runbook.`
+Description: `One kata: args schema, needs, risk, source. Read it before run_kata.`
 
 ```json
 {
@@ -412,15 +396,17 @@ Description: `Get one runbook: args schema, risk, script. Read it before run_run
   "additionalProperties": false,
   "required": ["id"],
   "properties": {
-    "id": { "type": "string", "description": "catalog.runbook or alias." },
-    "include_script": { "type": "boolean", "default": true }
+    "id": { "type": "string", "description": "folder/name, ./name, or alias." },
+    "include_source": { "type": "boolean", "default": true }
   }
 }
 ```
 
-#### `run_runbook`
+`include_script` is renamed `include_source` (the field it toggles is now `source`, §5.5).
 
-Description: `Run one runbook with args. Secrets come from the local vault; never pass them. Above your grant it does not run and returns pending_grant.`
+#### `run_kata`
+
+Description: `Run one kata with args. Secrets come from the vault as needs; never pass them. Above your grant it returns pending_grant.`
 
 ```json
 {
@@ -429,56 +415,44 @@ Description: `Run one runbook with args. Secrets come from the local vault; neve
   "required": ["id"],
   "properties": {
     "id": { "type": "string" },
-    "args": { "type": "object", "default": {}, "additionalProperties": true, "description": "Parameter name to value, per describe_runbook." },
+    "args": { "type": "object", "default": {}, "additionalProperties": true, "description": "Parameter name to value, per describe_kata." },
     "dry_run": { "type": "boolean", "default": false, "description": "Resolve args and env names without executing." }
   }
 }
 ```
 
-**[rev, B1, B6]** The prior `args` description's sentence "Do not send `_confirm_id` or `_confirm_word`; those fields do not exist" is removed — it primed the model with tokens for fields that were never in the schema and cost ~20 tokens on every connect for no benefit. There are still **no** `_confirm_id`/`_confirm_word` properties (`03` §10 rule 2; `01` §4.6). `dry_run`'s description now matches its actual behavior ("resolve args and env names", not "return the would-be command" — the result has no command field). Argument-to-environment **serialization** (not part of the wire schema, but part of the contract) is specified per type in §6.1. No execution-time-bound property is added to the schema; the timeout is server-side config (§6.1, B5).
+There are still **no** `_confirm_id`/`_confirm_word` properties (`03` §10 rule 2; `01` §4.6). Args-to-environment serialization is specified per type in §6.1. Needs can never appear in `args` by construction (§4.4) — reject an entry naming a need as `invalid_args`.
 
-Wrong args: `status=error`, `error=invalid_args`, `isError: true`, plus the parameter schema from describe (so the model can retry without a round-trip to describe if it skipped it).
+#### `propose_kata`
 
-#### `propose_runbook`
-
-Description: `Draft a new runbook for human review. Writes files and returns a diff; never registers or runs it.`
+Description: `Draft a kata (one file with a header) for human review. Never registers or runs it.`
 
 ```json
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["catalog", "name", "description", "risk_level"],
+  "required": ["id", "source"],
   "properties": {
-    "catalog": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
-    "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "maxLength": 64 },
-    "description": { "type": "string", "minLength": 1, "maxLength": 200 },
-    "risk_level": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
-    "yaml": { "type": "string", "maxLength": 16384 },
-    "script": { "type": "string", "maxLength": 65536 }
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)+$", "maxLength": 128 },
+    "source": { "type": "string", "maxLength": 65536 }
   }
 }
 ```
 
-**[rev, B7]** Changes from the prior draft:
-- `catalog` gained a `pattern`. The server additionally canonicalizes the resolved path and refuses anything outside `~/.local/share/kadou/catalogs/proposed/`, closing a path-traversal write via `catalog: "../../../.ssh"`.
-- `name` gained `maxLength: 64`; `description` gained `maxLength: 200`.
-- `risk_level` is now **required with no default** — the prior silent `default: "low"` hid an unreviewed agent-authored script's risk choice from the human reviewer, the same reasoning `06` §4.4 applies to mined drafts.
-- If `yaml` is supplied and conflicts with `name`/`description`/`risk_level`, the server rejects the call rather than silently picking one; `yaml` must itself pass the strict loader at propose time.
-- Re-proposing the same `catalog`/`name` overwrites the prior draft, and the diff is computed against the currently **accepted** runbook when one exists, otherwise against `/dev/null`.
-- The result field `pending_id` is renamed **`proposal_id`** — the prior draft reused `pending_id` for both a grant request (a UUID) and a proposal (`catalog.name`), which is two different meanings on one field name (§5.5).
+**[shape]** This schema shrinks from six properties (`catalog`, `name`, `description`, `risk_level`, `yaml`, `script`) to two (`id`, `source`) — one string in, one file out. The server parses the header from `source` before writing; a bad header is `invalid_args` with the same diagnostic text `kadou check` prints. `id`'s `pattern` requires at least one `/` (folder + name) and the server additionally canonicalizes the resolved path and refuses anything outside `~/.local/state/kadou/proposed/`, closing a path-traversal write. Re-proposing the same `id` overwrites the prior draft, and the diff is computed against the currently **accepted** kata when one exists, otherwise against `/dev/null`. `risk` is inside the header (§4.3), so there is no separate `risk_level` property to default silently — an unreviewed agent-authored kata's risk choice is never hidden from the human reviewer.
 
 No `accept` tool (`03` §11 rule 2).
 
 ### 5.5 Result shapes
 
-**[rev, B1]** All tool results are a **single JSON text content block**, **compact** (not pretty-printed — pretty adds ~28% for no benefit to a model), UTF-8. Every result that represents an input error, a lookup failure, or a runtime failure sets `isError: true` (MCP 2025-11-25 guidance), with `error` one of `no_such_runbook`, `invalid_args`, `staging`, `timeout`. A non-zero script exit is `status: failed` with `isError: true`. Secrets in vault values are redacted from `output` if they appear (`02` §7.11; Atuin `secrets_filter` lesson; see also §6.6 for the fuller redaction rule).
+All tool results are a **single JSON text content block**, **compact** (not pretty-printed), UTF-8. Every result that represents an input error, a lookup failure, or a runtime failure sets `isError: true`, with `error` one of `no_such_kata`, `invalid_args`, `missing_needs`, `draft`, `timeout`. A non-zero script exit is `status: failed` with `isError: true`.
 
-#### `list_runbooks` result
+#### `list_kata` result
 
 ```json
 {
-  "runbooks": [
-    { "id": "starter.disk-usage", "name": "disk-usage", "catalog": "starter", "description": "Show disk usage for a path", "risk_level": "low" }
+  "kata": [
+    { "id": "starter/disk-usage", "about": "Disk usage of a directory", "risk": "low" }
   ],
   "total": 5,
   "offset": 0,
@@ -487,54 +461,49 @@ No `accept` tool (`03` §11 rule 2).
 }
 ```
 
-`truncated` is true when `offset+len < total`. Hidden (above-ceiling) runbooks are absent, not listed as denied (`03` §10 rule 3). Staging entries set `staging: true` and never appear unless `include_staging` or `catalog` names a staging catalog. `aliases: []` and `staging: false` are **omitted**, not printed, on entries that don't need them (`07` §3.3). List payloads still have **no scripts** (`06` §5.3 mine_list). `total: 5` matches the five starter runbooks in §7.6 (the prior draft's example said 6 — fixed).
+`truncated` is true when `offset+len < total`. Hidden (above-ceiling, or untrusted project-local) kata are absent, not listed as denied. Draft entries set `draft: true` and never appear unless `include_drafts` or `folder` names `mined`/`proposed`. `aliases: []` and `draft: false` are **omitted**, not printed, on entries that don't need them.
 
-#### `describe_runbook` result
+#### `describe_kata` result
 
 ```json
 {
-  "id": "jenkins-pipelines.cc4-aaa",
-  "name": "cc4-aaa",
-  "catalog": "jenkins-pipelines",
-  "description": "Trigger a SES/CC4/cc4-aaa branch pipeline",
-  "risk_level": "medium",
-  "version": "1.0.0",
-  "script_path": "/abs/path/src/cc4-aaa/script.sh",
-  "script_sha256": "sha256:…",
-  "script": "#!/bin/sh\nset -eu\n…",
-  "script_truncated": false,
-  "catalog_root": "/abs/path/src",
-  "helper_files": ["scripts/trigger-pipeline.sh"],
-  "args_schema": {
+  "id": "sesami/cc4-aaa",
+  "folder": "sesami",
+  "about": "Trigger a SES/CC4/cc4-aaa branch pipeline",
+  "risk": "medium",
+  "file": "/Users/mason/.config/kadou/kata/sesami/cc4-aaa.sh",
+  "sha256": "sha256:4b1c…",
+  "needs": ["jenkins_url", "jenkins_user", "jenkins_token"],
+  "needs_missing": [],
+  "args": {
     "type": "object",
+    "additionalProperties": false,
     "properties": {
-      "branch": { "type": "string", "description": "Branch, release tag, or PR to trigger", "default": "dev" }
+      "branch": { "type": "string", "default": "dev", "description": "Branch, tag, or PR to trigger" },
+      "version": { "type": "string", "default": "", "description": "Image tag; blank falls back to branch" },
+      "send_email": { "type": "boolean", "default": true },
+      "publish_image": { "type": "boolean", "default": true },
+      "publish_api": { "type": "boolean", "default": true },
+      "allow_image_override": { "type": "boolean", "default": false }
     },
     "required": []
   },
-  "secret_param_names": ["jenkins_token"],
-  "resolved": ["jenkins_url", "jenkins_user"]
+  "source": "#!/bin/sh\n# ---\n# about: Trigger a SES/CC4/cc4-aaa branch pipeline\n# risk:  medium\n# needs: jenkins_url=https://ci.example.com jenkins_user jenkins_token\n# args:\n#   branch: text = dev …",
+  "source_truncated": false,
+  "files": ["scripts/trigger-pipeline.sh"]
 }
 ```
 
-**[rev, B1]** Changes from the prior draft, which duplicated every parameter as both a flat field and a `json_schema` object (6 071 pretty bytes / ~1 518 tokens for one describe):
-- Parameters collapse into **one** `args_schema` JSON Schema object (compact: **1 408 bytes** for this example) instead of a flat-field-plus-`json_schema` list per parameter.
-- `secret_param_names` lists secret parameter names (never values); `resolved` lists **names only** (never values) of parameters that already have a saved vault value — those names are marked **not required** in `args_schema` even if the runbook YAML says `required: true`, so the agent does not try to resend a global credential it cannot see.
-- `visible_to_agent` is dropped — a describable id is definitionally visible (an above-ceiling or unknown id returns `no_such_runbook`, never a describe result with `visible_to_agent: false`).
-- `parameters` (the old flat array) is dropped in favor of `args_schema`.
+`needs` lists names only, never values. `needs_missing` tells the agent the run will fail before it tries, and the fix is a human command (`kadou vault set <name>`). Unknown id or above-ceiling: `isError: true`, `error: no_such_kata` (do not distinguish hidden vs missing). Draft ids **are** describable (redacted source) so agents can review drafts. `include_source: false` drops `source` but keeps `file` and `sha256`.
 
-`include_script: false` drops `script` but keeps `script_path` and `script_sha256`.
-
-Unknown id or above-ceiling: `isError: true`, `error: no_such_runbook` (do not distinguish hidden vs missing — same as load-time hide). Staging ids **are** describable (redacted yaml + script) so agents can review drafts (`06` §5.3 mine_get). `describe_runbook` on staging must not include source session bodies, cwd, or raw commands (`06` §4.1).
-
-#### `run_runbook` results
+#### `run_kata` results
 
 Success / failure after exec:
 
 ```json
 {
   "status": "success",
-  "runbook_id": "starter.disk-usage",
+  "id": "starter/disk-usage",
   "exit_code": 0,
   "duration_ms": 42,
   "output_lines": 8,
@@ -546,36 +515,36 @@ Success / failure after exec:
 }
 ```
 
-`status` is `success` when exit_code is 0, `failed` otherwise, `cancelled` on ctx cancel, or **`running`** when `mcp.max_wait` elapses before the process exits (§6.1) — in that case `history_id` and `log_path` are still returned so the agent can tail the (plain-text, fresh-tier) log with its own file tools. `summary` is defined as the **last non-empty output line, truncated to 200 chars**. **[rev, B3]** `log_path` for a fresh (≤7-day) run is a **plain text file**, not a path into a gzip tar archive — the prior draft's `….log.gz#<uuid>.log` pointed at a tar entry no agent file tool can open (`07` C15).
+`status` is `success` when exit_code is 0, `failed` otherwise, `cancelled` on ctx cancel, or **`running`** when `mcp.max_wait` elapses before the process exits (§6.1). `summary` is the last non-empty output line, truncated to 200 chars. `log_path` for a fresh (≤7-day) run is a **plain text file**.
 
-Pending grant (high/critical, visible, no allow-list):
+Pending grant (high/critical, visible, no allow-list) — **[tui]** carries `approve` and `expires`, new fields so the agent's next message to the human is one line (`09` §4.2):
 
 ```json
 {
   "status": "pending_grant",
-  "runbook_id": "jenkins-pipelines.ses-deploy",
-  "risk_level": "critical",
-  "pending_id": "<uuid>",
-  "pending_path": "/Users/…/.local/state/kadou/pending/<uuid>.json",
-  "reason": "high risk; not in [agent].allowed_runbooks"
+  "id": "sesami/ses-deploy",
+  "risk": "critical",
+  "pending_id": "7c1e…",
+  "pending_path": "/Users/…/.local/state/kadou/pending/7c1e….json",
+  "approve": "kadou grant approve 7c1e",
+  "expires": "2026-09-12T14:02:00Z",
+  "reason": "critical; not in [agent] allow"
 }
 ```
-
-**[rev, B4]** `reason` no longer describes a state that §6.2's visibility formula makes unreachable (the prior draft's "critical exceeds agent allow_risk low; queued" could never actually be returned, because an agent whose ceiling is below `critical` never sees the runbook in the first place — see decision 4 / `07` C3). `pending_path` is new: it lets the agent (or a human, via the CLI) inspect the pending record's outcome after approval without a fifth MCP tool (§6.4).
 
 Dry-run:
 
 ```json
 {
   "status": "dry_run",
-  "runbook_id": "jenkins-pipelines.cc4-aaa",
+  "id": "sesami/cc4-aaa",
   "env_names": ["JENKINS_URL", "JENKINS_USER", "JENKINS_TOKEN", "BRANCH", "VERSION", "SEND_EMAIL", "PUBLISH_IMAGE", "PUBLISH_API", "ALLOW_IMAGE_OVERRIDE"],
   "env_public": { "BRANCH": "dev", "VERSION": "" },
   "secret_env_names": ["JENKINS_TOKEN"]
 }
 ```
 
-`env_public` never includes secret values; it **does** include vault-resolved non-secret globals like `JENKINS_USER`, stated explicitly here so that is not a surprise (`07` §3.3).
+`env_public` never includes secret values; it **does** include vault-resolved non-secret needs like `JENKINS_USER`.
 
 Invalid args:
 
@@ -584,38 +553,51 @@ Invalid args:
   "status": "error",
   "error": "invalid_args",
   "isError": true,
-  "message": "unknown arg \"cmd\"; runbooks do not take a shell string",
+  "message": "unknown arg \"cmd\"; kata do not take a shell string",
   "expected": { "type": "object", "properties": { "…": {} }, "required": ["branch"] }
 }
 ```
 
-Staging (mined/proposed) — **does not run**, even with a grant (`06` §2.9, decision 15):
+Missing needs:
 
 ```json
 {
   "status": "error",
-  "error": "staging",
+  "error": "missing_needs",
   "isError": true,
-  "runbook_id": "mined.k8s-pod-logs",
-  "message": "staging catalog; a human must run: kadou catalog accept mined.k8s-pod-logs --into <catalog>"
+  "id": "sesami/cc4-aaa",
+  "needs_missing": ["jenkins_token"],
+  "message": "kadou vault set jenkins_token"
 }
 ```
 
-Truncation: last **50** lines (`mcp.max_output_lines` in config, default 50, max 200; kept configurable per `07` suggestion 5). If UTF-8 bytes of `output` would exceed 8192, cut to the last whole lines that fit and set `truncated: true`; lines are lossy-UTF-8 decoded and individually capped at 4 KiB (`01` §4.11; `02` §7.4; `03` §8 rule 4; `07` §4.1).
+Draft (mined/proposed) — **does not run**, even with a grant:
 
-#### `propose_runbook` result
+```json
+{
+  "status": "error",
+  "error": "draft",
+  "isError": true,
+  "id": "mined/k8s-pod-logs",
+  "message": "draft; a human must run: kadou accept mined/k8s-pod-logs"
+}
+```
+
+Truncation: last **50** lines (`mcp.max_output_lines` in config, default 50, max 200). If UTF-8 bytes of `output` would exceed 8192, cut to the last whole lines that fit and set `truncated: true`.
+
+#### `propose_kata` result
 
 ```json
 {
   "status": "proposed",
-  "proposal_id": "user.my-check",
-  "path": "/Users/…/.local/share/kadou/catalogs/proposed/user--my-check/",
-  "diff": "--- /dev/null\n+++ runbook.yaml\n…",
-  "accept": "kadou catalog accept user.my-check --into user"
+  "id": "proposed/sesami/argocd-sync",
+  "path": "/Users/…/.local/state/kadou/proposed/sesami/argocd-sync.sh",
+  "diff": "--- /dev/null\n+++ sesami/argocd-sync.sh\n…",
+  "accept": "kadou accept sesami/argocd-sync"
 }
 ```
 
-`pending_id` → **`proposal_id`** (B7); `path` moved under the flattened staging layout (§4.1, B14).
+**[shape, decision D]** `path` and `accept` always point at a location under the state dir and, on accept, a **user-owned** folder — `kadou accept` refuses a target that is a git-backed folder's working tree (§6.7). The draft never proposes writing into a `kadou get`-installed checkout.
 
 ### 5.6 Agent config snippet (docs, not a tool)
 
@@ -630,7 +612,7 @@ Truncation: last **50** lines (`mcp.max_output_lines` in config, default 50, max
 }
 ```
 
-(`03` §3 rule 5.) Host-side tool ids follow the server name, e.g. `mcp__kadou__run_runbook` in Claude Code — see the rename note in §10 of the review, folded into this document throughout.
+Host-side tool ids follow the server name, e.g. `mcp__kadou__run_kata` in Claude Code.
 
 ---
 
@@ -639,299 +621,348 @@ Truncation: last **50** lines (`mcp.max_output_lines` in config, default 50, max
 ### 6.1 Exec contract
 
 ```
-argv:  /bin/sh <abs-runbook-dir>/<script>
-cwd:   <abs-runbook-dir>
-env:   TUI/CLI: parent environ + declared params. MCP: an allowlist + declared params (below).
+argv:  <interpreter-from-shebang> <abs-kata-path>, or /bin/sh <abs-kata-path> with no shebang
+cwd:   the kata's directory (folder form) or the folder containing the file
 stdin: closed (/dev/null; never the MCP server's own stdin)
 stdout/stderr: piped (never inherited), merged line stream to history log + interface
 cancel: notifications/cancelled, stdio EOF, or exec.timeout → SIGTERM the process group, SIGKILL after 5s
 ```
 
-- No flags-to-script adapter. No JSON blob default input (`03` §7 rule 3).
-- `script:` cannot escape the runbook directory (`..` rejected). Shared helpers are reached from inside `script.sh` (`01` §7; Sesami `REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"` in `src/cc4-aaa/script.sh`).
-- Windows / `script.ps1` deferred (`01` §3.2; `03` non-goals).
-- `dry_run` does not spawn. It returns env names, not a command line (§5.4).
-- `/bin/sh` is dash on Linux and bash-in-POSIX-mode on macOS; test both where CI runs both platforms (§9 cross-cutting).
+**[tui, D2]** The shebang is the runtime. No shebang means `/bin/sh`. A `#` header works unchanged in sh, bash, python, ruby, perl; `kadou check` warns when the declared interpreter is not on `PATH`. The starter kata stay `#!/bin/sh`.
 
-**[rev, B5] MCP child environment.** For `interface = mcp`, the child does **not** inherit the agent host's full environment (which routinely carries API keys and cloud/CI tokens that redaction — aimed only at vault values — cannot know about; `07` C4, §4.2). It starts from an explicit allowlist plus declared params:
+- No flags-to-script adapter. No JSON blob default input (`03` §7 rule 3).
+- Shared helpers are reached from inside the kata file via `$KADOU_ROOT` (§4.6).
+- `KADOU_DIR` equals cwd. `KADOU_ROOT` is the top-level folder under `kata/` (the git checkout root for a `kadou get` folder). `KADOU_FILE` is the kata's absolute path. `KADOU_ID` is the id.
+- Windows / `.ps1` deferred (`01` §3.2; `03` non-goals).
+- `dry_run` does not spawn. It returns env names, not a command line (§5.4).
+- `/bin/sh` is dash on Linux and bash-in-POSIX-mode on macOS; test both where CI runs both platforms.
+
+**MCP child environment.** For MCP, the child does **not** inherit the agent host's full environment. It starts from an explicit allowlist plus declared args and needs:
 
 ```
 PATH HOME USER LOGNAME SHELL LANG LC_* TZ TMPDIR SSH_AUTH_SOCK KUBECONFIG
 ```
 
-plus `TERM=dumb`, plus an operator-editable `[exec] pass_env = []` for anything else a team catalog genuinely needs (verified sufficient for Sesami: the cc4/`ses-*` wrappers need only declared params + `PATH`/`HOME`; `clone-ses-repos` needs `SSH_AUTH_SOCK` to clone over SSH; `ses-argocd-sync` needs `KUBECONFIG` or `~/.kube/config` via `HOME`; `device-log-metrics` reads its own `envs/*.env` files, unaffected by parent env). **CLI and TUI keep the full parent environment** — that is a human's own shell context, not an agent's (`07` §4.2).
+plus `TERM=dumb`, plus `KADOU_ID`/`KADOU_FILE`/`KADOU_DIR`/`KADOU_ROOT`, plus an operator-editable `[exec] pass_env = []` for anything else a team folder genuinely needs (verified sufficient for Sesami: `clone-ses-repos` needs `SSH_AUTH_SOCK`; `ses-argocd-sync` needs `KUBECONFIG` or `~/.kube/config` via `HOME`; `device-log-metrics` reads its own `envs/*.env` files, unaffected by parent env). **CLI keeps the full parent environment** — that is a human's own shell context, not an agent's.
 
-**[rev, B5] Timeout and lifecycle.** `[exec] timeout` bounds a single run (default 30 min — Sesami's `trigger-pipeline.sh` streams a Jenkins console until the build ends, with only a `QUEUE_TIMEOUT=300` on the queue wait, not the whole run). `[mcp] max_wait` (default 50 s) bounds how long an MCP call blocks before returning `status: running` with `history_id`/`log_path` so the agent can poll the log itself — no fifth tool. A **per-server concurrency limit** (default 2) caps parallel runs; one run at a time per runbook id, or the call returns `busy`. Cancellation — via `notifications/cancelled`, client disconnect (stdio EOF), or `exec.timeout` — sends `SIGTERM` to the process group, then `SIGKILL` after a 5 s grace period (Go's own `WaitDelay` is 2 s; kadou's is slightly longer to give well-behaved scripts a chance to flush). stdin is `/dev/null`, tested as an invariant (a script that runs `cat` must not consume JSON-RPC frames on stdin); stdout/stderr are piped, tested as an invariant (one stray byte on the MCP server's own stdout corrupts the stdio transport).
+**Timeout and lifecycle.** `[exec] timeout` bounds a single run (default 30 min); a kata's own `timeout:` header key may lower or raise this bound up to 24h. `[mcp] max_wait` (default 50 s) bounds how long an MCP call blocks before returning `status: running` with `history_id`/`log_path` so the agent can poll the log itself. A **per-server concurrency limit** (default 2) caps parallel runs; one run at a time per kata id, or the call returns `busy`. Cancellation sends `SIGTERM` to the process group, then `SIGKILL` after a 5 s grace period. stdin is `/dev/null` (tested invariant); stdout/stderr are piped (tested invariant — one stray byte on the MCP server's own stdout corrupts the stdio transport).
 
-**[rev, B6] Args → env serialization**, specified per type (previously undefined; Go's `fmt.Sprintf("%v", v)` turns a `multi_select` array into `"[a b]"`, which is not specified anywhere as the contract):
+**Args → env serialization**, specified per type (§4.3):
 
-| Parameter type | Env value |
+| Arg type | Env value |
 |---|---|
-| `string` | as-is |
-| `boolean` | `"true"` / `"false"` |
-| `integer` / `float` | JSON number's text form |
+| `text` | as-is |
+| `int` | decimal text form |
+| `bool` | `"true"` / `"false"` |
 | `select` | the chosen value, validated against `options` |
-| `multi_select` | comma-joined selected values; the loader rejects any `options` entry containing a comma |
-| object / null / array (other than `multi_select`'s own encoding) | rejected as `invalid_args` |
+| object / null / array | rejected as `invalid_args` |
 
-Reject `args` entries naming a secret parameter, or a `global`/`catalog`-scope parameter without `agent_settable: true` (§4.6, B2).
+Reject `args` entries naming a need (§4.4) — the split is structural, not a runtime scope check.
 
 ### 6.2 Risk levels and ceilings
 
-Order: `low < medium < high < critical`. A runbook **at** the ceiling is allowed (`01` §4.6 `Exceeds` is strict greater-than).
-
-**[rev, B4]** Stated precisely, matching Go semantics (catalog policy *replaces* the global default rather than intersecting with it):
+Order: `low < medium < high < critical`. A kata **at** the ceiling is allowed (strict greater-than is the "exceeds" test).
 
 ```
-human_ceiling(c)  = c.policy.max_risk_level ?? defaults.max_risk_level
-agent_ceiling(c)  = min(agent.allow_risk, --allow-risk, human_ceiling(c))
-visible(rb, c)    = rank(rb.risk_level) ≤ agent_ceiling(c)     [MCP]
-                  = rank(rb.risk_level) ≤ human_ceiling(c)     [TUI/CLI]
+human_ceiling(f)  = folder[f].max_risk ?? max_risk
+agent_ceiling(f)  = min(agent.max_risk, folder[f].agent_max_risk ?? agent.max_risk, --max-risk, human_ceiling(f))
+visible(k, f)     = trusted(f) and rank(k.risk) ≤ agent_ceiling(f)     [MCP]
+                  = rank(k.risk) ≤ human_ceiling(f)                    [CLI]
 ```
 
 | Ceiling | Default | Where |
 |---|---|---|
-| Human global | `medium` | `config.toml` `[defaults] max_risk_level` |
-| Catalog | unset → human global (replaces it, does not intersect) | `[[catalogs]] policy.max_risk_level` |
-| Agent | `low` | `[agent] allow_risk` |
+| Human global | `medium` | `kadou.toml` `max_risk` |
+| Folder | unset → human global (replaces it, does not intersect) | `[folder.<name>] max_risk` |
+| Agent | `low` | `[agent] max_risk` |
 
-`kadou mcp serve --allow-risk` may only **narrow**. It cannot exceed `[agent].allow_risk` or `agent_ceiling(c)` above (`03` §10 rule 1; `01` §4.6 MCP vs LoadAll bug). `allow_risk`/`allowed_runbooks` never raise visibility — they only decide run-vs-`pending_grant` for a runbook that is already visible and high/critical (§6.3).
+`kadou mcp serve --max-risk` may only **narrow**. It cannot exceed `[agent].max_risk` or `agent_ceiling(f)` above. `[agent].max_risk`/`[agent].allow` never raise visibility — they only decide run-vs-`pending_grant` for a kata that is already visible and high/critical (§6.3).
 
-At the **default** ceilings on the Sesami catalog, an agent sees exactly **five** runbooks: `clone-ses-repos`, `device-log-metrics`, `helm-package`, `sdo-k8s-ses`, `ses-automation`. **Three of those trigger Jenkins with the vault token** (`helm-package`, `sdo-k8s-ses`, `ses-automation`). "Agent default low" is therefore not "agent cannot touch CI" — which is why the env allowlist, redaction, and MCP scope lock (§6.1, §6.5, §6.6) must ship no later than the same slice as `run_runbook` (§9). `ses-release-build` (high) and `ses-deploy` (critical) are invisible to a default agent and visible to a human only after the catalog policy or global ceiling is raised (Sesami mix: medium 25, low 5, high 1, critical 1).
+**Project-local trust is a visibility term, not a ceiling.** An untrusted `./kata` is invisible to an agent regardless of risk (§4.5); a human can list, show, and run it, just not with the vault.
 
-Starter catalog contains only `low` (`03` §10 rule 6).
+At the **default** ceilings on the Sesami folder, an agent sees exactly **five** kata (the same five that are `risk: low`). Three of those trigger Jenkins with the vault token — "agent default low" is not "agent cannot touch CI", which is why the env allowlist, redaction, and MCP scope split (§6.1, §6.5, §6.6) must ship no later than the same slice as `run_kata` (§9).
+
+Starter kata contain only `low` (`03` §10 rule 6).
 
 ### 6.3 Unified confirm protocol (decision 4)
 
-| Level | TUI | CLI | MCP |
-|---|---|---|---|
-| low / medium | none | none | none |
-| high | Overlay: Yes / **No** (default No). `y` accepts, `n`/`Esc` cancels | Requires `--confirm <runbook-id>` | If **visible** (§6.2), id ∈ `[agent].allowed_runbooks`, **and** ceiling ≥ high: run. Else `pending_grant`. |
-| critical | Overlay: type the runbook id | Requires `--confirm <runbook-id>` | If **visible**, id ∈ `[agent].allowed_runbooks`, **and** ceiling ≥ critical: run. Else `pending_grant`. |
+| Level | CLI | MCP |
+|---|---|---|
+| low / medium | none | none |
+| high | On a TTY: `run? [y/N]`, default No. Otherwise: requires `--confirm <id>`. | If **visible** (§6.2), id ∈ `[agent].allow`, **and** ceiling ≥ high: run. Else `pending_grant`. |
+| critical | On a TTY: type the kata id. Otherwise: requires `--confirm <id>`. | If **visible**, id ∈ `[agent].allow`, **and** ceiling ≥ critical: run. Else `pending_grant`. |
 
-The model cannot mint a grant. There is no confirm field in any tool schema (`03` §10 rule 2). Approving a pending high **or** critical record still requires `--confirm <id>` at approval time (§6.4) — the prior draft's §6.4 only mentioned this for critical.
+**[tui]** There is no TUI face; the TTY prompt *is* the interactive confirm, and `--confirm <id>` is the non-interactive form for both — one protocol, two faces instead of three. `kadou run <id> --ask` prompts for every arg even when all required args are supplied, walking the whole form (§7.2).
 
-CLI without `--confirm` on high/critical prints the summary and exits 2 with the exact `--confirm` line to copy — that is a human, not an agent, path.
+The model cannot mint a grant. There is no confirm field in any tool schema (`03` §10 rule 2). Approving a pending high **or** critical record still requires `--confirm <id>` at approval time (§6.4).
+
+CLI without `--confirm` on high/critical, non-TTY, prints the summary and exits 2 with the exact `--confirm` line to copy:
+
+```
+$ kadou run sesami/ses-deploy version=25.6.1.2 oke_cluster=uat </dev/null
+error: sesami/ses-deploy is critical and needs confirmation
+  = kadou run sesami/ses-deploy version=25.6.1.2 oke_cluster=uat --confirm sesami/ses-deploy
+```
 
 ### 6.4 Human grant flow (agents)
 
-**[rev, B4]** The pending record and flow are fully specified (the prior draft left TTL, dedupe, script pinning, and outcome-visibility undefined):
-
-1. Agent `run_runbook` on a **visible** high/critical id (§6.2) without a grant → write `~/.local/state/kadou/pending/<pending_id>.json` with: runbook id, args (secrets stripped), requester `mcp`, `mcp_client` (self-reported `clientInfo.name` — a label, not an identity), timestamp, **`script_sha256`** and the **catalog's git HEAD** (when the catalog is git-backed) pinned at request time. Return `pending_grant` with `pending_id` and `pending_path` (§5.5).
+1. Agent `run_kata` on a **visible** high/critical id (§6.2) without a grant → write `~/.local/state/kadou/pending/<pending_id>.json` with: id, args (needs never included), requester `mcp`, `mcp_client` (self-reported `clientInfo.name` — a label, not an identity), timestamp, **`sha256`** and the **folder's git HEAD** (when git-backed) pinned at request time. Return `pending_grant` with `pending_id`, `pending_path`, **`approve`**, and **`expires`** (§5.5).
 2. **TTL:** the record expires after **24 hours**. `kadou grant list` shows expired records as expired; `kadou grant approve` on an expired record fails.
-3. **Dedupe:** a second `run_runbook` call with the same `(runbook_id, args_hash)` while a pending record is outstanding returns the existing `pending_id` rather than creating a duplicate.
-4. Human sees pending in TUI (badge + palette "Pending grants") or `kadou grant list`, which shows the **args and a script diff since the request** (in case a `git pull` landed a different script than what was requested).
-5. `kadou grant approve <pending_id>` **one-shot executes** that pending record (still subject to human ceiling + TUI/CLI confirm for high or critical), **refusing** if the current on-disk `script_sha256` / catalog HEAD no longer matches the pinned value — a `git pull` between request and approval must not silently swap the program. Approval **runs in the human CLI's environment** (full parent env, not the MCP server's allowlisted one). On success the pending record gains `history_id`, `status`, and `log_path`, all readable via `pending_path` (§5.5) without a fifth MCP tool (`02` §7.9). `kadou grant allow <runbook-id>` appends to `[agent].allowed_runbooks` (config edit, human-owned).
+3. **Dedupe:** a second `run_kata` call with the same `(id, args_hash)` while a pending record is outstanding returns the existing `pending_id` rather than creating a duplicate.
+4. **[tui]** The agent's own result carries `approve`; the server posts a desktop notification (§7 below); `kadou`'s `needs you` block shows it; `kadou grant list` and `kadou grant show <pending_id>` print the record and a **kata diff since request** (in case a `git pull` landed a different script than what was requested).
+5. `kadou grant approve <pending_id>` **one-shot executes** that pending record (still subject to the CLI confirm for high or critical), **refusing** if the current on-disk `sha256` / folder git HEAD no longer matches the pinned value. Approval **runs in the human CLI's environment** (full parent env, not the MCP server's allowlisted one). On success the pending record gains `history_id`, `status`, and `log_path`, all readable via `pending_path` without a fifth MCP tool. `kadou grant allow <id>` appends to `[agent].allow` (config edit, human-owned), pinned to the current sha256 unless `--any-version`.
 6. `kadou grant deny <pending_id>` deletes the record.
-7. MCP has no approve tool (`03` §11).
+7. MCP has no approve tool.
 
-Suggested, not required: pin `kadou grant allow <id>` to the current script digest, with `--any-version` to opt out of re-pinning on every catalog update (`07` suggestion 3 — adopted as a cheap default; see §13).
-
-Raising `[agent].allow_risk` or `allowed_runbooks` is a **config file edit** or `kadou config set` (human CLI), never an MCP tool (`03` §6 rule 6, §11 rule 3).
+Raising `[agent].max_risk` or `[agent].allow` is a **config file edit** or `kadou trust`/`kadou grant allow` (human CLI), never an MCP tool.
 
 ### 6.5 Secret handling
 
-- Flag `secret: true` on any type (decision 13).
-- **[rev, B12] Vault envelope, specified byte-for-byte to match the Go product exactly** (verified by decrypting a real Go-written envelope with the Rust `age` crate — `07` Appendix B item 5):
-  - `vault.json` = `{"version":1,"data":"age1"+base64::STANDARD_NO_PAD(<binary age v1 ciphertext>)}`. The literal 4-character prefix `"age1"` is **not** an age recipient string and is **not** part of the ciphertext — it is a Go-side tag, stripped before decoding. There is no base64 padding.
-  - `keys.txt` = a standard age identity file (`AGE-SECRET-KEY-…` with `#`-prefixed comment lines), parsed with `age::IdentityFile::from_buffer`.
-  - Import is **copy-once and read-only** against `~/.dops/vault.json` + `~/.dops/keys/keys.txt`: if both exist and convert, kadou copies them into its own XDG data dir once and records an import marker; the source files under `~/.dops/` are never modified. If conversion fails, kadou starts with an empty vault and the operator re-saves globals with `kadou vault set`.
-  - Payload shape inside the decrypted plaintext (unchanged from the prior draft):
+- **[shape]** A secret is never an arg; it is a **need** (decision 13). There is no `secret: true` flag to set on an arg.
+- **Vault envelope, specified byte-for-byte to match the Go product exactly** (verified by decrypting a real Go-written envelope with the Rust `age` crate — `07` Appendix B item 5):
+  - `vault.json` = `{"version":1,"data":"age1"+base64::STANDARD_NO_PAD(<binary age v1 ciphertext>)}`. The literal 4-character prefix `"age1"` is a Go-side tag, stripped before decoding. There is no base64 padding.
+  - `keys.txt` = a standard age identity file, parsed with `age::IdentityFile::from_buffer`.
+  - Import is **copy-once and read-only** against `~/.dops/vault.json` + `~/.dops/keys/keys.txt`: if both exist and convert, kadou copies them into its own XDG data dir once and records an import marker; the source files under `~/.dops/` are never modified.
+  - **[shape]** Payload shape inside the decrypted plaintext is now **flat**, keyed by need name:
     ```json
     {
-      "global": { "jenkins_url": "https://ci.example.com", "jenkins_user": "…" },
-      "catalog": {
-        "<catalog-name>": {
-          "runbooks": { "<runbook-name>": { "branch": "dev" } }
-        }
-      }
+      "jenkins_url":   { "value": "https://ci.example.com", "secret": false },
+      "jenkins_user":  { "value": "…", "secret": false },
+      "jenkins_token": { "value": "…", "secret": true }
     }
     ```
-- Values of `jenkins_token` are never written into this document, logs at info level, MCP schemas, `args` echoes, or history parameter maps (`01` §2.4; `03` §10 rule 4). History stores `****`.
-- Default identity: age X25519 at `~/.local/share/kadou/keys/identity.txt` `0600`. This default (plaintext identity next to the vault) protects only against copying the vault file without the keys directory — the same threat model as Go. Say so plainly to operators.
-- **[rev, B12]** Optional `vault.keyring = true`: the identity is age scrypt-encrypted (age's `armor` + `encrypted` module), and the **passphrase** — not the identity file itself — lives in the OS keyring via `keyring-core` + `apple-native-keyring-store`, service `kadou`, account `vault-identity`. (The prior draft stated this decision two different ways: decision 6 said keyring-*wrapped identity*, §6.5 said keyring-wrapped *passphrase*. This is the passphrase form.)
-- **[rev, B12]** `vault.passphrase_cmd` (an operator-defined command that prints a passphrase to stdout) is **dropped from MVP**. It turns config into code execution: `03` §6 rule 6 expects agents to propose file diffs for human review, and a changed `passphrase_cmd` would execute the next time the vault opens. If a future revision reintroduces it, require an absolute path owned by the invoking user.
-- **[new, B13] Secret entry.** `kadou vault set <key>` reads the value from a TTY prompt or stdin, **never argv** (argv lands in shell history and `ps`). `kadou config set` **refuses** vault-scoped keys outright — this replaces the prior draft's `kadou config set … jenkins_token` example, which contradicted its own §7.5 rule ("No parameter values in TOML") and `03` §6 rule 4. `kadou run --param <name>=…` refuses (does not silently accept) a `secret: true` parameter name.
-- **[rev, B2] MCP never writes the vault**, in any scope — stated as a rule and covered by a slice-5 test (§4.6, §9).
+    Go import maps `global.*` entries directly to this flat map (secret bit from the source YAML's `secret: true` flags); it reports and drops `catalog.*` runbook-scope values, or writes them as non-secret last-used args (§6.6, decision D5) — needs are one flat namespace, so there is no scope tree left to import into.
+- Values of `jenkins_token` are never written into this document, logs at info level, MCP schemas, `args`/`source` echoes, or history parameter maps. History stores `****`.
+- Default identity: age X25519 at `~/.local/share/kadou/keys/identity.txt` `0600`. This default protects only against copying the vault file without the keys directory — the same threat model as Go.
+- Optional `[vault] keyring = true`: the identity is age scrypt-encrypted, and the **passphrase** — not the identity file itself — lives in the OS keyring via `keyring-core` + `apple-native-keyring-store`, service `kadou`, account `vault-identity`.
+- `vault.passphrase_cmd` is **not** in MVP — it would turn config into code execution.
+- **`kadou vault set [--plain] <name>`** reads the value from a TTY prompt or stdin, **never argv**. Default is secret; `--plain` for URLs and usernames. **MCP never writes the vault**, in any scope — a tested invariant (§9).
 - Directory modes: vault and keys directories `0700`, files `0600`.
-
-Do not copy mise `mise://env` (`02` §7.11, §8).
 
 ### 6.6 History / audit
 
-Record fields (`01` §4.10) plus `initiator` (username if known, else `local`) and `mcp_client` (from MCP initialize `clientInfo.name` when interface is `mcp` — stated explicitly as **self-reported, a label, not an identity**):
+Record fields plus `initiator` (username if known, else `local`) and `mcp_client` (self-reported, a label, not an identity):
 
-`id`, `runbook_id`, `runbook_name`, `catalog_name`, `parameters` (secrets `****`), `status` (`running|success|failed|cancelled|pending_grant`), `exit_code`, `start_time`, `end_time`, `duration_ms`, `output_lines`, `output_summary`, `log_path`, `interface` (`tui|cli|mcp`).
+`id`, `folder`, `args` (secrets never appear — they were never args), `status` (`running|success|failed|cancelled|pending_grant`), `exit_code`, `start_time`, `end_time`, `duration_ms`, `output_lines`, `output_summary`, `log_path`, `interface` (`cli|mcp` — **[tui]** no `tui` value).
 
-**[rev, B3] Redaction happens in the line stream, before the log is written**, so the MCP result, the on-disk log, and the TUI all see the same already-redacted text (the prior draft only masked the parameter map, leaving the raw output stream — which can `eval` and print credentials, per Sesami's `trigger-pipeline.sh` `--dry-run` — unredacted). For every secret value injected into the child, redact: the literal value, its standard base64 encoding, base64 of `user:value` (HTTP Basic auth, which `curl -u` sends), and its URL-encoded form. Apply a minimum length (8 chars) so short values do not shred unrelated output. Also redact secret values supplied through CLI `--param` (which §6.5 otherwise refuses — this is defense in depth).
+**Redaction happens in the line stream, before the log is written**, so the MCP result, the on-disk log, and the CLI all see the same already-redacted text. For every secret value injected into the child, redact: the literal value, its standard base64 encoding, base64 of `user:value`, and its URL-encoded form. Apply a minimum length (8 chars) so short values do not shred unrelated output. Also redact secret values supplied through CLI prompts (defense in depth).
 
-**Fresh tier (decision 8):** the last **7 days** of logs are plain `0600` text files; a running or recently-finished run's `log_path` always points at one of these. After 7 days, logs compress into 10 MB gzip-tar archives. **90-day TTL** and **50 MB** combined cap (decision 8). `kadou history` lists newest-first (default 20). No `kadou://history` resource (`01` §3.1). History and pending directories `0700`, files `0600`. Retention for `pending/` and `proposed/` (staging drafts): **30 days**.
+**Fresh tier:** the last **7 days** of logs are plain `0600` text files; a running or recently-finished run's `log_path` always points at one of these. After 7 days, logs compress into 10 MB gzip-tar archives. **90-day TTL** and **50 MB** combined cap. `kadou history` lists newest-first (default 20). History and pending directories `0700`, files `0600`. Retention for `pending/` and `proposed/` (drafts): **30 days**.
+
+**[tui, D5] Last-used args.** kadou remembers last-used args per kata in `~/.local/state/kadou/last/`, plain, non-secret. This is **interactive-prefill only**: `kadou run <id>` on a TTY, missing a required arg, shows the last-used value as the prompt default. CLI with the arg already on the command line and MCP always use the header default. Go's runbook-scope vault saving is dropped entirely — "what the file says is what runs."
 
 ### 6.7 Propose / accept loop
 
-**[rev, B7]** `propose_runbook` writes `~/.local/share/kadou/catalogs/proposed/<catalog>--<name>/{runbook.yaml,script.sh}` (flattened layout, §4.1) and returns a unified diff. It does **not** register the catalog entry and does **not** run (`03` §11 rule 1; `03` §9 rule 5). The server canonicalizes and contains the write path (§5.4), size-caps `yaml`/`script`, and strict-loads the proposed `runbook.yaml` at propose time so a malformed draft is rejected immediately rather than at accept time.
+`propose_kata` writes `~/.local/state/kadou/proposed/<folder>/<name>.sh` and returns a unified diff. It does **not** register the kata and does **not** run (`03` §11 rule 1; `03` §9 rule 5). The server canonicalizes and contains the write path (§5.4), size-caps `source`, and strict-loads the header at propose time so a malformed draft is rejected immediately rather than at accept time.
 
-`kadou catalog accept <staging-id> --into <user-catalog>` (default `user`) validates with the strict loader, **prints the diff and prompts `y/N`** (or `--yes` for scripts), and copies into an **existing user-owned catalog** under `~/.config/kadou/catalogs/<user-catalog>/`. **[rev, B7]** Accept **refuses** a target that is a git-backed catalog's working tree (`03` §11 rule 6) — the prior draft's "copies into `~/.config/kadou/catalogs/<catalog>/` … registers it if missing" would have created a second, shadow directory for an already-registered git-backed catalog like `jenkins-pipelines`. TUI palette: "Accept proposed runbook".
+`kadou accept <id> [--into <folder>]` (default: the id's own folder) validates with the strict loader, **prints the diff and prompts `y/N`** (or `--yes`), and copies the file into an existing, **user-owned** folder under `~/.config/kadou/kata/`. **[shape, decision D]** Accept **refuses** a target that is a git-backed folder's working tree — copying an unreviewed draft straight into a `kadou get` checkout would blur "what git tracks" with "what a human approved," and the next `kadou update` could silently overwrite or orphan it. Say this once, here: **`propose_kata` results always point at a location that will land under a user-owned folder, never a git checkout, and `kadou accept` enforces it.**
 
-The product never `git commit`s, `git push`es, or `catalog install`s an agent-invented URL (`03` §11 rule 6).
+The product never `git commit`s, `git push`es, or `kadou get`s an agent-invented URL.
 
 ### 6.8 Session mining (crate + CLI, not extra MCP tools)
 
-Contract: `06-session-mining.md` (pipeline, redaction, bounds, review gate). **Packaging override:** `06` §5.1 assumes Go `cmd/mine.go` and `internal/mine/*.go`. kadou implements that engine as **`crates/kadou-mine`** and **`kadou mine …`** on the existing clap tree. One binary (`03` charter 13). The skill (`06` §5.2) stays a `SKILL.md` that execs `kadou mine`, never parses `~/Documents/Sessions` itself.
+Contract: `06-session-mining.md` (pipeline, redaction, bounds, review gate). **Packaging override:** `06` §5.1 assumes Go `cmd/mine.go` and `internal/mine/*.go`. kadou implements that engine as **`crates/kadou-mine`** and **`kadou mine …`** on the existing clap tree. One binary. The skill (`06` §5.2) stays a `SKILL.md` that execs `kadou mine`.
 
-**XDG paths** (not `$KADOU_HOME/mine` as a second hidden dir — `03` §1 rule 1, §6):
+**XDG paths:**
 
 | `06` path | kadou path |
 |---|---|
 | `$DOPS_HOME/mine/` | `~/.local/state/kadou/mine/` |
-| `$DOPS_HOME/mine/queue/<fingerprint>/` | `~/.local/state/kadou/mine/queue/<fingerprint>/{meta.json,runbook.yaml,script.sh}` |
-| `$DOPS_HOME/catalogs/mined/` | `~/.local/share/kadou/catalogs/mined/` (registered inactive, reserved name — §4.1) |
+| `$DOPS_HOME/mine/queue/<fingerprint>/` | `~/.local/state/kadou/mine/queue/<fingerprint>/{meta.json,kata.sh}` |
+| `$DOPS_HOME/catalogs/mined/` | `~/.local/share/kadou/kata-drafts/mined/` (never in the library path; listed regardless of ceiling — §4.1) |
 | `$DOPS_HOME/mine/redact-extra.txt` | `~/.config/kadou/mine/redact-extra.txt` |
 
-Pipeline, redaction ids R1–R13, rank cutoff, LaunchAgent **`dev.kadou.mine`**, bounds (20 min / 512 MB RSS / 2 GB scan), and fail-closed secret drop are **as specified in `06` §2–4**. This PRD does not repeat the survey or the synthetic kubectl example.
+Pipeline, redaction ids R1–R13, rank cutoff, LaunchAgent **`dev.kadou.mine`**, bounds (20 min / 512 MB RSS / 2 GB scan), and fail-closed secret drop are **as specified in `06` §2–4**.
 
-**[rev, B14]** The miner writes **`format_version: 2`** drafts (the prior `06` §6.4 example draft was v1-shaped with `type: number`; kadou's own loader only accepts `integer`/`float` as v2 author types — §4.4). `[mine] catalog` is **removed from config** — `mined` is a reserved, non-renamable name (§4.1, §4.2), closing the path where renaming the staging catalog would have defeated a name-keyed staging check.
+**[shape]** The miner writes a **single-file draft with a header**, not `format_version: 2` YAML — the draft writer changes; pipeline and redaction do not. `mined/<name>` ids, listable with `include_drafts`.
 
-**MCP mapping (decision 15)** — `06` §5.3 proposed four tools plus two resources plus a prompt. That is a second eager surface. Fold into the existing four:
+**MCP mapping (decision 15):**
 
 | `06` §5.3 | kadou |
 |---|---|
-| Resource `dops://mine/queue` | **Not registered.** `list_runbooks` with `catalog=mined` or `include_staging=true` |
-| Resource `dops://mine/proposal/{fingerprint}` | **Not registered.** `describe_runbook` id `mined.<slug>` (redacted yaml+sh already on disk; no session refs) |
-| Tool `mine_list` | `list_runbooks` |
-| Tool `mine_get` | `describe_runbook` |
-| Tool `mine_run` (`_confirm_id`, hidden unless `--allow-mine-run`) | **CLI only:** `kadou mine run --once`. Not a starter runbook (starter is low-risk and must not read transcripts — `03` §10 rule 6). Skill may exec the CLI; MCP does not. |
-| Tool `mine_review` (reject/skip; approve off by default, `_confirm_id`) | **Human CLI only:** `kadou mine approve\|reject\|skip`. No MCP accept (`03` §11). Schema confirm strings stay forbidden (decision 4). |
-| Prompt `review-mined-runbook` | **Not registered.** Operator uses `kadou mine review` / `kadou info mined.<slug>` |
+| Resource `dops://mine/queue` | **Not registered.** `list_kata` with `folder=mined` or `include_drafts=true` |
+| Resource `dops://mine/proposal/{fingerprint}` | **Not registered.** `describe_kata` id `mined/<slug>` |
+| Tool `mine_list` | `list_kata` |
+| Tool `mine_get` | `describe_kata` |
+| Tool `mine_run` | **CLI only:** `kadou mine run --once`. Not a starter kata. Skill may exec the CLI; MCP does not. |
+| Tool `mine_review` | **Human CLI only:** `kadou mine approve\|reject\|skip`. No MCP accept. |
+| Prompt `review-mined-runbook` | **Not registered.** Operator uses `kadou mine review` / `kadou show mined/<slug>` |
 
-Approve copies the draft into the inactive `mined` staging catalog (`06` §2.9). `kadou catalog accept mined.<name> --into <user-catalog>` is what makes it executable — there is no `active = true` shortcut (§4.1, B14). Miner never assigns `low` or `critical` (`06` §4.4). Drafts use v2 types (`integer` not `number`; `file_path` on the v1 import path only — `06` §2.8's `file_path`/`number` map to `string`/`integer` at write time).
+Approve copies the draft into the inactive `mined` staging area. `kadou accept mined/<name> [--into <folder>]` is what makes it executable — there is no shortcut. Miner never assigns `low` or `critical`.
 
 `kadou-mine` is not on the slice-5 critical path (§9).
 
 ---
 
-## 7. TUI / CLI UX
+## 7. CLI UX
+
+**[tui, D7]** There is no full-screen TUI in v1. Every human frame is styled CLI output; the one interactive component is an inline picker plus prompts, both on a TTY only. See `09` §3 for the full design; this section carries the PRD-level contract.
+
+Rules every human-facing frame obeys (`09` §3.1):
+
+1. Risk is a colored dot plus a word, never only a color.
+2. Success is one line. Errors are a sentence and a fix line the reader can paste.
+3. Styled on a TTY only. `NO_COLOR` and `--plain` force plain on a TTY. `TERM=dumb` disables the picker and prompts (they become errors with the non-interactive form).
+4. One palette: `theme = "doop"` in `kadou.toml` colors dots, the `▸` marker, `✓`/`✗`, and muted text everywhere.
+5. Nothing paginates; nothing is interactive unless the command is missing an id.
+6. Interactive means inline: the picker and prompts draw below the shell prompt and erase themselves when done. No alternate screen, no lost scrollback; `Ctrl+c` always exits with a one-line "cancelled".
 
 ### 7.1 Command tree
 
-No `kadou init`. No `kadou open`. Bare `kadou` launches the TUI (`03` §1 rule 2).
-
 ```
-kadou                              # TUI
+kadou                                        # library frame (not a TUI)
 kadou --help
 kadou version
-kadou list [--catalog NAME] [--query Q] [--risk LEVEL]
-kadou info <id>
-kadou run <id> [--param k=v]... [--dry-run] [--no-save] [--confirm <id>]
-kadou mcp serve [--transport stdio|http] [--bind 127.0.0.1:8808] [--allow-risk LEVEL]
-kadou mcp schema [--bytes]        # print the served tools/list JSON and its byte count
-kadou catalog list
-kadou catalog add [--name NAME] [--path SUB] [--display-name S] [--risk LEVEL] <dir>
-kadou catalog install [--name NAME] [--ref REF] [--path SUB] [--risk LEVEL] [--display-name S] <git-url>
-kadou catalog update <name> [--ref REF] [--risk LEVEL] [--display-name S]
-kadou catalog remove <name>
-kadou catalog accept <id> --into <catalog>
-kadou catalog migrate <name>       # optional v1→v2 rewrite (never default)
-kadou config get [key]
-kadou config set <key> <value>    # human CLI; rewrites TOML with comments preserved; refuses vault-scoped keys
-kadou vault set <key>              # reads value from TTY/stdin, never argv
-kadou history [--runbook ID] [--limit N]
+kadou run <id> [k=v…] [--dry-run] [--confirm <id>] [--ask]
+kadou list [--folder F] [--risk R] [query]
+kadou show <id>
+kadou new <id> [--from <id>]
+kadou edit <id>
+kadou check [folder|path] [-v]
+kadou get <url> [--as F] [--ref R] [--root SUB]
+kadou update [F]
+kadou remove <F>
+kadou import <dir> --as <F>
+kadou accept <id> [--into F]
+kadou trust [--forget]
+kadou vault set [--plain] <name>
+kadou vault list
+kadou vault rm <name>
+kadou history [--limit N]
 kadou grant list
+kadou grant show <pending_id>
 kadou grant approve <pending_id>
 kadou grant deny <pending_id>
-kadou grant allow <runbook_id>
+kadou grant allow <id> [--any-version]
 kadou mine run [--once | --watch | --since <iso>]
 kadou mine status
 kadou mine list
 kadou mine show <fingerprint>
 kadou mine review
-kadou mine approve <fingerprint> --into <catalog>
+kadou mine approve <fingerprint> [--into F]
 kadou mine reject <fingerprint> --reason …
 kadou mine install-schedule
-kadou mine install-catalog
+kadou mcp serve [--transport stdio|http] [--bind 127.0.0.1:8808] [--max-risk LEVEL]
+kadou mcp schema [--bytes]        # print the served tools/list JSON and its byte count
 kadou completion <shell>
 ```
 
-**[rev, B13]** `kadou vault set` is new (closes the gap where §1.2 claimed operators "save `jenkins_token` once in the vault" but no command did that securely). `kadou catalog accept` / `kadou mine approve` now take `--into <catalog>` (§4.1, B14). `kadou mcp schema --bytes` is new (`07` suggestion 11 — operator-visible budget check).
+`run`, `show`, `edit`, and `history` with **no id** open the picker on a TTY (§7.2) and error with the non-interactive form otherwise: `error: no kata id given and no terminal to pick one   = kadou run <id>, or kadou list`.
 
-`kadou list` / `kadou info` are the CLI projection of the same meta-tools (`02` §7.9: file-shaped + CLI for agents that prefer CLI over MCP).
+`kadou list` / `kadou show` are the CLI projection of the same meta-tools that MCP serves (`02` §7.9).
 
-### 7.2 Keybindings (TUI)
+### 7.2 `kadou` with no arguments
 
-Defaults are the product (`03` §5). Overrides: `[keys]` map in config.toml.
+First run, empty config, starter materialized (`09` §3.2):
+
+```
+$ kadou
+ kadou 稼働   1 folder · 5 kata
+
+ starter
+   hello         ● low   Print a greeting
+   disk-usage    ● low   Disk usage of a directory
+   git-status    ● low   git status -sb in a repo
+   health        ● low   Resolve a host
+   list-path     ● low   List a directory
+
+ run     kadou run                 pick one, or:  kadou run starter/hello
+ new     kadou new <folder/name>   write a kata and open it
+ team    kadou get <git-url>       add your team's kata as a folder
+ agents  kadou mcp serve
+```
+
+With a grant and drafts waiting, the `needs you` block appears (and disappears when nothing is waiting — badges that are always present are noise):
+
+```
+$ kadou
+ kadou 稼働   2 folders · 37 kata                  needs you: 1 grant · 2 drafts
+
+ …
+
+ needs you
+   grant  sesami/ses-deploy  version=25.6.1.2 oke_cluster=uat   claude-code · 4m ago
+          kadou grant approve 7c1e   ·   kadou grant deny 7c1e
+   draft  proposed/ops/argocd-sync                kadou accept ops/argocd-sync
+   draft  mined/k8s-pod-logs                      kadou mine review
+
+ run  kadou run   ·   help  kadou --help
+```
+
+A folder that failed `kadou check` shows `✗ 2 errors` where a healthy folder shows `git ✓`, and its kata are listed dimmed. Piped, `kadou` prints one kata per line, tab-separated.
+
+### 7.3 Picker and prompt keys
+
+Any id-taking command with no id (`run`, `show`, `edit`, `history`) opens the picker on a TTY. Type to filter across id, about, and alias; the highlighted kata's header shows below the list.
 
 | Key | Action |
 |---|---|
-| `j` / `k` / `↑` / `↓` | Move in the focused list |
-| `h` / `l` / `←` / `→` | Collapse / expand catalog (sidebar) |
-| `Enter` | Run selected / submit wizard / accept confirm when valid |
-| `/` | Search |
-| `n` / `N` | Next / previous search match (output) |
-| `g` / `G` | Top / bottom |
-| `Tab` | Cycle panes |
-| `?` | Help overlay |
-| `q` | Quit (not during confirm type-id, and not while a text input has focus) |
-| `Esc` | Back out / clear search / cancel confirm |
-| `Ctrl+c` | Quit or cancel execution (documented in `?`) |
-| `Ctrl+x` | Stop running execution |
-| `Ctrl+p` | Command palette (theme, catalog, grants, help, quit) |
+| printable characters | filter |
+| `↑`/`↓`, `Ctrl+k`/`Ctrl+j` | move |
+| `↵` | select and continue the command |
+| `tab` | print the full `kadou show` for the highlighted kata and return |
+| `e` | open it in `$EDITOR` and return |
+| `esc` / `Ctrl+c` | cancel, exit 130 |
 
-**[rev, suggestion 9]** The palette chord is **`Ctrl+p`** (or `:`), not `Ctrl+Shift+p` — `Ctrl+Shift+p` is only distinguishable from `Ctrl+p` in terminals that speak an enhanced keyboard protocol (kitty/CSI-u); Terminal.app does not, and `03` §5 rule 3 allows a successor chord. `Ctrl+Shift+p` may still work as an alias where the terminal reports the capability. `q` explicitly does not fire while a text input has focus (fixing an ambiguity in the prior table).
+At most twelve rows shown, scrolls past that. Fuzzy match, id ranked above about. No matches: `no kata matches "xyz"   kadou new sesami/xyz`. Non-TTY: `kadou run` with no id exits 2 with the non-interactive error above.
 
-Wizard: `Enter` next, `Shift+Tab` prev, arrows on select, `Space` multi-select, `Esc` cancel (`03` §5 rule 5). Mouse may scroll and select text; every action has a key (`03` §5 rule 1).
+`kadou run <id>` prompts once per missing required arg on a TTY, defaulting to the last-used value when one exists (§6.6, D5); `↵` accepts, typing replaces, `esc` cancels. `kadou run <id> --ask` prompts for every arg (showing the header default or last-used value) so a human can walk the whole form. A `bool` prompts `y/n`; an `int` rejects non-digits before `↵`; a `select` is a four-row picker. High risk prompts `run? [y/N]`; critical prompts for the typed id, as in §6.3.
 
-### 7.3 First-run experience
+These are fixed, not configurable — there is no `[keys]` override map (`09` §6.2, §3.1 dropping the old TUI keybinding convention). `kadou completion <shell>` completes ids, folders, and arg names.
 
-After install:
+### 7.4 First-run experience
 
-1. Missing config → write defaults (empty TOML is valid; missing keys mean defaults — `03` §6 rule 5).
-2. `kadou` shows starter catalog in the sidebar, first runbook selected, metadata pane filled, footer key hints. Not an empty panel (`03` §4 rule 3).
-3. `kadou mcp serve` speaks stdio immediately.
-4. No questionnaire. No "add a catalog" dead end (`03` §1 rules 2–3).
+1. Missing config → write defaults (empty TOML is valid; missing keys mean defaults).
+2. `kata/starter/` is materialized from the embed **only if `kata/` does not exist**. If deleted, it stays deleted; `kadou get starter` restores it.
+3. `kadou` prints the starter frame and the next command (§7.2). Not an empty panel.
+4. `kadou mcp serve` speaks stdio immediately.
+5. No questionnaire. No "add a folder" dead end.
 
-Adding Sesami is **additive**: `kadou catalog add --name jenkins-pipelines --path src ~/Bitbucket/sdo-dops-catalog`. **[rev, B13]** Then `kadou vault set jenkins_user` and `kadou vault set jenkins_token` (TTY-prompted; or TUI save) — not `kadou config set`, which now refuses vault-scoped keys (§6.5). This replaces the prior draft's contradictory "`kadou config set` … `jenkins_token`" example.
+Adding Sesami is additive: `kadou import ~/Bitbucket/sdo-dops-catalog/src --as sesami` (existing dops catalog) or `kadou get <url> --as sesami` (an already-converted repo), then `kadou vault set jenkins_user --plain` and `kadou vault set jenkins_token`.
 
-### 7.4 Install one-liner
-
-Canonical (`03` §3):
+### 7.5 Install one-liner
 
 ```sh
 curl -fsSL https://<stable-install-url>/install.sh | sh
+  kadou 0.1.0 → /usr/local/bin/kadou   sha256 ok
+  next:  kadou            open the library
+         kadou mcp serve  for agents
 ```
 
-POSIX `#!/bin/sh`, `set -eu`, OS/arch detect, **checksum verification** (SHA-256 of the tarball against a published `SHA256SUMS`; today's `install.sh` skips this — `03` §3 dops-today). Install to `/usr/local/bin` or `KADOU_INSTALL_DIR` / `~/.local/bin`. Idempotent: updates the binary, does not clobber config, vault, or extra catalogs.
+POSIX `#!/bin/sh`, `set -eu`, OS/arch detect, **checksum verification** (SHA-256 of the tarball against a published `SHA256SUMS`). Install to `/usr/local/bin` or `KADOU_INSTALL_DIR` / `~/.local/bin`. Idempotent: updates the binary, does not clobber config, vault, or extra folders.
 
-Homebrew / Nix / cargo-binstall / winget must produce the **same first-run state**. `cargo install` is not the advertised path (`03` §3 rules 2–3). Stable URL and GitHub release publishing are **gated** (repo README Gates); this PRD specifies the shape only.
+Homebrew / Nix / cargo-binstall / winget must produce the **same first-run state**. `cargo install` is not the advertised path. Stable URL and GitHub release publishing are **gated** (repo README Gates); this PRD specifies the shape only.
 
-### 7.5 Config file (TOML, XDG)
+### 7.6 Config file (`kadou.toml`, TOML, XDG)
 
 | Kind | Path | Override |
 |---|---|---|
-| User config | `~/.config/kadou/config.toml` | `KADOU_HOME` replaces the config **root** for tests/containers (`03` §1 rule 1). When `KADOU_HOME` is set: `$KADOU_HOME/config.toml`, `$KADOU_HOME/share/`, `$KADOU_HOME/state/`. **`DOPS_HOME` is honored as a documented, deprecated alias for one release** (§13, B-list note on the rename) — if both are set, `KADOU_HOME` wins and a startup warning names the deprecated variable. |
-| User catalogs / user themes | `~/.config/kadou/catalogs/`, `~/.config/kadou/themes/` | |
-| Product data (vault, keys, cloned catalogs, mined/proposed staging) | `~/.local/share/kadou/` | |
-| State (history, pending, mine work queue) | `~/.local/state/kadou/` | |
-| Starter catalog / bundled themes | embedded in the binary | |
+| User config | `~/.config/kadou/kadou.toml` | `KADOU_HOME` replaces the config **root** for tests/containers. `DOPS_HOME` is honored as a documented, deprecated alias for one release. |
+| User kata, user themes | `~/.config/kadou/kata/`, `~/.config/kadou/themes/` | |
+| Product data (vault, keys, cloned kata folders, mined/proposed drafts) | `~/.local/share/kadou/` | |
+| State (history, pending, last-used args, mine work queue) | `~/.local/state/kadou/` | |
+| Starter kata / bundled themes | embedded in the binary | |
 
-**[rev, suggestion 15]** `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME` are **not** a second override next to `KADOU_HOME` — `03` §1 rule 1 names `KADOU_HOME` (via its `DOPS_HOME` predecessor) as the *only* override, and `etcetera`'s default strategy (used when `KADOU_HOME` is unset) already reads those XDG variables as part of computing the platform-default paths. There is no separate kadou-specific XDG override layer to specify.
-
-Example `config.toml` (comments welcome; this file is the API — `03` §6):
+`XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME` are not a second override next to `KADOU_HOME` — `etcetera`'s default strategy (used when `KADOU_HOME` is unset) already reads those.
 
 ```toml
-# Missing keys mean defaults. This whole file may be empty.
-
-theme = "doop"                    # default; not github, not rainbow
-
-[defaults]
-max_risk_level = "medium"
+# Missing keys mean defaults. This file may be empty.
+theme    = "doop"
+max_risk = "medium"           # human ceiling for every folder
 
 [agent]
-allow_risk = "low"
-allowed_runbooks = []             # catalog.runbook ids the agent may execute above low
-# no MCP config-setter
+max_risk = "low"
+allow    = []                 # ids the agent may run above low, e.g. "sesami/ses-deploy"
+
+[folder.sesami]                # optional per-folder policy; nothing to "register"
+max_risk = "critical"
+
+[trust]
+paths = []                    # project-local kata folders that may use the vault and be seen by agents
 
 [exec]
-pass_env = []                     # extra env vars a human allows an MCP-spawned script to see
+timeout  = "30m"
+pass_env = []
 
 [mcp]
 max_output_lines = 50
@@ -940,181 +971,185 @@ max_wait = "50s"
 [vault]
 keyring = false
 
-[keys]
-# optional overrides; unspecified keys keep product defaults
-# run = "enter"
-
-[[catalogs]]
-name = "jenkins-pipelines"
-display_name = "Jenkins pipelines"
-path = "/Users/mason/Bitbucket/sdo-dops-catalog"
-sub_path = "src"
-active = true
-# url = "git@bitbucket.example.com:example-org/sdo-dops-catalog.git"
-[catalogs.policy]
-max_risk_level = "medium"         # raise to critical to even *see* ses-deploy
+[notify]
+enabled = true
 ```
 
-**[rev, B14]** `[mine] catalog = "mined"` is removed — `mined` is a reserved name, not configurable (§6.8). **[rev, suggestion 5]** `mcp.max_output_lines` and `mcp.max_wait` are added to the closed configurable list (`03` §7 rule 5) rather than left as unlisted knobs, since `02` §7.4 and this PRD's own timeout/truncation rules (§6.1, §5.5) depend on operators being able to tune them. `[exec] pass_env` is likewise a named, closed-list configurable (§6.1, B5). Starter is **not** a `[[catalogs]]` row; it is always registered as catalog name `starter` from embed.
+**[shape]** No `[[catalogs]]` — a folder exists because it is on disk. **[shape]** No `[keys]` override map — picker and prompt keys are fixed (§7.3). **[tui]** `[notify] enabled = true` by default; `false` turns off the desktop notification (§9 below). Config mode `0600`. Vault `0600`. No parameter values in TOML.
 
-Config mode `0600`. Vault `0600`. No parameter values in TOML (`03` §6 rule 4).
+### 7.7 Starter kata contents
 
-### 7.6 Starter catalog contents
+Embedded, auto-registered, **all `risk: low`**, no `needs:`, no network required.
 
-Embedded, auto-registered, **all `risk_level: low`**, **no `secret: true`**, no network required (`03` §2 rules 1 and 6, §10 rule 6).
-
-| Dir | Description | Params |
+| Id | About | Args |
 |---|---|---|
-| `hello-world` | Print a greeting | `name` string local default `world` |
-| `disk-usage` | `df -h` for a directory | `target_dir` string local default `.` |
-| `git-status` | `git status -sb` in a repo directory | `target_dir` string local default `.` |
-| `health-check` | Resolve a host (`ping -c 1`; skip if no net) | `host` string local default `localhost` |
-| `list-path` | List a directory (`ls -la`) | `target_dir` string local default `.` |
+| `starter/hello` | Print a greeting | `name` text = `world` |
+| `starter/disk-usage` | Disk usage of a directory | `target_dir` text = `.` |
+| `starter/git-status` | `git status -sb` in a repo | `target_dir` text = `.` |
+| `starter/health` | Resolve a host (`ping -c 1`) | `host` text = `localhost` |
+| `starter/list-path` | List a directory (`ls -la`) | `target_dir` text = `.` |
 
-**[rev, B6]** Parameter names in `disk-usage`, `git-status`, and `list-path` are renamed from `path` to **`target_dir`** — `name.to_ascii_uppercase()` on `path` produces `PATH`, which clobbers the shell's own `$PATH` and breaks `df`, `git`, and `ls` on first run (§4.4's reserved-name rule now also rejects `path` as a parameter name at load time, so this is enforced, not just documented). `health-check` drops the `getent`-based lookup (`getent` does not exist on macOS) in favor of `ping -c 1` alone.
+Arg names use `target_dir`, not `path` — `path.to_ascii_uppercase()` is `PATH`, which clobbers the shell's own `$PATH`; §4.3's reserved-name rule rejects `path` as an arg name at load time. `health` uses `ping -c 1` only (`getent` does not exist on macOS).
 
-Five is enough for first paint and for agents to have something to call the same day (`03` §2). Team catalogs (`catalog install` / `add`) grow the library; they are not how the product becomes real (`03` charter 3).
+Five is enough for first paint and for agents to have something to call the same day. Team folders (`kadou get` / `kadou import`) grow the library; they are not how the product becomes real.
+
+### 7.8 The notification
+
+`kadou mcp serve` writes a pending record or a draft, then posts one desktop notification:
+
+```
+kadou · grant wanted
+sesami/ses-deploy (critical) from claude-code
+kadou grant approve 7c1e
+```
+
+Same for `propose_kata` ("draft wanted: `kadou accept ops/argocd-sync`") and for `kadou mine run --once` when it queues a draft. Shells out to `osascript` on macOS and `notify-send` on Linux; no crate, and it is silently skipped when neither binary exists. `[notify] enabled = true` by default. The `needs you` block in `kadou` (§7.2) is the durable copy for a human who missed the toast.
+
+The smallest human surface that does the job: five existing commands, one `needs you` block, one notification, and the agent's own chat.
 
 ---
 
 ## 8. Non-goals and risks
 
-### 8.1 Non-goals (inherited from `03`)
+### 8.1 Non-goals (inherited from `03`, as revised by `09` §6.1)
 
 The PRD does not grow these. A later phase that wants one is a principles revision.
 
 - A general agent harness / chat REPL.
 - Generic `run_shell` / `exec` MCP tool.
-- One MCP tool per runbook as the default (or opt-in) surface.
+- One MCP tool per kata as the default (or opt-in) surface.
 - Required `kadou init` or a first-run questionnaire.
 - Empty-by-default install.
 - Web UI / SPA as a core interface (`kadou open`).
 - SaaS, accounts, multi-tenant server, hosted control plane.
-- Cloud-required features (except install/update and explicit `catalog install`).
+- Cloud-required features (except install/update and explicit `kadou get`).
 - Unattended high/critical by agents without a prior human grant.
 - Schema-printed confirmations (`CONFIRM`).
-- Secrets in config, git, MCP schemas, or history parameter maps.
+- Secrets in config, git, MCP schemas, or history.
 - JSON as the human config format.
 - Plugin marketplace / extension host / foreign runtimes as the default authoring model.
 - Windows-first or PowerShell-default scripts.
-- Replacing kubectl / Terraform / CI; kadou packages them as runbooks.
-- Auto-commit / auto-push / auto-install of agent-invented catalogs.
+- Replacing kubectl / Terraform / CI; kadou packages them as kata.
+- Auto-commit / auto-push / auto-install of agent-invented folders.
 - Becoming a distro or theme shop.
 - Unopinionated defaults.
-- `mine_list` / `mine_get` / `mine_run` / `mine_review` as extra MCP tools, `kadou://mine/*` resources, or a `review-mined-runbook` prompt (`06` §5.3 vs `03` §8).
-- Walking `~/Documents/Sessions` artifact dumps, ledger files, or tool stdout as a mining corpus (`06` §1.6, §4.1).
-- Wiki-ingest from the miner (`06` non-goals).
-- Executing mined scripts before human approve (`06` opening contract).
-- **[new]** MCP-spawned child processes inheriting the agent host's full environment (§6.1, B5).
-- **[new]** A grant/pending state whose reachable states disagree across sections (§6.2–6.4, B4).
+- `mine_list` / `mine_get` / `mine_run` / `mine_review` as extra MCP tools, `kadou://mine/*` resources, or a `review-mined` prompt.
+- Walking `~/Documents/Sessions` artifact dumps, ledger files, or tool stdout as a mining corpus.
+- Wiki-ingest from the miner.
+- Executing mined scripts before human approve.
+- MCP-spawned child processes inheriting the agent host's full environment.
+- A grant/pending state whose reachable states disagree across sections.
+- **[shape]** A registry, a `catalog.yaml`, a format version, scopes on args, `secret` on args.
+- **[tui]** A full-screen TUI in v1. Alternate screen, panes, palette, and key maps are a later principles revision (`09` §7), taken only if humans start more runs interactively than agents start over MCP.
 
 From `01` §3.1 also dropped: MCP file watcher, `DecryptingVarResolver`, stub progress notifications, `dops://history` resource, integer-vs-number as two author types, demo runner as runtime.
 
 ### 8.2 Risks
 
-**[rev]** Rows added per `07` §8.2 ("Missing: parent-env leak, arg-override exfiltration, long-running runs, and the byte gate as a weak token proxy") are marked **[new]**.
-
 | Risk | Mitigation |
 |---|---|
-| Sesami `script.sh` walks `dirname "$0"` two levels to `scripts/trigger-pipeline.sh`; a naive "copy two files" importer breaks Jenkins | Loader treats extra catalog files as opaque; cwd = runbook dir; compatibility tests use the real tree read-only (`01` §7) |
-| Catalog rename (`src` → `jenkins-pipelines`) breaks vault keys and history | `name` is stable; docs warn; no auto-rename (decision 3); `catalog rename --migrate-vault` deferred (§13) |
-| Age 0.12.1 labeled BETA | Go vault import is **verified** (§6.5), reducing this to an upstream-maintenance watch, not an open question. |
-| `serde_yaml` ecosystem churn | Pin `serde-yaml-ng` 0.10.0; fixture round-trip the 32 YAML files; `serde-saphyr`/`serde_norway` as swap candidates |
-| Agents ignore kadou and shell out to `kubectl` anyway | Product still must not *offer* a shell tool (`03` §9). Skill docs (later) teach when to call kadou |
-| Pending-grant queue ignored by operators | TUI first-class pending list; MCP result tells the agent to wait; 24h TTL surfaces stale requests (§6.4) |
-| HTTP MCP accidentally bound to `0.0.0.0`, or reachable by any local process without auth | Refuse non-loopback binds; require non-empty `allowed_origins` and a per-launch bearer token before HTTP ships at all (§5.1, B11) |
-| **[new]** MCP-spawned children inherit the agent host's parent environment, which can carry API keys and cloud tokens redaction never sees | Explicit env allowlist + `[exec] pass_env` for MCP; full parent env stays CLI/TUI-only (§6.1, B5) |
-| **[new]** An agent overrides a `global`/`catalog`-scope arg (e.g. `jenkins_url`) to redirect where the vault's secret is sent | MCP `args` scope lock: only `local`/`runbook` scope is agent-settable; MCP never writes the vault (§4.6, B2) |
-| **[new]** `run_runbook` blocks for an entire long-running build (Jenkins console streaming has no PRD-level bound) | `exec.timeout` + `mcp.max_wait` → `status: running` with a pollable plain-text log; concurrency limit (§6.1, B5) |
-| Token budget creep in tool descriptions | `insta` snapshot of the exact `docs/design/tools-list.json` bytes; CI fails > 2 800 bytes. **[new]** The byte gate is a *proxy* for token cost, not a tokenizer measurement — it is loose at tokenizers stricter than 4 B/token (at 3.5 B/token the same payload is larger in tokens); treat it as a ceiling, not a target, and consider a real tokenizer count before GA. |
-| Mining adds four MCP tools (`06` §5.3) | Decision 15: reuse list/describe; CLI for run/review. Snapshot still 4 tools after the mining slice |
-| Miner copies raw transcript lines into product dirs | Fail closed (`06` §4.1); tests in `kadou-mine` with synthetic `ghp_`-style fixtures; no real Sessions bodies in this repo |
+| Sesami's `REPO_ROOT`/`TRIGGER` idiom breaks one level shallower under single-file kata | `kadou import` rewrites the idiom once to `$KADOU_ROOT`, stable under later folder nesting (§4.6) |
+| Folder rename (`src` → `sesami`) breaks vault keys and history | folder name is stable; docs warn; no auto-rename (decision 3) |
+| Age 0.12.1 labeled BETA | Go vault import is **verified** (§6.5), reducing this to an upstream-maintenance watch. |
+| `serde_yaml` ecosystem churn | Pin `serde-yaml-ng` 0.10.0 on the `kadou import` path only; fixture round-trip the 32 files; `serde-saphyr`/`serde_norway` as swap candidates |
+| Agents ignore kadou and shell out to `kubectl` anyway | Product still must not *offer* a shell tool. Skill docs teach when to call kadou |
+| HTTP MCP accidentally bound to `0.0.0.0`, or reachable by any local process without auth | Refuse non-loopback binds; require non-empty `allowed_origins` and a per-launch bearer token before HTTP ships at all |
+| MCP-spawned children inherit the agent host's parent environment | Explicit env allowlist + `[exec] pass_env` for MCP; full parent env stays CLI-only (§6.1) |
+| An agent overrides a need to redirect where the vault's secret is sent | Structural: needs can never appear in `args` (§4.4, §6.1) |
+| `run_kata` blocks for an entire long-running build | `exec.timeout` + `mcp.max_wait` → `status: running` with a pollable log; concurrency limit (§6.1) |
+| Token budget creep in tool descriptions | `insta` snapshot of `docs/design/tools-list.json` bytes; CI fails > 2 800 bytes. The byte gate is a *proxy* for token cost, not a tokenizer measurement — treat it as a ceiling, not a target. |
+| Mining adds four MCP tools | Decision 15: reuse list/describe; CLI for run/review. Snapshot still 4 tools after the mining slice |
+| Miner copies raw transcript lines into product dirs | Fail closed (`06` §4.1); synthetic `ghp_`-style fixtures only |
 | Publishing install URL / crates / GitHub release | Out of scope here; repo Gates require Mason |
+| **[shape]** A bespoke header parser is a new surface; its error messages are its user interface | Fixture corpus of bad headers under `tests/fixtures/headers/bad/`, snapshot-tested the way `tools/list` is (§4.7, `08` §6.2 risk 1) |
+| **[shape]** Nothing distinguishes "a folder that failed check" from "a folder that is fine" without a registry's `active` flag | The `✗`/dimmed listing and the run refusal carry that weight; `kadou update` must never leave a folder half-pulled (`08` §6.2 risk 2) |
+| **[tui]** Project-local `./kata` from an untrusted repo reaching the vault or an agent | `kadou trust` gate, path-keyed; agents never see an untrusted `./kata` at all (§4.5, `09` D3) |
+| **[tui]** Shebang-as-runtime widens what a kata can declare as its interpreter | `kadou check` warns when the declared interpreter is missing from `PATH`; no shebang still defaults to `/bin/sh` (§6.1, `09` D2) |
+| **[tui]** Inline picker misbehaves in a hostile terminal (tmux quirks, Terminal.app, Windows) | Numbered-list fallback; every command has a non-interactive form; `TERM=dumb` disables it (`09` §3.1 rule 3, §7) |
+| **[tui]** Prompts become a second arg parser and drift from MCP | Prompts produce `key=value` strings and hand them to the same parser `kadou run` and `run_kata` use |
+| **[tui]** The desktop notification is missed or unwanted | Convenience on top of the agent's own message and the `needs you` block; off with one config key; never the only channel |
 
 ---
 
-## 9. MVP slice plan (re-cut per `07` §7, B8)
+## 9. MVP slice plan (re-cut for the kata shape and no-TUI decision)
 
-**[rev, B8]** The prior nine-slice plan shipped agent execution (slice 5) before its audit trail (slice 6), ran `starter.*` runbooks in slices 3 and 5 before the starter embed existed (slice 8), and left the safety controls in §6.1/§6.4/§6.6 for a later slice even though three Sesami runbooks that trigger Jenkins are visible to a *default* agent from the moment `run_runbook` ships (§6.2). This plan moves the starter embed, history, redaction, the MCP env allowlist, the arg scope lock, execution lifecycle (timeout/cancel/concurrency), and `propose_runbook`/accept into or before the first agent-usable slice, and adds the missing CI job. No product code in *this* phase; these slices are the implementation DAG after this PRD.
+The slice plan keeps a safe MCP path over Sesami before CLI polish, matching `01` rank 1–6 and `03` "8, 10, 11 are load-bearing." **[shape/tui]** Slices 2, 4, 5, 7, and 8 change scope from the first PRD revision; the rest are renamed (`runbook`→`kata`, `catalog`→`folder`) with no scope change.
 
 ### Slice 1 — Workspace, domain, XDG config
 
-**Scope:** Cargo workspace, `kadou-core` types (`RiskLevel`, `Runbook`, `Parameter`, `Catalog`, `Config`), `config.toml` load/save (missing keys = defaults), XDG paths via `etcetera` (B10), `kadou version`, `kadou --help`.
-**Tests:** parse empty TOML; parse full example; `KADOU_HOME` isolation; `DOPS_HOME` fallback with a deprecation warning; risk order / `Exceeds`; config file `0600`; macOS paths resolve to `~/.config`/`~/.local/{share,state}`, not Application Support.
+**Scope:** Cargo workspace, `kadou-core` types (`RiskLevel`, `Kata`, `Arg`, `Config`), `kadou.toml` load/save (missing keys = defaults), XDG paths via `etcetera` (B10), `kadou version`, `kadou --help`.
+**Tests:** parse empty TOML; parse full example; `KADOU_HOME` isolation; `DOPS_HOME` fallback with a deprecation warning; risk order; config file `0600`; macOS paths resolve to `~/.config`/`~/.local/{share,state}`, not Application Support.
 **Done:** `cargo test -p kadou-core` green; `kadou --help` lists the command tree stubs.
 
-### Slice 2 — Catalog loader v1/v2 + Sesami round-trip
+### Slice 2 — Header parser + folder scanner + `kadou check` + `kadou import` **[shape, re-cut]**
 
-**Scope:** Disk loader, strictness (§4.7, per-catalog failure isolation), v1 mapping with the complete known-key list and string-default coercion (§4.3), optional opt-in `catalog.yaml` groups (§4.5), aliases, active flag, load-time risk filter parameterized by ceiling. Read-only use of `~/Bitbucket/sdo-dops-catalog/src` locally; CI uses the sanitized fixture catalog (decision 11, B15).
-**Tests:** 32 real YAML files (local run) and the sanitized fixture set (CI) parse; `name`≠dirname fails; missing `risk_level` fails; `ses-argocd-sync` `type: number` imports and its empty-default-but-required param fails as required; 87 string-typed defaults coerce (86 booleans + 1 integer); `select` without `options` fails; shared `scripts/` ignored as runbooks; a bad file in one catalog does not break another active catalog; mixed v1/v2 in one catalog; `catalog.yaml` group without `uses:` does not attach to an unrelated runbook.
-**Done:** `kadou list --catalog jenkins-pipelines` (after a test config `add`, catalog policy `max_risk_level = critical`) prints 32 ids without executing anything. (At the human-default `medium` ceiling it prints 30 — `ses-release-build` and `ses-deploy` are hidden, matching §6.2.)
+**Scope:** Header parser (§4.3), folder scanner and multi-file detection (§4.1), `kadou check` diagnostics with the bad-header fixture corpus (§4.7), `kadou import` with the full 32-file conversion (§4.6) including the `REPO_ROOT`/`TRIGGER` rewrite and boolean/numeric coercion. Read-only use of `~/Bitbucket/sdo-dops-catalog/src` locally; CI uses the sanitized fixture folder (decision 11, B15).
+**Tests:** 32 real YAML files (local run) and the sanitized fixture set (CI) import; header parser fixtures in `tests/fixtures/headers/{good,bad}/` snapshot-tested; unknown header key fails; missing `about`/`risk` fails; `ses-argocd-sync`'s empty-default-but-required arg imports as required; 87 string-typed defaults coerce (86 booleans + 1 integer); `select` without options fails; shared `scripts/` ignored as kata; a bad file in one folder does not break another; `x.sh`/`x/kata.sh` collision fails.
+**Done:** `kadou import ~/Bitbucket/sdo-dops-catalog/src --as sesami && kadou check sesami` reports 32 kata, 0 errors.
 
-### Slice 3 — Executor + CLI run --dry-run
+### Slice 3 — Executor + CLI `run --dry-run`
 
-**Scope:** `kadou-exec` POSIX `/bin/sh`, env injection (CLI/TUI: full parent env; the MCP allowlist path lands with slice 5, since MCP itself doesn't exist yet), cwd = runbook dir, cancel, `kadou run --dry-run`, `kadou info`. Uses the **embedded starter catalog** stub from the outset (a minimal subset ships here; the full TUI-facing embed and installer land in the TUI slice) so `starter.hello-world` exists wherever this PRD references it.
-**Tests:** fixture `script.sh` echoes `$FOO`; secret names appear in `env_names` not `env_public`; `..` in `script:` rejected; process-group cancel test (Unix, SIGTERM then SIGKILL); stdin is `/dev/null` and a `cat`-running script does not hang; stdout/stderr piped, not inherited; a bash helper invoked via `sh` still runs as bash (Sesami's exec-bit pattern); reserved env names (`path`, `home`, …) rejected at load.
-**Done:** `kadou run starter.hello-world --dry-run` and `kadou run jenkins-pipelines.cc4-aaa --dry-run` print env names including `JENKINS_TOKEN` as secret, no Jenkins HTTP.
+**Scope:** `kadou-exec` shebang-runtime exec (env injection: CLI full parent env; the MCP allowlist path lands with slice 5), cwd = kata dir, cancel, `kadou run --dry-run`, `kadou show`. Uses the **embedded starter kata** stub from the outset.
+**Tests:** fixture kata echoes `$FOO`; secret-shaped names appear in `env_names` not `env_public`; process-group cancel test (Unix, SIGTERM then SIGKILL); stdin is `/dev/null` and a `cat`-running script does not hang; stdout/stderr piped, not inherited; a bash helper invoked via `sh` still runs as bash; reserved arg names (`path`, `home`, …) rejected at load; a kata with `#!/usr/bin/env python3` runs under python; a kata with a missing interpreter warns at check time.
+**Done:** `kadou run starter/hello --dry-run` and `kadou run sesami/cc4-aaa --dry-run` print env names including `JENKINS_TOKEN` as secret, no Jenkins HTTP.
 
-### Slice 4 — Vault + secret flag + Go import
+### Slice 4 — Vault + flat needs payload + Go import **[shape, re-cut]**
 
-**Scope:** age envelope per the exact byte-for-byte spec in §6.5, `0700`/`0600` atomic writes, 3-layer resolve, `secret: true` omitted from describe/history, `kadou vault set` (TTY/stdin only), optional `keyring-core` + `apple-native-keyring-store` feature compiled and tested but off by default. Real (not synthetic-only) Go `vault.json`/`keys.txt` import test using the method in `07` Appendix B item 5, against a **synthetic** payload (never a real `jenkins_token`).
-**Tests:** round-trip vault; mask in history struct; MCP-schema helper strips secrets; Go-envelope import decrypts correctly; wrong key gives a clean error; import is idempotent and non-destructive to `~/.dops/`; directories `0700`; `keyring-core` feature compiles on the macOS target.
-**Done:** `kadou vault set jenkins_user` persists encrypted via TTY/stdin only; files are `0600`; a synthetic Go-written vault imports successfully.
+**Scope:** age envelope per the byte-for-byte spec (§6.5), `0700`/`0600` atomic writes, the **flat** needs payload, `kadou vault set [--plain] <name>` (TTY/stdin only), last-used args store (`~/.local/state/kadou/last/`, §6.6), optional `keyring-core` + `apple-native-keyring-store` feature compiled and tested but off by default. Real Go `vault.json`/`keys.txt` import test against a **synthetic** payload.
+**Tests:** round-trip vault; mask in history; MCP-schema helper strips secrets; Go-envelope import decrypts correctly and maps `global.*` to flat entries, reporting `catalog.*` runbook-scope values as dropped-or-last-used; wrong key gives a clean error; import is idempotent and non-destructive to `~/.dops/`; directories `0700`; `keyring-core` feature compiles on the macOS target.
+**Done:** `kadou vault set jenkins_user --plain` persists via TTY/stdin only; files are `0600`; a synthetic Go-written vault imports successfully into the flat payload.
 
 ### Slice 5 — MCP list / describe / run / propose (ship, agent-usable, and safe on day one)
 
-**[rev, B8]** This slice absorbs work the prior plan deferred to slices 6–8, so that the first agent-usable ship is also the first *safe* one:
-
 **Scope:**
-- `kadou-mcp` + `kadou mcp serve` stdio. All **four** tools, including `propose_runbook` (moved forward from the old slice 7) — without it, the first agent-usable ship has no "no runbook → propose" loop (`03` §9 rule 2), and shipping it here means the four-tool budget snapshot only needs to be taken once.
-- Wire agent ceiling default `low`, full visibility formula (§6.2).
-- MCP env allowlist + `[exec] pass_env` (§6.1, moved forward from the old slice-6/wherever-it-was-implied).
-- `exec.timeout`, `mcp.max_wait` → `status: running`, cancellation wiring (`notifications/cancelled`, stdio EOF), concurrency limit (§6.1).
-- History write path with the fresh plain-text tier and stream redaction (§6.6, moved forward from the old slice 6) — every MCP run gets an audit record from the start; there is no window where the three low-risk Jenkins triggers (`helm-package`, `sdo-k8s-ses`, `ses-automation`) run without one.
-- MCP args scope lock (only `local`/`runbook` settable) and "MCP never writes the vault" as a tested invariant (§4.6, §6.5).
-- The embedded starter catalog is complete here (full 5 runbooks, §7.6), not stubbed.
-- Truncation to 50 lines, compact JSON, `isError` rules.
+- `kadou-mcp` + `kadou mcp serve` stdio. All **four** tools (`list_kata`, `describe_kata`, `run_kata`, `propose_kata`), including propose — without it, the first agent-usable ship has no "no kata → propose" loop.
+- Wire agent ceiling default `low`, full visibility formula including the trust gate (§6.2, §4.5).
+- MCP env allowlist + `[exec] pass_env`, including the `KADOU_*` vars (§6.1).
+- `exec.timeout`, per-kata `timeout:` header, `mcp.max_wait` → `status: running`, cancellation wiring, concurrency limit.
+- History write path with the fresh plain-text tier and stream redaction (§6.6) — every MCP run gets an audit record from the start.
+- Needs-can-never-be-args as a tested invariant (§4.4, §6.1) and "MCP never writes the vault" as a tested invariant.
+- The embedded starter kata is complete here (full 5 kata, §7.7), not stubbed.
+- Truncation to 50 lines, compact JSON, `isError` rules, `missing_needs` error.
 - `insta` snapshot of the exact four-tool `tools/list` against `docs/design/tools-list.json`.
-- `pending_grant` itself, TTL, and dedupe may land in the *next* slice (6) as long as high/critical stay invisible to a default agent in the meantime — the visibility formula alone (this slice) already prevents `ses-deploy`-class exposure.
+- `pending_grant` itself, TTL, and dedupe may land in the *next* slice (6) as long as high/critical stay invisible to a default agent in the meantime.
+- **[tui]** Trust gate test: an untrusted `./kata` is absent from `list_kata` even at `low` risk.
 
-**Tests:** compact `tools/list` ≤ 2 800 bytes and byte-identical to `docs/design/tools-list.json`; list of Sesami at `allow_risk=low` returns **exactly** the five expected ids (not just "hides high/critical"); `describe cc4-aaa` (test config `allow_risk=medium`, since `cc4-aaa` is medium-risk and invisible at the true default) has `secret_param_names: ["jenkins_token"]` and no token value; `run starter.hello-world` succeeds and produces a history record with `interface: mcp`; run above ceiling → `isError: true, error: no_such_runbook`; a script that echoes `$JENKINS_TOKEN` shows `****` in both the MCP result **and** the on-disk log; a parent-env value like `FOO_TOKEN` set on the MCP server's own process is **not** visible inside the child; MCP `args: {"jenkins_url": "…"}` is rejected as `invalid_args` (global scope locked); no code path lets MCP persist to the vault; stdin/stdout purity under MCP (§6.1); `max_wait` returns `status: running` with a pollable `log_path`; HTTP bind `0.0.0.0` refused, and HTTP itself stays behind its build feature unless `allowed_origins` + bearer token are implemented (§5.1, B11).
-**Done:** a local MCP client can list / describe / run / propose over the starter catalog and Sesami, with an audit trail, env isolation, and a scope-locked argument surface from day one. **This is the first agent-usable ship, and it ships safe.**
+**Tests:** compact `tools/list` ≤ 2 800 bytes and byte-identical to `docs/design/tools-list.json`; list of Sesami at `max_risk=low` returns **exactly** the five expected ids; `describe sesami/cc4-aaa` (test config `max_risk=medium`) has `needs: ["jenkins_url","jenkins_user","jenkins_token"]` and no value; `run starter/hello` succeeds and produces a history record with `interface: mcp`; run above ceiling → `isError: true, error: no_such_kata`; a script that echoes `$JENKINS_TOKEN` shows `****` in both the MCP result **and** the on-disk log; a parent-env value like `FOO_TOKEN` set on the MCP server's own process is **not** visible inside the child; `args: {"jenkins_url": "…"}` is rejected as `invalid_args` (need, not arg); no code path lets MCP persist to the vault; stdin/stdout purity under MCP; `max_wait` returns `status: running` with a pollable `log_path`; HTTP bind `0.0.0.0` refused, and HTTP itself stays behind its build feature; **an untrusted project-local `./kata/tidy.sh` with `risk: low` is absent from `list_kata`.**
+**Done:** a local MCP client can list / describe / run / propose over the starter kata and Sesami, with an audit trail, env isolation, and a structurally scope-locked argument surface from day one. **This is the first agent-usable ship, and it ships safe.**
 
 ### Slice 6 — Grants, pending, unified confirm
 
-**Scope:** CLI `--confirm <id>`, pending_grant files with sha/HEAD pin, TTL, dedupe, `pending_path` outcome visibility (§6.4), `kadou grant *`. (History itself already exists from slice 5.)
-**Tests:** MCP run of a fixture `risk_level: high` runbook, with catalog policy `critical` and `allow_risk: "critical"` so it is **visible** but not allow-listed → `pending_grant`; `grant allow` then run succeeds; without `allow_risk` raised, the same runbook is simply invisible (`no_such_runbook`), exercising both branches of §6.2 vs §6.3; TTL expiry; dedupe on repeated identical args; approve refuses on a changed `script_sha256`; approve runs in the CLI's environment, not MCP's.
-**Done:** with catalog policy `critical` and agent `allow_risk: critical`, `ses-deploy` (not allow-listed) returns `pending_grant`; a human `grant approve` executes it with the pinned script; at the *default* config it is simply invisible to the agent (not "cannot run" — it is never seen).
+**Scope:** CLI `--confirm <id>` and the TTY prompt (§6.3), pending_grant files with sha/HEAD pin, TTL, dedupe, `pending_path` outcome visibility, `approve`/`expires` fields on the result, `kadou grant *`. (History itself already exists from slice 5.)
+**Tests:** MCP run of a fixture `risk: high` kata, with folder policy `critical` and agent `max_risk: critical` so it is **visible** but not allow-listed → `pending_grant`; `grant allow` then run succeeds; without the ceiling raised, the same kata is simply invisible (`no_such_kata`); TTL expiry; dedupe on repeated identical args; approve refuses on a changed sha256; approve runs in the CLI's environment, not MCP's; the CLI TTY confirm and `--confirm` accept the same protocol as MCP's grant.
+**Done:** with folder policy `critical` and agent `max_risk: critical`, `ses-deploy` (not allow-listed) returns `pending_grant`; a human `grant approve` executes it with the pinned kata; at the *default* config it is simply invisible to the agent.
 
-### Slice 7 — Catalog git install + accept hardening
+### Slice 7 — Folder git install + accept hardening
 
-**Scope:** `kadou catalog install/update/remove`, git CLI clone/pull, `sub_path` escape check, `kadou catalog accept --into` targeting only user-owned catalogs with a diff and `y/N` (§6.7), `catalog rename` deferred (§13). `propose_runbook` itself already shipped in slice 5.
-**Tests:** install `--path` cannot escape; accept refuses a git-backed catalog target; accept prints the diff; `kadou catalog install <url> --path src --name jenkins-pipelines` matches SPEC.md.
-**Done:** a human can accept an agent's proposal from slice 5 into a user catalog; `catalog install` round-trips a git URL.
+**Scope:** `kadou get`/`update`/`remove`, git CLI clone/pull, `--root` monorepo symlink, `kadou accept [--into]` targeting only user-owned folders with a diff and `y/N` (§6.7), refusing a git-checkout target. `propose_kata` itself already shipped in slice 5.
+**Tests:** `--root` cannot escape; accept refuses a git-backed folder target; accept prints the diff; `kadou get <url> --as sesami` clones cleanly (D4: Sesami needs no `--root`, kata sit at the repo root).
+**Done:** a human can accept an agent's proposal from slice 5 into a user folder; `kadou get` round-trips a git URL.
 
-### Slice 8 — TUI + starter installer
+### Slice 8 — Styled CLI, picker, prompts, notification, starter installer **[tui, re-cut]**
 
-**Scope:** ratatui app (sidebar, metadata, output, wizard, confirm, `?`, palette `Ctrl+p`, `/` search, `j`/`k`), product theme `doop` default, rust-embed starter catalog packaged under `crates/kadou/starter/` (so `cargo package` works — §3), POSIX `install.sh` with SHA-256 verify. Visual check of default `View()` (VHS or ratatui test backend snapshot).
-**Tests:** first-run with empty config shows 5 starter runbooks with the renamed (`target_dir`) params; key `?` overlay; `q` does not fire while a text input has focus; no `init` command; installer dry-run on a temp prefix, checksum mismatch aborts.
-**Done:** `curl | sh` shape is in-tree; `kadou` after install is a finished TUI; `kadou mcp serve` still the agent path.
+**Scope:** `ui` module (`style`, `frame`, `picker`, `prompt` — §3, `09` §3.7), the `kadou` library frame and the `needs you` block (§7.2), `kadou run`'s TTY prompts and confirm (§7.3, §6.3), the inline picker for id-less commands (§7.3), `[notify]` and the desktop notification (§7.8), `install.sh` with SHA-256 verify, rust-embed starter kata packaged under `crates/kadou/starter/`.
+**Tests:** styled and plain snapshots of the four frames (`kadou`, `kadou run`, `kadou check`, picker preview); picker filter ranks id over about; `run` without a TTY and without an id exits 2; critical prompt requires the exact id typed; `NO_COLOR` strips; `osascript`/`notify-send` missing is not an error; first-run with empty config shows 5 starter kata with the `target_dir` param names; installer dry-run on a temp prefix, checksum mismatch aborts.
+**Done:** `curl | sh` shape is in-tree; `kadou` after install is a finished frame; `kadou run` with no id picks; `kadou mcp serve` is still the agent path. **No ratatui app, no ratatui/kadou-tui dependency anywhere in the tree.**
 
 ### Slice 9 — Session mining (`kadou-mine`)
 
-**Scope:** `crates/kadou-mine` + `kadou mine` subcommands per `06` §2–4 and this PRD §6.8. Staging catalog `mined` (inactive, reserved name). `list_runbooks include_staging` / `catalog=mined` and `describe_runbook` on `mined.*` list/describe regardless of ceiling (§4.1). `run_runbook` on staging → `error=staging`. LaunchAgent `dev.kadou.mine` installer. Table-driven redaction tests (`06` §4.3) with **synthetic** inputs only. No Go `internal/mine`.
-**Tests:** `tools/list` still 4 tools and ≤ 2 800 bytes; `mine_list` is not a registered tool; fixture cluster of 3 synthetic sessions proposes one `format_version: 2` draft; `ghp_`-style fixture never appears in mine logs; `kadou mine approve` copies into inactive `mined`; `kadou catalog accept mined.<x> --into user` is the only path to executable; there is no `active = true` shortcut; MCP run of `mined.*` fails staging; missing Claude transcript → `skip: transcript_missing`.
+**Scope:** `crates/kadou-mine` + `kadou mine` subcommands per `06` §2–4 and §6.8. Drafts in `mined` (never in the library path, reserved name). `list_kata include_drafts` / `folder=mined` and `describe_kata` on `mined/*` list/describe regardless of ceiling. `run_kata` on a draft → `error=draft`. LaunchAgent `dev.kadou.mine` installer. Table-driven redaction tests with **synthetic** inputs only. No Go `internal/mine`.
+**Tests:** `tools/list` still 4 tools and ≤ 2 800 bytes; `mine_list` is not a registered tool; fixture cluster of 3 synthetic sessions proposes one single-file header draft; `ghp_`-style fixture never appears in mine logs; `kadou mine approve` copies into `mined`; `kadou accept mined/<x> [--into folder]` is the only path to executable; MCP run of `mined/*` fails as a draft; missing Claude transcript → `skip: transcript_missing`.
 **Done:** scheduled `kadou mine run --once` can queue a redacted draft; agents can list/describe it regardless of ceiling; they cannot execute or approve it.
 
 ### Cross-cutting
 
-**[new, B8]** CI runs on **macOS and Linux** (`/bin/sh` differs — dash vs. bash-in-POSIX-mode) and includes: `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace`, the MSRV check (`cargo +1.88 check --workspace --all-targets`, §3.2), `cargo-deny` (§3.3), and the `tools/list` byte-snapshot against `docs/design/tools-list.json`.
-
-Slice order keeps **a safe MCP path over Sesami** at slice 5, before TUI polish, matching `01` rank 1–6 and `03` "8, 10, 11 are load-bearing." Mining is still last because it is not required to run the Sesami catalog (`02` §7.13 is delayed adoption).
+CI runs on **macOS and Linux** (`/bin/sh` differs — dash vs. bash-in-POSIX-mode) and includes: `cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace`, the MSRV check (`cargo +1.88 check --workspace --all-targets`, §3.2), `cargo-deny` (§3.3), and the `tools/list` byte-snapshot against `docs/design/tools-list.json`.
 
 ---
 
 ## 10. Crate verification log
 
-Retrieved from `https://crates.io/api/v1/crates/<name>` on **2026-09-11**, and re-verified by the independent review the same day (`07` §5.1). User-Agent `kadou-prd-research/0.1`.
+Retrieved from `https://crates.io/api/v1/crates/<name>` on **2026-09-11**. User-Agent `kadou-prd-research/0.1`. **[shape]** rows for `ratatui` are removed; rows for `anstyle`, `anstream`, `nucleo-matcher`, `inquire` are added and newly verified this revision.
 
 | Crate | max_stable_version | license field |
 |---|---|---|
@@ -1122,8 +1157,11 @@ Retrieved from `https://crates.io/api/v1/crates/<name>` on **2026-09-11**, and r
 | rmcp-macros | 3.3.0 | Apache-2.0 |
 | clap | 4.6.6 | MIT OR Apache-2.0 |
 | clap_complete | 4.6.9 | MIT OR Apache-2.0 |
-| ratatui | 0.30.2 | MIT |
 | crossterm | 0.29.0 | MIT |
+| **anstyle** | **1.0.14** | **MIT OR Apache-2.0** |
+| **anstream** | **1.0.0** | **MIT OR Apache-2.0** |
+| **nucleo-matcher** | **0.3.1** | **MPL-2.0** |
+| **inquire** | **0.9.4** | **MIT** |
 | tokio | 1.53.1 | MIT |
 | serde | 1.0.229 | MIT OR Apache-2.0 |
 | serde_json | 1.0.151 | MIT OR Apache-2.0 |
@@ -1157,95 +1195,143 @@ Retrieved from `https://crates.io/api/v1/crates/<name>` on **2026-09-11**, and r
 | assert_cmd | 2.2.2 | MIT OR Apache-2.0 |
 | cargo-deny | 0.20.2 | MIT OR Apache-2.0 |
 
-**[rev]** `directories` 6.0.0 and bare `keyring` 4.2.0 are removed from this table (rejected — B10, B12; see §3.1 "Explicitly not used").
+`directories` 6.0.0, bare `keyring` 4.2.0, and **`ratatui` 0.30.2** are removed from this table (rejected — B10, B12, and `09` D7 respectively; see §3.1 "Explicitly not used"). `anstyle` and `anstream`'s declared `rust-version` is 1.66.0, `inquire`'s is 1.80.0, `nucleo-matcher` declares none — all well under the workspace's 1.88 MSRV (§3.2).
 
-**Verified, not unverified:** age identity file interoperability with Go `filippo.io/age` `keys.txt` (`07` Appendix B item 5 decrypted a real Go-written envelope). **Still unverified:** live MCP JSON-RPC framing overhead beyond the tens-of-bytes estimate in `01` §10, and a real-tokenizer (as opposed to byte-ratio) measurement of `docs/design/tools-list.json`.
+**Verified, not unverified:** age identity file interoperability with Go `filippo.io/age` `keys.txt`. **Still unverified:** live MCP JSON-RPC framing overhead beyond the tens-of-bytes estimate; a real-tokenizer (as opposed to byte-ratio) measurement of `docs/design/tools-list.json`; live elicitation support in Claude Code or Cursor (`09` §4.2 — elicitation is rejected as the grant channel regardless).
 
 ---
 
 ## 11. Key decisions (index)
 
-1. Four meta-tools, lazy describe, no resources/prompts capability advertised at all — `03` §8, `02` §7.1, `01` §6; `07` B1, B11.
-2. v1 YAML loads with string-default coercion and the complete known-key list; v2 is additive; `catalog.yaml` shared params are opt-in per runbook via `uses:` — `01` §4, §9 Q2; `07` B9.
-3. Stable catalog `name`; Sesami should be `jenkins-pipelines` + `sub_path=src` — `01` §4.9.
-4. One visibility-and-grant state machine: hidden → `no_such_runbook` everywhere; visible + high/critical + not allow-listed → `pending_grant` with a pinned, TTL'd, deduped record — `03` §10–11; `07` B4.
-5. Human ceiling medium (per-catalog, replaces not intersects the global), agent ceiling low, stated as an exact formula — `03` §1, §10; `07` B4.
-6. Age vault with a byte-for-byte-specified Go-compatible envelope; optional keyring-wrapped *passphrase* via `keyring-core`; `kadou vault set` for entry — `01` §2.4, `03` §6; `07` B12, B13.
-7. Exec file + env; extra catalog files allowed; MCP children get an env allowlist, a timeout, and a concurrency limit, not the full parent environment — `01` §7; `07` B5, B6.
-8. History 90d / 50MB / 10MB archives, with a 7-day plain-text fresh tier and pre-write stream redaction — `01` §9 Q8; `07` B3.
-9. Skills parse-only in MVP — `01` §9 Q9.
-10. CLI+MCP first (re-cut slice order, safety folded into the first agent-usable slice), TUI after, no web — `03` charter 13; `07` B8.
-11. Strict loader, per-catalog failure isolation — `01` §9 Q12; `07` B9.
-12. Official `rmcp` 3.3.0, not a third-party MCP crate; `serde-yaml-ng` not deprecated `serde_yaml`; `etcetera` not `directories`; `keyring-core` not bare `keyring` — `07` B10, B12.
-13. Starter catalog embedded with non-`PATH`-colliding parameter names; install = ready — `03` §2–3; `07` B6.
-14. Token budgets: ≤2 800 compact bytes / ≤800 tokens connect (measured: 2 330 B / ~583 tok), ≤1 500 typical run, ≤60s to first runbook — `07` B1.
-15. Session mining is `kadou-mine` + `kadou mine`, not four MCP tools; drafts live in the reserved, non-configurable staging catalogs `mined`/`proposed` (flattened layout) and are list/describe-only, regardless of ceiling, until a human runs `catalog accept --into` — `06` §5 vs `03` §8; `07` B14.
+1. Four meta-tools, lazy describe, no resources/prompts capability advertised at all — `03` §8, `02` §7.1, `01` §6; `07` B1, B11; **[shape]** renamed `*_kata`.
+2. **[shape]** One header grammar; no `format_version`; old dops catalogs convert once via `kadou import` — `08` §1, §3.
+3. **[shape]** Folder name is the stable id prefix; renaming a folder is an explicit directory rename — `08` §4.1.
+4. One visibility-and-grant state machine: hidden → `no_such_kata` everywhere; visible + high/critical + not allow-listed → `pending_grant` with a pinned, TTL'd, deduped record carrying `approve`/`expires` — `03` §10–11; `07` B4; **[tui]** two faces (CLI, MCP), not three.
+5. Human ceiling medium (per-folder, replaces not intersects the global), agent ceiling low, stated as an exact formula; **[tui]** trust is a visibility term — `03` §1, §10; `07` B4; `09` D3.
+6. Age vault with a byte-for-byte-specified Go-compatible envelope; **[shape]** flat needs payload with a secret bit, replacing scoped catalog/runbook keys — `01` §2.4, `03` §6; `07` B12, B13; `08` §6.2.
+7. Exec the kata file with env; **[tui]** the shebang is the runtime, `/bin/sh` default; MCP children get an env allowlist, a timeout, and a concurrency limit, not the full parent environment — `01` §7; `07` B5, B6; `09` D2.
+8. History 90d / 50MB / 10MB archives, 7-day plain-text fresh tier, pre-write stream redaction; **[shape]** field renames (`folder`, `id`); **[tui]** `interface` drops `tui` — `01` §9 Q8; `07` B3.
+9. Skills parse-only in MVP; `*.md` beside kata ignored by the loader — `01` §9 Q9.
+10. **[tui]** CLI+MCP only; no TUI in v1; picker and prompts inside the CLI — `03` charter 13 (revised); `07` B8; `09` D7, §5.
+11. `kadou check` is the loader; per-folder failure isolation — `01` §9 Q12; `07` B9; `08` §6.2.
+12. Official `rmcp` 3.3.0; `serde-yaml-ng` on the import path only; `etcetera` not `directories`; `keyring-core` not bare `keyring`; **[shape]** `ratatui` removed, picker/prompt/styled-output crates added — `07` B10, B12; `09` §3.7.
+13. Starter kata embedded with non-`PATH`-colliding arg names; install = ready — `03` §2–3; `07` B6.
+14. Token budgets: ≤2 800 compact bytes / ≤800 tokens connect (measured: **2 028 B / ~507 tok**), ≤1 500 typical run, ≤60s to first kata — `07` B1; `08` §6.2 (payload shrank further from the first revision's 2 330 B).
+15. Session mining is `kadou-mine` + `kadou mine`, not four MCP tools; drafts are single-file headers in the reserved, non-configurable staging areas `mined`/`proposed`, list/describe-only regardless of ceiling, until a human runs `kadou accept` — `06` §5 vs `03` §8; `07` B14; `08` §6.2.
+16. **[new, shape]** Kata is one file with a closed-grammar header; folders are namespaces; no registry — `08` §1, §11.
+17. **[new, tui]** Human review is told, not housed: `approve` in results, desktop notification, `needs you` block — `09` §4, §6.2 §11.
 
 ---
 
 ## 12. Deviations and limits
 
 - This document does not implement code. Crate versions will drift after 2026-09-11.
-- Token-per-connect target is a budget on **our** `tools/list` payload, measured as compact bytes and a 4 B/token (and 3.5 B/token) estimate — not a billed-token measurement from Claude/Cursor, and not a real tokenizer count (`07` §3.1).
-- Go vault import is **verified** (`07` Appendix B), not best-effort as the prior draft stated; the envelope is specified byte-for-byte (§6.5).
-- This PRD picks the product name `kadou`; no `04-naming.md` exists in this tree. If one is authored later, it documents the *process*, not a still-open decision.
+- Token-per-connect target is a budget on **our** `tools/list` payload, measured as compact bytes and a 4 B/token (and 3.5 B/token) estimate — not a billed-token measurement from Claude/Cursor, and not a real tokenizer count.
+- Go vault import is **verified**, not best-effort; the envelope is specified byte-for-byte (§6.5).
+- `docs/design/04-naming.md` now exists in this tree (merged from `sd/dops/naming`); it documents the naming *research*, not a still-open decision — the product name `kadou` and the unit name `kata` are both settled (`08` §5).
 - Publishing `install.sh` to a stable URL, crates.io, and GitHub Releases is gated on Mason (repo README Gates).
-- `06` §5.1 Go layout is explicitly ignored (planner note, inbox 002).
-- `kadou catalog rename --migrate-vault` (§4.2, §8.2) is deferred, not designed here.
-- Live MCP host behavior (per-call timeouts, tool-search deferral by real hosts) was not run; `07`'s findings are static analysis of `rmcp` 3.3.0 source plus a scratch-crate probe, not a live host trace. The Linux `/bin/sh` (dash) behavior of the Sesami scripts was not run in this review pass.
+- `06` §5.1 Go layout is explicitly ignored.
+- **[shape]** `kadou catalog rename --migrate-vault` from the first revision is moot — there is no catalog registry to rename; renaming a folder is a directory rename (decision 3), and history/last-used args do not migrate by design.
+- Live MCP host behavior (per-call timeouts, tool-search deferral by real hosts) was not run; `07`'s findings are static analysis, not a live host trace. The Linux `/bin/sh` (dash) behavior of the Sesami scripts was not run in this review pass.
+- **[shape]** Byte counts for `08` §6.2's estimate (2 330 B minus ~250 B ≈ 2 080 B) versus this revision's measured 2 028 B differ by ~50 bytes — both are estimates over the same hand-authored schema; the measured number in §1.3 and §5.4 is authoritative.
 - Did not wiki-ingest (assignment). Did not push.
 
 ---
 
 ## 13. Revision log
 
-This revision resolves `docs/design/07-review.md` §8.1 (blocking) and takes the cheap items from §8.2 (suggestions). Every blocking id below is closed somewhere in this document; the "Sections changed" column is where to look.
+This document has had two revisions. The **first revision** (2026-09-11, earlier) resolved `docs/design/07-review.md` §8.1 (blocking) against the original runbook/catalog shape and took the cheap items from §8.2; that table is kept below for history. The **second revision** (this one, same day) applies `docs/design/08-shape-review.md` (single-file kata, folders, no registry) and `docs/design/09-tui-decision.md` (no full-screen TUI; styled CLI + picker) in full, per Mason's decisions D1–D7 recorded in `09` §0. The new delta map is below the first revision's tables.
 
-### Blocking (07 §8.1)
+### First revision — Blocking (`07` §8.1)
 
-| Rank | ID | Revision | Sections changed |
+| Rank | ID | Revision | Sections changed (first revision) |
 |---|---|---|---|
-| 1 | B4 | One visibility-and-grant state machine; hidden → `no_such_runbook`; pending record gets a sha/HEAD pin, 24h TTL, dedupe, `pending_path` | §2 row 4, row 5; §5.5 (`pending_grant` result); §6.2; §6.3; §6.4 |
-| 2 | B2 | No secret exfiltration through MCP `args`; MCP never writes the vault | §1.2; §4.6; §6.1 (args→env); §6.5 |
-| 3 | B5 | MCP child environment allowlist, `exec.timeout`, `mcp.max_wait`→`running`, cancel (SIGTERM→SIGKILL), concurrency limit | §3 (kadou-exec deps); §3.1 (libc/nix); §6.1; §6.2; §8.2 (risk row) |
-| 4 | B3 | Redact before persisting; 7-day plain-text fresh tier; retention for pending/proposed | §2 row 8; §3.1 (flate2/tar); §5.5 (`log_path`); §6.6 |
-| 5 | B8 | Re-cut the slice plan; move starter embed, history, redaction, env allowlist, arg lock, lifecycle, propose/accept into or before the first agent-usable slice; add the CI job | §9 (entire section) |
-| 6 | B1 | Meet the token budget; rewrite the four schemas; drop `$schema`/`$id`/`title`; hand-authored `inputSchema`; gate at 2 800 B; compact JSON; `isError` rules; describe returns `args_schema`/`resolved`/capped script; define `summary` | §1.3; §5.1; §5.2; §5.4; §5.5; §8.2 (risk row); `docs/design/tools-list.json` |
-| 7 | B6 | Env naming/reserved names; per-type args→env serialization; rename starter `path` params; drop `getent` | §4.4; §5.4 (`args` description); §6.1; §7.6 |
-| 8 | B7 | Harden `propose_runbook`/accept: `catalog` pattern + containment, size caps, required `risk_level`, strict load at propose, `proposal_id` rename, accept into user-owned catalogs only with diff + y/N | §5.4 (`propose_runbook`); §5.5 (`propose_runbook` result); §6.7 |
-| 9 | B9 | Loader and `catalog.yaml`: string-default coercion, complete known-key list, per-catalog failure isolation, empty default ≠ required, opt-in shared params via `uses:` | §2 row 2, row 12; §4.3; §4.5; §4.7 |
+| 1 | B4 | One visibility-and-grant state machine; hidden → `no_such_runbook`; pending record gets a sha/HEAD pin, 24h TTL, dedupe, `pending_path` | §2 row 4, row 5; §5.5; §6.2; §6.3; §6.4 |
+| 2 | B2 | No secret exfiltration through MCP `args`; MCP never writes the vault | §1.2; §4.6; §6.1; §6.5 |
+| 3 | B5 | MCP child environment allowlist, `exec.timeout`, `mcp.max_wait`→`running`, cancel, concurrency limit | §3; §3.1; §6.1; §6.2; §8.2 |
+| 4 | B3 | Redact before persisting; 7-day plain-text fresh tier; retention for pending/proposed | §2 row 8; §3.1; §5.5; §6.6 |
+| 5 | B8 | Re-cut the slice plan; move starter embed, history, redaction, env allowlist, arg lock, lifecycle, propose/accept forward | §9 (entire section) |
+| 6 | B1 | Meet the token budget; hand-authored schemas; gate at 2 800 B; compact JSON; `isError` rules | §1.3; §5.1; §5.2; §5.4; §5.5; §8.2; `tools-list.json` |
+| 7 | B6 | Env naming/reserved names; per-type serialization; rename starter `path` params; drop `getent` | §4.4; §5.4; §6.1; §7.6 |
+| 8 | B7 | Harden `propose_runbook`/accept: pattern + containment, size caps, required risk, strict load, `proposal_id` rename, user-owned-catalog accept | §5.4; §5.5; §6.7 |
+| 9 | B9 | Loader: string-default coercion, complete known-key list, per-catalog failure isolation, opt-in shared params | §2 row 2, row 12; §4.3; §4.5; §4.7 |
 | 10 | B10 | XDG paths: `etcetera` replaces `directories` | §3; §3.1; §7.5 |
-| 11 | B11 | HTTP transport: `allowed_origins`, per-launch bearer token, or keep HTTP gated behind a build feature until both exist | §5.1 |
-| 12 | B12 | Vault crypto: byte-for-byte Go envelope spec; passphrase-in-keyring semantics; `keyring-core` + `apple-native-keyring-store`; MSRV resolved | §2 row 6; §3.1; §3.2; §6.5 |
-| 13 | B13 | Secret entry: `kadou vault set` from TTY/stdin; `config set` refuses vault keys; `--param` refuses secret names | §1.2; §6.5; §7.1; §7.3 |
-| 14 | B14 | Staging model: visible regardless of ceiling, reserved `mined`/`proposed` names, flattened `proposed/` layout, `accept --into`, no `active = true`, miner writes `format_version: 2` | §2 row 14, row 15; §4.1; §4.2; §5.3; §6.8; §7.5 |
-| 15 | B15 | CI fixtures: sanitized shape-preserving catalog for CI, `KADOU_TEST_CATALOG` for the real tree locally; scrub internal hostnames/workspace names from examples | §2 row 11; §4.5 and §6.5 example URLs/hostnames; §9 (slice 2) |
+| 11 | B11 | HTTP transport: `allowed_origins`, bearer token, or gated behind a build feature | §5.1 |
+| 12 | B12 | Vault crypto: byte-for-byte Go envelope spec; passphrase-in-keyring; MSRV resolved | §2 row 6; §3.1; §3.2; §6.5 |
+| 13 | B13 | Secret entry: `kadou vault set` from TTY/stdin; `config set` refuses vault keys | §1.2; §6.5; §7.1; §7.3 |
+| 14 | B14 | Staging model: visible regardless of ceiling, reserved names, flattened layout, accept, no `active = true` | §2 row 14, row 15; §4.1; §4.2; §5.3; §6.8; §7.5 |
+| 15 | B15 | CI fixtures: sanitized shape-preserving folder for CI, real tree locally; scrub hostnames | §2 row 11; §4.5, §6.5; §9 |
 
-### Suggestions taken (07 §8.2, cheap)
+Naming, suggestions, and deferred items from the first revision are unchanged in substance and are superseded in wording by the shape below; see git history for the exact first-revision text.
 
-| # | Suggestion | Where |
-|---|---|---|
-| 1 | MCP tool annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`) | `docs/design/tools-list.json`; §5.2; §5.4 |
-| 2 | `describe_runbook` returns `catalog_root` + helper file list | §5.2; §5.5 |
-| 3 | Pin `grant allow` to a script digest, `--any-version` to opt out | §6.4 |
-| 4 | Drop `vault.passphrase_cmd` from MVP | §6.5 |
-| 5 | Add `mcp.max_output_lines`/`mcp.max_wait` to the closed configurable list | §7.5 |
-| 6 | `cargo-deny` in CI | §3.3; §9 (cross-cutting) |
-| 7 | Watch `serde-yaml-ng` maintenance; keep the round-trip test as the swap guard | §3.1 |
-| 8 | Move the starter catalog embed under the `kadou` bin crate | §3 (workspace layout) |
-| 9 | Palette chord `Ctrl+p` instead of `Ctrl+Shift+p` | §7.2 |
-| 10 | Document the cwd-vs-Go change and SIGTERM-before-SIGKILL | §2 row 7; §6.1 |
-| 11 | `kadou mcp schema --bytes` for operator-visible budget checks | §7.1 |
-| 14 | State that `mcp_client` is self-reported | §6.4; §6.6 |
-| 15 | Decide `XDG_*_HOME` is not a second override next to `KADOU_HOME` | §7.5 |
+### Second revision — Shape (`08` §7) delta map
 
-### Deferred (not applied in this revision)
+Every row of `08` §7's own "PRD deltas" table, and where it landed in this revision:
 
-| # | Suggestion | Why deferred |
-|---|---|---|
-| 12 | `kadou catalog rename --migrate-vault` | Requires implementation-phase design of a vault-key migration, not a documentation-only fix; noted in §4.2, §8.2, §12. |
-| 13 | Sesami catalog hygiene (drop the `~/.bashrc` credential `eval`, stop printing `-u user:pass` in `--dry-run`, review `curl -k`) | Lives in `~/Bitbucket/sdo-dops-catalog`, which this assignment's authorized scope holds read-only; it is a catalog-content fix, not a kadou product fix. Flagged for a separate, catalog-owning task. |
+| `08` §7 row | Landed in |
+|---|---|
+| Title block, §1.1 | §1.1 |
+| §1.2 users | §1.2 |
+| §1.3 metrics | §1.3 |
+| §2 row 1 (tool names) | §2 row 1, §5.4 |
+| §2 row 2 (format versioning) | §2 row 2, §4.3 |
+| §2 row 3 (catalog identity) | §2 row 3, §4.2 |
+| §2 row 7 (script contract) | §2 row 7, §6.1 |
+| §2 row 9 (skills) | §2 row 9 |
+| §2 row 11 (compatibility tests) | §2 row 11, §9 slice 2 |
+| §2 row 12 (loader strictness) | §2 row 12, §4.7 |
+| §2 row 13 (secret flag) | §2 row 13, §4.4 |
+| §2 row 14 (inactive catalogs, staging) | §2 row 14, §4.1, §4.5, §6.7 |
+| §2 row 15 (mining) | §2 row 15, §6.8 |
+| §3 workspace | §3, §3.1 |
+| §4 (all — rewrite as "Kata format") | §4 (entire section) |
+| §5.2 progressive disclosure | §5.2 |
+| §5.4 schemas | §5.4, `tools-list.json` |
+| §5.5 results | §5.5 |
+| §5.6 snippet | §5.6 |
+| §6.1 exec contract | §6.1 |
+| §6.2 ceilings | §6.2 |
+| §6.4 grants | §6.4 |
+| §6.5 vault | §6.5 |
+| §6.6 history | §6.6 |
+| §6.7 propose/accept | §6.7 |
+| §6.8 mining | §6.8 |
+| §7.1 command tree | §7.1 |
+| §7.2 keys | §7.3 (retitled "Picker and prompt keys" per `09`, not the `08` TUI key table — see the TUI-decision map below) |
+| §7.3 first run | §7.4 |
+| §7.5 config | §7.6 |
+| §7.6 starter | §7.7 |
+| §8.1 non-goals | §8.1 |
+| §8.2 risks | §8.2 |
+| §9 slices 2, 4, 5, 8 | §9 |
+| §11 decisions index | §11 |
+| §13 revision log | §13 (this table) |
+| `docs/design/tools-list.json` | regenerated, measured 2 028 B |
 
-### Naming (07 §10, applied)
+### Second revision — TUI decision (`09` §6) delta map
 
-The prior draft's codename ("dops" hyphen "next", retired) is replaced by `kadou` (binary, crates, config/data/state dirs, env prefix, MCP server name, keyring service, LaunchAgent label, and all strings in tool descriptions and CLI examples) throughout this document. `~/.dops/` import paths and the reference catalog path `~/Bitbucket/sdo-dops-catalog` stay literal, since they name the pre-existing Go product and its data, not kadou's own layout. The theme name `doop` is left as-is — `07` §10 calls that a naming-adjacent decision for a later phase, not implied by the binary rename.
+D1–D7 from `09` §0, and every row of `09` §6.1 (→ `03-principles.md`) and `09` §6.2 (→ this document):
+
+| `09` item | Landed in |
+|---|---|
+| D1 (name: kata) | §2 row 1, §11 item 1 (already the shape's own decision — `08` row 16) |
+| D2 (shebang runtime) | §2 row 7, §6.1, §11 item 7 |
+| D3 (project-local trust by path) | §2 row 5, §4.5, §6.2, §8.2, §11 item 5 |
+| D4 (Sesami kata at repo root) | §4.6 (import notes), `03-principles.md` unaffected (repository layout, not product principle) |
+| D5 (last-used args, interactive-prefill only) | §6.6, §7.3, §11 item 6 (folded into decision table row 6/8) |
+| D6 (starter materialized on first run) | §7.4, §7.7 |
+| D7 (no full-screen TUI) | §2 row 10, §8.1, §9 slice 8, §11 item 10 |
+| `09` §6.1 (intro paragraph, mapping table rows 2/3/5, §4, §5, convention table, charter 3/5/11/13, non-goals, scoreboard) | `docs/design/03-principles.md` (see that file's own diff for the line-by-line application) |
+| `09` §6.2 §1.1–§1.3 | §1.1, §1.2, §1.3 |
+| `09` §6.2 §3, §3.1, §3.2 | §3, §3.1, §3.2 |
+| `09` §6.2 §6.3, §6.4 | §6.3, §6.4 |
+| `09` §6.2 §5.5 (`approve`/`expires`) | §5.5 |
+| `09` §6.2 §6.6 (`interface` enum) | §6.6 |
+| `09` §6.2 §6.7 | §6.7 (TUI palette line removed — no palette) |
+| `09` §6.2 §7 title, §7.1, §7.2, §7.3, §7.5 | §7 title, §7.1, §7.3, §7.4, §7.6 |
+| `09` §6.2 §8.1, §8.2 | §8.1, §8.2 |
+| `09` §6.2 §9 slice 8 | §9 slice 8 |
+| `09` §6.2 §11 decision 10, new decision 17 | §11 item 10, item 17 |
+| `09` §6.2 §12 | §12 (elicitation note folded into §10) |
+| `09` §6.2 §13 | §13 (this document's own revision log) |
+| `09` §6.3 (`08` itself, not edited — superseded lines listed for the record) | Not applicable to this document; `08` stays a dated review per `09` §6.3 |
