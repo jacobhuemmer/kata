@@ -6,3 +6,13 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+humantime.workspace = true
+kadou-core = { path = "../kadou-core", version = "0.1.0" }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "process", "io-util", "macros", "time", "sync"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["signal", "process"] }
+
+[dev-dependencies]
+tempfile.workspace = true
