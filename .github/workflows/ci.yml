@@ -1,0 +1,71 @@
+# Added per docs/design/05-prd.md §9 "Cross-cutting" ahead of any GitHub remote — the repo
+# currently lives on origin.cursor.com, so this workflow will not run until the repo (or a
+# mirror of it) is hosted on GitHub.
+#
+# `fmt`, `clippy`, and `deny` run once on Linux since their result does not depend on OS;
+# `test` and `msrv` run on both macOS and Linux because `/bin/sh` differs there (dash vs.
+# bash-in-POSIX-mode) and kadou-exec shells out to it.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Includes the tools/list byte-snapshot against docs/design/tools-list.json (§1.3,
+      # §9 slice 5) once that insta test lands — it is a normal `cargo test`, not a
+      # separate CI step.
+      - run: cargo test --workspace
+
+  msrv:
+    name: msrv 1.88 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - run: cargo check --workspace --all-targets
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
