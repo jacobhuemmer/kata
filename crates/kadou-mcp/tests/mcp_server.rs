@@ -511,6 +511,224 @@ async fn propose_kata_writes_a_draft_that_never_registers_or_runs() {
 }
 
 #[tokio::test]
+async fn visible_critical_kata_not_allow_listed_returns_pending_grant() {
+    // §9 slice 6: folder policy critical + agent max_risk critical makes ses-deploy
+    // *visible*, but it is not in [agent].allow, so it must not just run.
+    let home = setup_sesami(|c| {
+        c.folder.insert(
+            "sesami".to_string(),
+            kadou_core::FolderConfig {
+                max_risk: Some(RiskLevel::Critical),
+                agent_max_risk: None,
+            },
+        );
+        c.agent.max_risk = RiskLevel::Critical;
+    });
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let (value, is_error) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({"id": "sesami/ses-deploy", "args": {"version": "1", "oke_cluster": "uat"}}),
+    )
+    .await;
+    assert!(!is_error, "{value}");
+    assert_eq!(value["status"], "pending_grant");
+    assert_eq!(value["id"], "sesami/ses-deploy");
+    assert_eq!(value["risk"], "critical");
+    assert!(value["pending_id"].as_str().is_some());
+    assert!(
+        value["approve"]
+            .as_str()
+            .unwrap()
+            .starts_with("kadou grant approve ")
+    );
+    assert!(value["expires"].as_str().is_some());
+
+    let pending_path = PathBuf::from(value["pending_path"].as_str().unwrap());
+    assert!(pending_path.is_file(), "pending_path must be a real file");
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&pending_path).unwrap()).unwrap();
+    assert_eq!(record["requester"], "mcp");
+    assert_eq!(record["args"]["version"], "1");
+    // Needs never appear in the pending record's args (§6.4 item 1).
+    assert!(record.get("jenkins_token").is_none());
+    assert!(record["sha256"].as_str().unwrap().starts_with("sha256:"));
+
+    // No run ever happened: no history record was written for this attempt.
+    let records_dir = home.paths.state_dir.join("history/records");
+    assert!(
+        !records_dir.is_dir() || std::fs::read_dir(&records_dir).unwrap().next().is_none(),
+        "a pending_grant must not itself execute anything"
+    );
+}
+
+#[tokio::test]
+async fn at_the_default_ceiling_the_same_critical_kata_is_simply_invisible() {
+    let home = setup_sesami(|_| {}); // default: human medium, agent low
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let (value, is_error) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({"id": "sesami/ses-deploy"}),
+    )
+    .await;
+    assert!(is_error);
+    assert_eq!(value["error"], "no_such_kata");
+}
+
+#[tokio::test]
+async fn allow_listed_kata_runs_instead_of_pending() {
+    let home = setup_sesami(|c| {
+        c.max_risk = RiskLevel::Critical;
+        c.agent.max_risk = RiskLevel::Critical;
+        c.agent.allow = vec!["team/allowed-critical".to_string()];
+    });
+    write_kata(
+        &home.paths.kata_dir(),
+        "team/allowed-critical.sh",
+        "#!/bin/sh\n# ---\n# about: Allowed critical\n# risk:  critical\n# ---\necho allowed-ran\n",
+    );
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let (value, is_error) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({"id": "team/allowed-critical"}),
+    )
+    .await;
+    assert!(!is_error, "{value}");
+    assert_eq!(value["status"], "success");
+    assert_eq!(value["output"], "allowed-ran");
+}
+
+#[tokio::test]
+async fn a_pinned_allow_entry_stops_granting_once_the_kata_file_changes() {
+    let home = setup_sesami(|c| {
+        c.max_risk = RiskLevel::Critical;
+        c.agent.max_risk = RiskLevel::Critical;
+    });
+    write_kata(
+        &home.paths.kata_dir(),
+        "team/pinned.sh",
+        "#!/bin/sh\n# ---\n# about: Pinned\n# risk:  critical\n# ---\necho v1\n",
+    );
+    let sha_v1 = kadou_core::file_sha256(&home.paths.kata_dir().join("team/pinned.sh")).unwrap();
+
+    let mut config = Config::load(&home.paths.config_file()).unwrap();
+    config.agent.allow = vec![format!("team/pinned@{sha_v1}")];
+    config.save(&home.paths.config_file()).unwrap();
+
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    // Pinned to the current file: runs.
+    let (value, is_error) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({"id": "team/pinned"}),
+    )
+    .await;
+    assert!(!is_error, "{value}");
+    assert_eq!(value["status"], "success");
+
+    // The file changes; the pin no longer matches, so it falls back to pending_grant.
+    write_kata(
+        &home.paths.kata_dir(),
+        "team/pinned.sh",
+        "#!/bin/sh\n# ---\n# about: Pinned\n# risk:  critical\n# ---\necho v2\n",
+    );
+    let (value, is_error) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({"id": "team/pinned"}),
+    )
+    .await;
+    assert!(!is_error, "{value}");
+    assert_eq!(value["status"], "pending_grant");
+}
+
+#[tokio::test]
+async fn a_second_identical_request_dedupes_onto_the_same_pending_id() {
+    let home = setup_sesami(|c| {
+        c.max_risk = RiskLevel::Critical;
+        c.agent.max_risk = RiskLevel::Critical;
+    });
+    write_kata(
+        &home.paths.kata_dir(),
+        "team/dedupe.sh",
+        "#!/bin/sh\n# ---\n# about: Dedupe\n# risk:  critical\n# args:\n#   name: text = x\n# ---\necho hi\n",
+    );
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let (first, _) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({"id": "team/dedupe", "args": {"name": "a"}}),
+    )
+    .await;
+    let (second, _) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({"id": "team/dedupe", "args": {"name": "a"}}),
+    )
+    .await;
+    assert_eq!(first["pending_id"], second["pending_id"]);
+
+    // Different args are a different pending record, not deduped onto the first.
+    let (third, _) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({"id": "team/dedupe", "args": {"name": "b"}}),
+    )
+    .await;
+    assert_ne!(first["pending_id"], third["pending_id"]);
+
+    let pending_dir = home.paths.state_dir.join("pending");
+    let count = std::fs::read_dir(&pending_dir).unwrap().count();
+    assert_eq!(count, 2, "exactly two distinct pending records on disk");
+}
+
+#[tokio::test]
+async fn an_expired_pending_record_no_longer_dedupes() {
+    let home = setup_sesami(|c| {
+        c.max_risk = RiskLevel::Critical;
+        c.agent.max_risk = RiskLevel::Critical;
+    });
+    write_kata(
+        &home.paths.kata_dir(),
+        "team/ttl.sh",
+        "#!/bin/sh\n# ---\n# about: TTL\n# risk:  critical\n# ---\necho hi\n",
+    );
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let (first, _) = call(&client, "run_kata", serde_json::json!({"id": "team/ttl"})).await;
+    let pending_id = first["pending_id"].as_str().unwrap().to_string();
+
+    // Back-date the record's `expires` past "now" to simulate the 24h TTL elapsing.
+    let store = kadou_mcp::pending::PendingStore::new(&home.paths.state_dir);
+    let mut record = store.get(&pending_id).unwrap();
+    record.expires = humantime::format_rfc3339_seconds(
+        std::time::SystemTime::now() - std::time::Duration::from_secs(60),
+    )
+    .to_string();
+    store.save(&record).unwrap();
+    assert!(store.get(&pending_id).unwrap().is_expired());
+
+    let (second, _) = call(&client, "run_kata", serde_json::json!({"id": "team/ttl"})).await;
+    assert_ne!(
+        second["pending_id"], pending_id,
+        "an expired record must not be deduped onto"
+    );
+}
+
+#[tokio::test]
 async fn dry_run_resolves_env_without_executing() {
     let home = setup_sesami(|_| {});
     let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());

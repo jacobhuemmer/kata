@@ -4,7 +4,7 @@
 //! [`crate::server`] is the only caller; it owns the rmcp plumbing.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use kadou_core::{Arg, ArgDefault, ArgType, Kata, LookupResult, RiskLevel};
@@ -14,6 +14,8 @@ use tokio_util::sync::CancellationToken;
 use crate::drafts;
 use crate::env;
 use crate::history::{self, FinishOutcome, HistoryRecord, HistoryStore};
+use crate::notify;
+use crate::pending::{self, PendingStore};
 use crate::redact;
 use crate::state::ServerState;
 use crate::visibility::{self, PROJECT_LOCAL_FOLDER_KEY};
@@ -507,6 +509,24 @@ pub async fn run_kata(
         );
     }
 
+    // §6.3/§6.4: a *visible* high/critical kata still needs a human grant unless the agent's
+    // own `[agent].allow` already covers it (bare id: any version; `id@sha256:...`: pinned to
+    // that exact file). `dry_run` above always bypasses this — it never executes anything.
+    if kata.risk >= RiskLevel::High {
+        let sha256 = kadou_core::file_sha256(&kata.path).unwrap_or_default();
+        if !allow_permits(&config.agent.allow, &kata.id, &sha256) {
+            return pending_grant_result(
+                state,
+                config,
+                &kata,
+                &folder,
+                &resolved_args,
+                mcp_client,
+                &sha256,
+            );
+        }
+    }
+
     let missing: Vec<String> = resolved_needs
         .iter()
         .filter(|n| n.value.is_none())
@@ -663,6 +683,104 @@ pub async fn run_kata(
     }
 }
 
+/// `true` when `id` is covered by an `[agent].allow` entry: a bare id (any version) or
+/// `id@sha256:...` pinned to exactly this file's current hash (§6.4 item 5, §7.1 `grant
+/// allow`). A pinned entry whose hash no longer matches simply doesn't grant — the kata falls
+/// through to `pending_grant` like an unlisted one, per the worker brief's "or whose pinned
+/// sha256 differs when the allow entry is pinned".
+fn allow_permits(allow: &[String], id: &str, sha256: &str) -> bool {
+    let pin_prefix = format!("{id}@");
+    allow.iter().any(|entry| {
+        entry == id
+            || entry
+                .strip_prefix(&pin_prefix)
+                .is_some_and(|pin| pin == sha256)
+    })
+}
+
+/// The on-disk directory backing `folder` — used for the git-HEAD pin (§6.4). `None` for a
+/// project-local kata whose `kata/` directory this server never discovered.
+fn folder_dir(state: &ServerState, kata: &Kata, folder: &str) -> Option<PathBuf> {
+    if kata.id.starts_with("./") {
+        state.project_local_kata_dir.clone()
+    } else {
+        Some(state.paths.kata_dir().join(folder))
+    }
+}
+
+/// Writes (or reuses, per the dedupe rule) a pending grant record and returns the §5.5
+/// `pending_grant` result. Posts the best-effort desktop notification (§7.8) only when a new
+/// record was actually created — a deduped repeat of the same request doesn't re-notify.
+fn pending_grant_result(
+    state: &ServerState,
+    config: &kadou_core::Config,
+    kata: &Kata,
+    folder: &str,
+    resolved_args: &[kadou_core::ResolvedVar],
+    mcp_client: Option<String>,
+    sha256: &str,
+) -> (Value, bool) {
+    let public_args: BTreeMap<String, String> = resolved_args
+        .iter()
+        .map(|a| (a.name.clone(), a.value.clone()))
+        .collect();
+    let hash = pending::args_hash(&public_args);
+    let store = PendingStore::new(&state.paths.state_dir);
+
+    let record = match store.find_outstanding(&kata.id, &hash) {
+        Some(existing) => existing,
+        None => {
+            let source = std::fs::read_to_string(&kata.path).unwrap_or_default();
+            let folder_head = folder_dir(state, kata, folder)
+                .as_deref()
+                .and_then(pending::git_head);
+            match store.create(
+                &kata.id,
+                folder,
+                kata.risk,
+                public_args,
+                "mcp",
+                mcp_client.as_deref(),
+                sha256,
+                &source,
+                folder_head.as_deref(),
+            ) {
+                Ok(record) => {
+                    let body = format!(
+                        "{} ({}) from {}\nkadou grant approve {}",
+                        record.id,
+                        record.risk,
+                        mcp_client.as_deref().unwrap_or("an agent"),
+                        record.pending_id
+                    );
+                    notify::notify(config, "kadou · grant wanted", &body);
+                    record
+                }
+                Err(err) => {
+                    return (
+                        json!({"status":"error","error":"internal","isError":true,"id":kata.id,"message":err.to_string()}),
+                        true,
+                    );
+                }
+            }
+        }
+    };
+
+    (
+        json!({
+            "status": "pending_grant",
+            "id": kata.id,
+            "risk": kata.risk.as_str(),
+            "pending_id": record.pending_id,
+            "pending_path": store.path(&record.pending_id).display().to_string(),
+            "approve": format!("kadou grant approve {}", record.pending_id),
+            "expires": record.expires,
+            "reason": format!("{}; not in [agent] allow", kata.risk),
+        }),
+        false,
+    )
+}
+
 type RunOutcomeResult = Result<kadou_exec::RunOutcome, kadou_exec::ExecError>;
 
 fn finish_run(
@@ -797,23 +915,32 @@ pub struct ProposeArgs {
     pub source: String,
 }
 
-pub fn propose_kata(state: &ServerState, args: ProposeArgs) -> (Value, bool) {
+pub fn propose_kata(
+    state: &ServerState,
+    config: &kadou_core::Config,
+    args: ProposeArgs,
+) -> (Value, bool) {
     match drafts::propose(
         &state.paths.state_dir,
         &state.paths.kata_dir(),
         &args.id,
         &args.source,
     ) {
-        Ok(outcome) => (
-            json!({
-                "status": "proposed",
-                "id": outcome.draft_id,
-                "path": outcome.path.display().to_string(),
-                "diff": outcome.diff,
-                "accept": outcome.accept_command,
-            }),
-            false,
-        ),
+        Ok(outcome) => {
+            // §7.8: "Same for propose_kata ('draft wanted: kadou accept ops/argocd-sync')".
+            let body = format!("draft wanted: {}", outcome.accept_command);
+            notify::notify(config, "kadou · draft wanted", &body);
+            (
+                json!({
+                    "status": "proposed",
+                    "id": outcome.draft_id,
+                    "path": outcome.path.display().to_string(),
+                    "diff": outcome.diff,
+                    "accept": outcome.accept_command,
+                }),
+                false,
+            )
+        }
         Err(err) => (
             json!({
                 "status": "error",

@@ -1,0 +1,411 @@
+//! Pending grant records (`docs/design/05-prd.md` §6.4, §5.5): written by `run_kata` when a
+//! **visible** high/critical kata is not allow-listed for this agent, read and mutated by
+//! `kadou grant *` (the CLI, in `crates/kadou`). One JSON file per record, at
+//! `<state_dir>/pending/<pending_id>.json` — plain `0600` text like every other state-dir
+//! record, so a human's own tools can read `pending_path` directly (§5.5).
+//!
+//! `kadou-mcp` owns this store (like [`crate::history`]) even though the CLI is the only
+//! *approver*: the MCP server is the only writer, and keeping both sides of the file format in
+//! one place is what keeps them from drifting. The `kadou` bin crate depends on `kadou-mcp`
+//! already and reuses [`PendingStore`], [`git_head`], and [`crate::history::HistoryStore`]
+//! directly for `grant approve`/`grant list`/`grant show`/`grant deny`.
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+use kadou_core::fsutil;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+use uuid::Uuid;
+
+/// TTL for a pending grant (§6.4 "the record expires after 24 hours").
+pub const TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingRecord {
+    pub pending_id: String,
+    pub id: String,
+    pub folder: String,
+    pub risk: kadou_core::RiskLevel,
+    /// The requested args, never needs (§6.4 "args (needs never included)").
+    pub args: BTreeMap<String, String>,
+    pub args_hash: String,
+    /// `"mcp"` — the only requester kind this slice writes (§6.4 item 1).
+    pub requester: String,
+    /// Self-reported `clientInfo.name` — a label, not an identity (§6.4).
+    pub mcp_client: Option<String>,
+    pub timestamp: String,
+    pub expires: String,
+    /// The kata file's `sha256:...` digest, pinned at request time (§6.4).
+    pub sha256: String,
+    /// The kata's full source, pinned at request time, so `kadou grant show` can diff it
+    /// against the current on-disk source (§6.4 item 4 "a kata diff since request").
+    pub source: String,
+    /// The folder's git HEAD, pinned at request time, when the folder is git-backed (§6.4).
+    pub folder_head: Option<String>,
+    /// Set by `kadou grant approve` on success: the run's `history_id`, terminal status
+    /// (`success`/`failed`/`cancelled`), and `log_path` (§6.4 item 5).
+    pub history_id: Option<String>,
+    pub status: Option<String>,
+    pub log_path: Option<PathBuf>,
+}
+
+impl PendingRecord {
+    pub fn is_expired(&self) -> bool {
+        match humantime::parse_rfc3339(&self.expires) {
+            Ok(expires) => SystemTime::now() > expires,
+            Err(_) => true,
+        }
+    }
+
+    /// `true` while this record still needs a human decision: not yet approved, and not
+    /// expired. Used both for the dedupe rule (§6.4 item 3) and for `grant list`'s status
+    /// column.
+    pub fn is_outstanding(&self) -> bool {
+        self.history_id.is_none() && !self.is_expired()
+    }
+}
+
+/// A deterministic `sha256:<hex>` of the args map (sorted by `BTreeMap`'s own iteration
+/// order), used for the `(id, args_hash)` dedupe rule (§6.4 item 3).
+pub fn args_hash(args: &BTreeMap<String, String>) -> String {
+    let bytes = serde_json::to_vec(args).expect("a BTreeMap<String, String> always serializes");
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity("sha256:".len() + digest.len() * 2);
+    hex.push_str("sha256:");
+    for byte in digest.as_slice() {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}
+
+pub struct PendingStore {
+    state_dir: PathBuf,
+}
+
+impl PendingStore {
+    pub fn new(state_dir: &Path) -> Self {
+        Self {
+            state_dir: state_dir.to_path_buf(),
+        }
+    }
+
+    fn dir(&self) -> PathBuf {
+        self.state_dir.join("pending")
+    }
+
+    pub fn path(&self, pending_id: &str) -> PathBuf {
+        self.dir().join(format!("{pending_id}.json"))
+    }
+
+    /// Every pending record on disk, in no particular order. A missing `pending/` directory
+    /// scans as empty, not an error (mirrors `scan_kata_dir`'s "a missing kata_dir scans as
+    /// empty").
+    pub fn list(&self) -> Vec<PendingRecord> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(self.dir()) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(&path)
+                && let Ok(record) = serde_json::from_str(&text)
+            {
+                out.push(record);
+            }
+        }
+        out
+    }
+
+    pub fn get(&self, pending_id: &str) -> Option<PendingRecord> {
+        let text = std::fs::read_to_string(self.path(pending_id)).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    /// An outstanding record for the same `(id, args_hash)`, if one already exists — the
+    /// dedupe rule (§6.4 item 3: "a second `run_kata` call with the same `(id, args_hash)`
+    /// while a pending record is outstanding returns the existing `pending_id`").
+    pub fn find_outstanding(&self, id: &str, args_hash: &str) -> Option<PendingRecord> {
+        self.list()
+            .into_iter()
+            .find(|r| r.id == id && r.args_hash == args_hash && r.is_outstanding())
+    }
+
+    pub fn save(&self, record: &PendingRecord) -> std::io::Result<()> {
+        let text = serde_json::to_string(record).expect("PendingRecord always serializes");
+        fsutil::write_atomic_0600(&self.path(&record.pending_id), text.as_bytes())
+    }
+
+    /// `kadou grant deny <pending_id>` (§6.4 item 6: "deletes the record"). Deleting an
+    /// already-absent record is not an error.
+    pub fn delete(&self, pending_id: &str) -> std::io::Result<()> {
+        match std::fs::remove_file(self.path(pending_id)) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Creates and saves a fresh pending record (§6.4 item 1). Callers should check
+    /// [`Self::find_outstanding`] first — this always writes a new record.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create(
+        &self,
+        id: &str,
+        folder: &str,
+        risk: kadou_core::RiskLevel,
+        args: BTreeMap<String, String>,
+        requester: &str,
+        mcp_client: Option<&str>,
+        sha256: &str,
+        source: &str,
+        folder_head: Option<&str>,
+    ) -> std::io::Result<PendingRecord> {
+        let now = SystemTime::now();
+        let hash = args_hash(&args);
+        let record = PendingRecord {
+            pending_id: Uuid::new_v4().to_string(),
+            id: id.to_string(),
+            folder: folder.to_string(),
+            risk,
+            args,
+            args_hash: hash,
+            requester: requester.to_string(),
+            mcp_client: mcp_client.map(str::to_string),
+            timestamp: humantime::format_rfc3339_seconds(now).to_string(),
+            expires: humantime::format_rfc3339_seconds(now + TTL).to_string(),
+            sha256: sha256.to_string(),
+            source: source.to_string(),
+            folder_head: folder_head.map(str::to_string),
+            history_id: None,
+            status: None,
+            log_path: None,
+        };
+        self.save(&record)?;
+        Ok(record)
+    }
+}
+
+/// The folder's git HEAD (§6.4 "the folder's git HEAD... pinned at request time"), `None` when
+/// `folder_dir` is not a git checkout — an imported (non-`kadou get`) folder, for instance.
+/// Shells out to the real `git` binary rather than adding a `git2` dependency for one
+/// read-only `rev-parse`.
+pub fn git_head(folder_dir: &Path) -> Option<String> {
+    if !folder_dir.join(".git").exists() {
+        return None;
+    }
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(folder_dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let head = String::from_utf8(output.stdout).ok()?;
+    let head = head.trim();
+    (!head.is_empty()).then(|| head.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn args_hash_is_stable_for_the_same_args() {
+        let a = args(&[("version", "1"), ("cluster", "uat")]);
+        let b = args(&[("cluster", "uat"), ("version", "1")]);
+        assert_eq!(args_hash(&a), args_hash(&b));
+    }
+
+    #[test]
+    fn args_hash_differs_for_different_args() {
+        let a = args(&[("version", "1")]);
+        let b = args(&[("version", "2")]);
+        assert_ne!(args_hash(&a), args_hash(&b));
+    }
+
+    #[test]
+    fn create_then_get_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PendingStore::new(dir.path());
+        let record = store
+            .create(
+                "sesami/ses-deploy",
+                "sesami",
+                kadou_core::RiskLevel::Critical,
+                args(&[("version", "1")]),
+                "mcp",
+                Some("claude-code"),
+                "sha256:abc",
+                "#!/bin/sh\necho hi\n",
+                None,
+            )
+            .unwrap();
+
+        let loaded = store.get(&record.pending_id).unwrap();
+        assert_eq!(loaded.id, "sesami/ses-deploy");
+        assert_eq!(loaded.sha256, "sha256:abc");
+        assert!(loaded.is_outstanding());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(store.path(&record.pending_id))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn find_outstanding_matches_same_id_and_args_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PendingStore::new(dir.path());
+        let created = store
+            .create(
+                "sesami/ses-deploy",
+                "sesami",
+                kadou_core::RiskLevel::Critical,
+                args(&[("version", "1")]),
+                "mcp",
+                None,
+                "sha256:abc",
+                "src",
+                None,
+            )
+            .unwrap();
+
+        let hash = args_hash(&args(&[("version", "1")]));
+        let found = store.find_outstanding("sesami/ses-deploy", &hash).unwrap();
+        assert_eq!(found.pending_id, created.pending_id);
+
+        let different_hash = args_hash(&args(&[("version", "2")]));
+        assert!(
+            store
+                .find_outstanding("sesami/ses-deploy", &different_hash)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn approved_record_is_no_longer_outstanding() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PendingStore::new(dir.path());
+        let mut record = store
+            .create(
+                "sesami/ses-deploy",
+                "sesami",
+                kadou_core::RiskLevel::Critical,
+                BTreeMap::new(),
+                "mcp",
+                None,
+                "sha256:abc",
+                "src",
+                None,
+            )
+            .unwrap();
+        record.history_id = Some("h1".to_string());
+        store.save(&record).unwrap();
+
+        assert!(!store.get(&record.pending_id).unwrap().is_outstanding());
+        let hash = args_hash(&BTreeMap::new());
+        assert!(store.find_outstanding("sesami/ses-deploy", &hash).is_none());
+    }
+
+    #[test]
+    fn expired_record_is_not_outstanding() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PendingStore::new(dir.path());
+        let mut record = store
+            .create(
+                "sesami/ses-deploy",
+                "sesami",
+                kadou_core::RiskLevel::Critical,
+                BTreeMap::new(),
+                "mcp",
+                None,
+                "sha256:abc",
+                "src",
+                None,
+            )
+            .unwrap();
+        record.expires =
+            humantime::format_rfc3339_seconds(SystemTime::now() - Duration::from_secs(60))
+                .to_string();
+        store.save(&record).unwrap();
+
+        let loaded = store.get(&record.pending_id).unwrap();
+        assert!(loaded.is_expired());
+        assert!(!loaded.is_outstanding());
+    }
+
+    #[test]
+    fn deny_deletes_the_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PendingStore::new(dir.path());
+        let record = store
+            .create(
+                "sesami/ses-deploy",
+                "sesami",
+                kadou_core::RiskLevel::Critical,
+                BTreeMap::new(),
+                "mcp",
+                None,
+                "sha256:abc",
+                "src",
+                None,
+            )
+            .unwrap();
+        store.delete(&record.pending_id).unwrap();
+        assert!(store.get(&record.pending_id).is_none());
+        // Deleting again is not an error.
+        store.delete(&record.pending_id).unwrap();
+    }
+
+    #[test]
+    fn git_head_is_none_for_a_non_git_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(git_head(dir.path()).is_none());
+    }
+
+    #[test]
+    fn git_head_reads_the_real_head_of_a_git_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .status()
+                .expect("git must be on PATH for this test");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "test"]);
+        std::fs::write(dir.path().join("x.txt"), "x").unwrap();
+        run(&["add", "x.txt"]);
+        run(&["commit", "-q", "-m", "init"]);
+
+        let head = git_head(dir.path()).expect("git-backed folder has a HEAD");
+        assert_eq!(head.len(), 40, "a full git sha is 40 hex chars: {head}");
+    }
+}

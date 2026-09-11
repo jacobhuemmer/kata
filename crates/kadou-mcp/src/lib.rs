@@ -5,8 +5,10 @@
 mod concurrency;
 mod drafts;
 mod env;
-mod history;
-mod redact;
+pub mod history;
+mod notify;
+pub mod pending;
+pub mod redact;
 pub mod schema;
 mod server;
 pub mod state;

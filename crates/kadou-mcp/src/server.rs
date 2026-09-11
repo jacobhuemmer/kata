@@ -90,7 +90,7 @@ impl ServerHandler for KadouMcpServer {
                         None,
                     ));
                 };
-                tools::propose_kata(&self.state, args)
+                tools::propose_kata(&self.state, &config, args)
             }
             _other => {
                 return Err(McpError::method_not_found::<
