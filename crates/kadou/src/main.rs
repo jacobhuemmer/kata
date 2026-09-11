@@ -5,6 +5,7 @@
 use clap::{Args, Parser, Subcommand};
 
 mod commands;
+mod starter;
 
 /// kadou (稼働): a script library that is also an MCP server for AI agents.
 #[derive(Debug, Parser)]
@@ -226,11 +227,13 @@ fn main() -> std::process::ExitCode {
             verbose,
         }) => commands::run_check(folder_or_path, verbose),
         Some(Command::Import { dir, as_folder }) => commands::run_import(dir, as_folder),
+        Some(Command::Run(args)) => commands::run_run(args.id, args.kv, args.dry_run),
+        Some(Command::Show { id }) => commands::run_show(id),
         Some(command) => {
             let (name, slice) = match &command {
-                Command::Run(_) => ("run", 3),
+                Command::Run(_) => unreachable!("handled above"),
                 Command::List(_) => ("list", 2),
-                Command::Show { .. } => ("show", 3),
+                Command::Show { .. } => unreachable!("handled above"),
                 Command::New { .. } => ("new", 8),
                 Command::Edit { .. } => ("edit", 8),
                 Command::Check { .. } => ("check", 2),
@@ -322,12 +325,197 @@ mod tests {
     }
 
     #[test]
-    fn run_stub_names_its_slice() {
+    fn run_with_no_id_is_a_slice_8_stub() {
         kadou()
-            .args(["run", "starter/hello"])
+            .arg("run")
             .assert()
             .code(2)
-            .stderr(predicate::str::contains("not yet implemented (slice 3)"));
+            .stderr(predicate::str::contains("not yet implemented (slice 8)"));
+    }
+
+    #[test]
+    fn show_with_no_id_is_a_slice_8_stub() {
+        kadou()
+            .arg("show")
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("not yet implemented (slice 8)"));
+    }
+
+    #[test]
+    fn run_starter_hello_dry_run_resolves_without_executing() {
+        let home = tempfile::tempdir().unwrap();
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["run", "starter/hello", "--dry-run"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("starter/hello"))
+            .stdout(predicate::str::contains("env_names: NAME"))
+            .stdout(predicate::str::contains("env_public: NAME=world"));
+
+        // Materialized on first use, but nothing was actually executed.
+        assert!(
+            home.path()
+                .join(".config/kadou/kata/starter/hello.sh")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn run_starter_hello_actually_executes() {
+        let home = tempfile::tempdir().unwrap();
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["run", "starter/hello"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("hello, world"));
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["run", "starter/hello", "name=mason"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("hello, mason"));
+    }
+
+    #[test]
+    fn run_unknown_kata_is_a_clean_error() {
+        let home = tempfile::tempdir().unwrap();
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["run", "starter/nope"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("no such kata"));
+    }
+
+    #[test]
+    fn run_real_fails_cleanly_on_a_missing_need() {
+        let home = tempfile::tempdir().unwrap();
+        let kata_dir = home.path().join(".config/kadou/kata/team");
+        std::fs::create_dir_all(&kata_dir).unwrap();
+        std::fs::write(
+            kata_dir.join("secret-task.sh"),
+            "#!/bin/sh\n# ---\n# about: Needs a secret\n# risk:  low\n# needs: api_token\n# ---\necho \"$API_TOKEN\"\n",
+        )
+        .unwrap();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["run", "team/secret-task"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("kadou vault set api_token"));
+    }
+
+    #[test]
+    fn show_prints_header_fields_resolved_args_env_names_path_and_sha256() {
+        let home = tempfile::tempdir().unwrap();
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["show", "starter/hello"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("starter/hello"))
+            .stdout(predicate::str::contains("low"))
+            .stdout(predicate::str::contains("Print a greeting"))
+            .stdout(predicate::str::contains("file    "))
+            .stdout(predicate::str::contains("sha256  sha256:"))
+            .stdout(predicate::str::contains("name = world"))
+            .stdout(predicate::str::contains("env     NAME"));
+    }
+
+    #[test]
+    fn sesami_dry_run_lists_jenkins_token_as_secret_with_no_defaults_leaked() {
+        let home = tempfile::tempdir().unwrap();
+        let src = home.path().join("catalog/src/cc4-aaa");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("runbook.yaml"),
+            r#"
+name: cc4-aaa
+description: Trigger a SES/CC4/cc4-aaa branch pipeline
+risk_level: medium
+script: script.sh
+parameters:
+  - name: jenkins_url
+    type: string
+    required: true
+    scope: global
+    default: "https://ci.example.com"
+    secret: false
+  - name: jenkins_user
+    type: string
+    required: true
+    scope: global
+    secret: false
+  - name: jenkins_token
+    type: string
+    required: true
+    scope: global
+    secret: true
+  - name: branch
+    type: string
+    required: true
+    default: "dev"
+    scope: runbook
+    secret: false
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("script.sh"),
+            "#!/bin/sh\nset -eu\necho \"would trigger jenkins for $BRANCH\"\n",
+        )
+        .unwrap();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args([
+                "import",
+                home.path().join("catalog/src").to_str().unwrap(),
+                "--as",
+                "sesami",
+            ])
+            .assert()
+            .success();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["run", "sesami/cc4-aaa", "--dry-run"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("JENKINS_TOKEN"))
+            .stdout(predicate::str::contains(
+                "secret_env_names: JENKINS_USER, JENKINS_TOKEN",
+            ))
+            .stdout(predicate::str::contains("env_public: BRANCH=dev"))
+            .stdout(predicate::str::contains(
+                "env_public: JENKINS_URL=https://ci.example.com",
+            ));
+    }
+
+    #[test]
+    fn check_warns_on_a_missing_interpreter() {
+        let home = tempfile::tempdir().unwrap();
+        let kata_dir = home.path().join(".config/kadou/kata/team");
+        std::fs::create_dir_all(&kata_dir).unwrap();
+        std::fs::write(
+            kata_dir.join("x.sh"),
+            "#!/no/such/interpreter\n# ---\n# about: X\n# risk:  low\n# ---\necho hi\n",
+        )
+        .unwrap();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["check", "team"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "declared interpreter `/no/such/interpreter` is not on PATH",
+            ));
     }
 
     #[test]

@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
 kadou-core = { path = "../kadou-core", version = "0.1.0" }
+kadou-exec = { path = "../kadou-exec", version = "0.1.0" }
+rust-embed.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
