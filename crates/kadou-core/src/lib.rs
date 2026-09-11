@@ -9,6 +9,7 @@ mod header;
 mod kata;
 mod paths;
 mod risk;
+mod scan;
 
 pub use config::{
     AgentConfig, Config, ConfigError, EMPTY_TEMPLATE, ExecConfig, FolderConfig, McpConfig,
@@ -20,3 +21,4 @@ pub use header::{
 pub use kata::{Arg, ArgDefault, ArgType, Kata, Need};
 pub use paths::{KadouPaths, PathsError, Resolved, discover, resolve};
 pub use risk::RiskLevel;
+pub use scan::{ScanError, ScannedFile, scan_folder, scan_kata_dir};
