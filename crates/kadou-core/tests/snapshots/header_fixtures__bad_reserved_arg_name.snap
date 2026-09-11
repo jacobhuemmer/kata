@@ -1,0 +1,14 @@
+---
+source: crates/kadou-core/tests/header_fixtures.rs
+expression: diags
+---
+[
+    Diagnostic {
+        severity: Error,
+        message: "invalid arg name `path`: this name is reserved because it would shadow a shell/env variable",
+        fix: None,
+        line: 6,
+        col: 5,
+        len: 4,
+    },
+]

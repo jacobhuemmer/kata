@@ -1,0 +1,16 @@
+---
+source: crates/kadou-core/tests/header_fixtures.rs
+expression: diags
+---
+[
+    Diagnostic {
+        severity: Error,
+        message: "about is required",
+        fix: Some(
+            "add `# about: <one line, 1-120 chars>`",
+        ),
+        line: 2,
+        col: 1,
+        len: 5,
+    },
+]

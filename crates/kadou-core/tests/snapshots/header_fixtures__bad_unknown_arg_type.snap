@@ -1,0 +1,16 @@
+---
+source: crates/kadou-core/tests/header_fixtures.rs
+expression: diags
+---
+[
+    Diagnostic {
+        severity: Error,
+        message: "unknown arg type `string`",
+        fix: Some(
+            "use `text`",
+        ),
+        line: 6,
+        col: 15,
+        len: 6,
+    },
+]

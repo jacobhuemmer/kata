@@ -5,6 +5,7 @@
 //! own those (`docs/design/05-prd.md` §3).
 
 mod config;
+mod header;
 mod kata;
 mod paths;
 mod risk;
@@ -12,6 +13,9 @@ mod risk;
 pub use config::{
     AgentConfig, Config, ConfigError, EMPTY_TEMPLATE, ExecConfig, FolderConfig, McpConfig,
     NotifyConfig, TrustConfig, VaultConfig,
+};
+pub use header::{
+    Diagnostic, ParsedHeader, Severity, looks_like_kata_candidate, parse_header, render_header,
 };
 pub use kata::{Arg, ArgDefault, ArgType, Kata, Need};
 pub use paths::{KadouPaths, PathsError, Resolved, discover, resolve};

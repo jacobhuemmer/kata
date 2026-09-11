@@ -1,0 +1,30 @@
+---
+source: crates/kadou-core/tests/header_fixtures.rs
+expression: header
+---
+ParsedHeader {
+    about: "Report or compare device log metrics",
+    risk: Low,
+    needs: [],
+    args: [
+        Arg {
+            name: "mode",
+            ty: Select {
+                options: [
+                    "report",
+                    "compare",
+                ],
+            },
+            default: None,
+            help: Some(
+                "required select, no default",
+            ),
+        },
+    ],
+    alias: [],
+    timeout: None,
+    notes: None,
+    shebang: Some(
+        "#!/bin/sh",
+    ),
+}

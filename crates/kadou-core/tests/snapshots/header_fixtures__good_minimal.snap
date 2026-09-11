@@ -1,0 +1,16 @@
+---
+source: crates/kadou-core/tests/header_fixtures.rs
+expression: header
+---
+ParsedHeader {
+    about: "Print a greeting",
+    risk: Low,
+    needs: [],
+    args: [],
+    alias: [],
+    timeout: None,
+    notes: None,
+    shebang: Some(
+        "#!/bin/sh",
+    ),
+}
