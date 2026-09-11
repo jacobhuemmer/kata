@@ -4,6 +4,8 @@
 
 use clap::{Args, Parser, Subcommand};
 
+mod commands;
+
 /// kadou (稼働): a script library that is also an MCP server for AI agents.
 #[derive(Debug, Parser)]
 #[command(name = "kadou", version = env!("CARGO_PKG_VERSION"))]
@@ -209,14 +211,21 @@ enum McpAction {
     },
 }
 
-fn main() {
+fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
         None => stub("kadou", 8, None),
         Some(Command::Version) => {
             println!("kadou {}", env!("CARGO_PKG_VERSION"));
+            std::process::ExitCode::SUCCESS
         }
+        Some(Command::List(args)) => commands::run_list(args.query, args.folder, args.risk),
+        Some(Command::Check {
+            folder_or_path,
+            verbose,
+        }) => commands::run_check(folder_or_path, verbose),
+        Some(Command::Import { dir, as_folder }) => commands::run_import(dir, as_folder),
         Some(command) => {
             let (name, slice) = match &command {
                 Command::Run(_) => ("run", 3),
@@ -239,7 +248,7 @@ fn main() {
                 Command::Completion { .. } => ("completion", 8),
                 Command::Version => unreachable!("handled above"),
             };
-            stub(name, slice, Some(&command));
+            stub(name, slice, Some(&command))
         }
     }
 }
@@ -322,12 +331,65 @@ mod tests {
     }
 
     #[test]
-    fn check_stub_names_its_slice() {
+    fn check_on_an_empty_kata_dir_succeeds() {
+        let home = tempfile::tempdir().unwrap();
         kadou()
+            .env("KADOU_HOME", home.path())
             .arg("check")
             .assert()
-            .code(2)
-            .stderr(predicate::str::contains("not yet implemented (slice 2)"));
+            .success();
+    }
+
+    #[test]
+    fn list_with_no_kata_says_so() {
+        let home = tempfile::tempdir().unwrap();
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .arg("list")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("no kata found"));
+    }
+
+    #[test]
+    fn import_then_check_round_trips_through_the_real_cli() {
+        let home = tempfile::tempdir().unwrap();
+        let src = home.path().join("catalog/src/widget");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("runbook.yaml"),
+            "name: widget\ndescription: Say hello\nrisk_level: low\nscript: script.sh\nparameters: []\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("script.sh"), "#!/bin/sh\necho hi\n").unwrap();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args([
+                "import",
+                home.path().join("catalog/src").to_str().unwrap(),
+                "--as",
+                "sesami",
+            ])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("imported 1 kata into sesami"));
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["check", "sesami"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(
+                "checked 1 kata in sesami   0 errors  0 warnings",
+            ));
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .arg("list")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("sesami/widget"));
     }
 
     #[test]
