@@ -1,0 +1,64 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/kadou",
+    "crates/kadou-core",
+    "crates/kadou-exec",
+    "crates/kadou-mcp",
+    "crates/kadou-mine",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+# Not specified anywhere in docs/design/; matches the permissive ecosystem this workspace
+# already commits to (§3.3) and every dependency's own allowed set. Confirm with Mason.
+license = "MIT OR Apache-2.0"
+
+# Pinned versions per docs/design/05-prd.md §3.1 (re-verified 2026-09-11). A crate is added
+# to an individual member's [dependencies] only when the slice that needs it lands; this
+# table exists so every worker uses the same version regardless of which slice adds it.
+[workspace.dependencies]
+age = "0.12.1"
+anstream = "1.0.0"
+anstyle = "1.0.14"
+apple-native-keyring-store = "1.0.2"
+assert_cmd = "2.2.2"
+base64 = "0.23.1"
+camino = "1.2.5"
+clap = "4.6.6"
+clap_complete = "4.6.9"
+crossterm = "0.29.0"
+etcetera = "0.11.0"
+flate2 = "1.1.10"
+fs-err = "3.3.1"
+humantime = "2.4.0"
+inquire = "0.9.4"
+insta = "1.48.0"
+keyring-core = "1.0.0"
+libc = "0.2.189"
+nix = "0.31.3"
+nucleo-matcher = "0.3.1"
+predicates = "3.1.4"
+proptest = "1.11.0"
+regex = "1.13.1"
+rmcp = "3.3.0"
+rmcp-macros = "3.3.0"
+rust-embed = "8.12.0"
+schemars = "1.2.2"
+serde = "1.0.229"
+serde-yaml-ng = "0.10.0"
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+similar = "3.2.0"
+tar = "0.4.46"
+tempfile = "3.27.0"
+thiserror = "2.0.20"
+tokio = "1.53.1"
+toml = "1.1.6"
+toml_edit = "0.25.15"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+uuid = "1.26.1"
+zeroize = "1.9.0"
