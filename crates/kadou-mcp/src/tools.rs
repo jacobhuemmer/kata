@@ -1,0 +1,827 @@
+//! Domain logic for the four tools (`docs/design/05-prd.md` §5.5 result shapes). Each
+//! function returns `(serde_json::Value, is_error)` — the exact JSON to serialize into the
+//! single MCP text content block, and whether the wire-level `isError` flag should be set.
+//! [`crate::server`] is the only caller; it owns the rmcp plumbing.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::time::Duration;
+
+use kadou_core::{Arg, ArgDefault, ArgType, Kata, LookupResult, RiskLevel};
+use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
+
+use crate::drafts;
+use crate::env;
+use crate::history::{self, FinishOutcome, HistoryRecord, HistoryStore};
+use crate::redact;
+use crate::state::ServerState;
+use crate::visibility::{self, PROJECT_LOCAL_FOLDER_KEY};
+
+const MAX_OUTPUT_BYTES: usize = 8192;
+const SOURCE_CAP_BYTES: usize = 16 * 1024;
+
+fn top_folder(id: &str) -> &str {
+    id.split('/').next().unwrap_or(id)
+}
+
+fn no_such_kata(id: &str) -> (Value, bool) {
+    (
+        json!({
+            "status": "error",
+            "error": "no_such_kata",
+            "isError": true,
+            "id": id,
+            "message": format!("no such kata `{id}`"),
+        }),
+        true,
+    )
+}
+
+/// Resolves `id` to a [`Kata`] that is visible to this agent (§6.2): the risk ceiling and,
+/// for a project-local id, the trust gate. Returns the kata (with its public-facing id — for
+/// a project-local kata, rewritten back to `./name` — §4.5) and the folder key to use for
+/// further ceiling lookups. Every failure mode (not found, invalid header, above ceiling,
+/// untrusted) collapses to `None`, since §5.5 says not to distinguish hidden from missing.
+fn resolve_visible(
+    state: &ServerState,
+    config: &kadou_core::Config,
+    id: &str,
+) -> Option<(Kata, String)> {
+    if let Some(stripped) = id.strip_prefix("./") {
+        let project_dir = state.project_local_kata_dir.as_ref()?;
+        if !visibility::is_trusted(config, project_dir) {
+            return None;
+        }
+        let parent = project_dir.parent()?;
+        let internal_id = format!("kata/{stripped}");
+        let mut kata = match kadou_core::find_kata(parent, &internal_id).ok()? {
+            LookupResult::Found(kata) => kata,
+            _ => return None,
+        };
+        kata.id = format!("./{stripped}");
+        let ceiling =
+            visibility::agent_ceiling(config, PROJECT_LOCAL_FOLDER_KEY, state.max_risk_flag);
+        if !visibility::is_visible_risk(kata.risk, ceiling) {
+            return None;
+        }
+        Some((kata, PROJECT_LOCAL_FOLDER_KEY.to_string()))
+    } else {
+        let folder = top_folder(id).to_string();
+        let kata = match kadou_core::find_kata(&state.paths.kata_dir(), id).ok()? {
+            LookupResult::Found(kata) => kata,
+            _ => return None,
+        };
+        let ceiling = visibility::agent_ceiling(config, &folder, state.max_risk_flag);
+        if !visibility::is_visible_risk(kata.risk, ceiling) {
+            return None;
+        }
+        Some((kata, folder))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// list_kata
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct ListArgs {
+    pub query: Option<String>,
+    pub folder: Option<String>,
+    pub risk: Option<RiskLevel>,
+    pub limit: usize,
+    pub offset: usize,
+    pub include_drafts: bool,
+}
+
+struct Row {
+    id: String,
+    about: String,
+    risk: RiskLevel,
+    draft: bool,
+    haystack: String,
+}
+
+fn row_from(id: &str, about: &str, risk: RiskLevel, alias: &[String], draft: bool) -> Row {
+    let haystack = format!(
+        "{} {} {}",
+        id.to_lowercase(),
+        about.to_lowercase(),
+        alias.join(" ").to_lowercase()
+    );
+    Row {
+        id: id.to_string(),
+        about: about.to_string(),
+        risk,
+        draft,
+        haystack,
+    }
+}
+
+pub fn list_kata(state: &ServerState, config: &kadou_core::Config, args: ListArgs) -> Value {
+    let mut rows: Vec<Row> = Vec::new();
+
+    if !matches!(
+        args.folder.as_deref(),
+        Some(drafts::PROPOSED_NS) | Some(drafts::MINED_NS)
+    ) && let Ok(scanned) = kadou_core::scan_kata_dir(&state.paths.kata_dir())
+    {
+        for (folder, files) in scanned {
+            if let Some(want) = &args.folder
+                && &folder != want
+            {
+                continue;
+            }
+            let ceiling = visibility::agent_ceiling(config, &folder, state.max_risk_flag);
+            for file in files {
+                let Some(header) = &file.header else { continue };
+                if !visibility::is_visible_risk(header.risk, ceiling) {
+                    continue;
+                }
+                rows.push(row_from(
+                    &file.id,
+                    &header.about,
+                    header.risk,
+                    &header.alias,
+                    false,
+                ));
+            }
+        }
+    }
+
+    if matches!(args.folder.as_deref(), None | Some("."))
+        && let Some(project_dir) = &state.project_local_kata_dir
+        && visibility::is_trusted(config, project_dir)
+        && let Some(parent) = project_dir.parent()
+        && let Ok(files) = kadou_core::scan_folder(parent, "kata")
+    {
+        let ceiling =
+            visibility::agent_ceiling(config, PROJECT_LOCAL_FOLDER_KEY, state.max_risk_flag);
+        for file in files {
+            let Some(header) = &file.header else { continue };
+            if !visibility::is_visible_risk(header.risk, ceiling) {
+                continue;
+            }
+            let id = format!("./{}", file.id.strip_prefix("kata/").unwrap_or(&file.id));
+            rows.push(row_from(
+                &id,
+                &header.about,
+                header.risk,
+                &header.alias,
+                false,
+            ));
+        }
+    }
+
+    if args.include_drafts
+        || matches!(
+            args.folder.as_deref(),
+            Some(drafts::PROPOSED_NS) | Some(drafts::MINED_NS)
+        )
+    {
+        for file in drafts::scan_drafts(&state.paths.state_dir) {
+            let Some(header) = &file.header else { continue };
+            if let Some(want) = &args.folder {
+                let top = top_folder(&file.id);
+                if top != want {
+                    continue;
+                }
+            }
+            rows.push(row_from(
+                &file.id,
+                &header.about,
+                header.risk,
+                &header.alias,
+                true,
+            ));
+        }
+    }
+
+    if let Some(risk) = args.risk {
+        rows.retain(|r| r.risk == risk);
+    }
+    if let Some(query) = &args.query {
+        let query = query.to_lowercase();
+        rows.retain(|r| r.haystack.contains(&query));
+    }
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
+    rows.dedup_by(|a, b| a.id == b.id);
+
+    let total = rows.len();
+    let page: Vec<&Row> = rows.iter().skip(args.offset).take(args.limit).collect();
+    let truncated = args.offset + page.len() < total;
+
+    let kata: Vec<Value> = page
+        .iter()
+        .map(|r| {
+            let mut obj = serde_json::Map::new();
+            obj.insert("id".to_string(), json!(r.id));
+            obj.insert("about".to_string(), json!(r.about));
+            obj.insert("risk".to_string(), json!(r.risk.as_str()));
+            if r.draft {
+                obj.insert("draft".to_string(), json!(true));
+            }
+            Value::Object(obj)
+        })
+        .collect();
+
+    json!({
+        "kata": kata,
+        "total": total,
+        "offset": args.offset,
+        "limit": args.limit,
+        "truncated": truncated,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// describe_kata
+// ---------------------------------------------------------------------------
+
+pub struct DescribeArgs {
+    pub id: String,
+    pub include_source: bool,
+}
+
+pub fn describe_kata(
+    state: &ServerState,
+    config: &kadou_core::Config,
+    vault: &kadou_core::Vault,
+    args: DescribeArgs,
+) -> (Value, bool) {
+    let id = args.id.clone();
+
+    let (kata, files) = if drafts::is_draft_id(&id) {
+        match drafts::find_draft(&state.paths.state_dir, &id)
+            .and_then(|f| kadou_core::kata_from_scanned(&f))
+        {
+            Some(kata) => (kata, Vec::new()),
+            None => return no_such_kata(&id),
+        }
+    } else {
+        match resolve_visible(state, config, &id) {
+            Some((kata, folder)) => {
+                let files = if folder == PROJECT_LOCAL_FOLDER_KEY {
+                    Vec::new()
+                } else {
+                    sibling_files(&state.paths.kata_dir(), &folder)
+                };
+                (kata, files)
+            }
+            None => return no_such_kata(&id),
+        }
+    };
+
+    (
+        build_describe_value(&kata, vault, args.include_source, files),
+        false,
+    )
+}
+
+/// Sibling helper files in `folder` — files the scanner found but that have no header of
+/// their own (e.g. Sesami's shared `scripts/trigger-pipeline.sh`, §5.3), as paths relative to
+/// the folder root.
+fn sibling_files(kata_dir: &Path, folder: &str) -> Vec<String> {
+    let Ok(files) = kadou_core::scan_folder(kata_dir, folder) else {
+        return Vec::new();
+    };
+    let folder_root = kata_dir.join(folder);
+    files
+        .into_iter()
+        .filter(|f| f.header.is_none() && f.diagnostics.is_empty())
+        .filter_map(|f| {
+            f.path
+                .strip_prefix(&folder_root)
+                .ok()
+                .map(|p| p.display().to_string())
+        })
+        .collect()
+}
+
+fn build_describe_value(
+    kata: &Kata,
+    vault: &kadou_core::Vault,
+    include_source: bool,
+    files: Vec<String>,
+) -> Value {
+    let sha256 = kadou_core::file_sha256(&kata.path).unwrap_or_default();
+    let resolved_needs = kadou_core::resolve_needs(kata, vault);
+    let needs: Vec<&str> = kata.needs.iter().map(|n| n.name.as_str()).collect();
+    let needs_missing: Vec<&str> = resolved_needs
+        .iter()
+        .filter(|n| n.value.is_none())
+        .map(|n| n.name.as_str())
+        .collect();
+
+    let mut obj = serde_json::Map::new();
+    obj.insert("id".to_string(), json!(kata.id));
+    obj.insert("folder".to_string(), json!(top_folder(&kata.id)));
+    obj.insert("about".to_string(), json!(kata.about));
+    obj.insert("risk".to_string(), json!(kata.risk.as_str()));
+    obj.insert("file".to_string(), json!(kata.path.display().to_string()));
+    obj.insert("sha256".to_string(), json!(sha256));
+    obj.insert("needs".to_string(), json!(needs));
+    obj.insert("needs_missing".to_string(), json!(needs_missing));
+    obj.insert("args".to_string(), build_args_schema(&kata.args));
+    if include_source {
+        let (source, truncated) = read_source_capped(&kata.path);
+        obj.insert("source".to_string(), json!(source));
+        obj.insert("source_truncated".to_string(), json!(truncated));
+    }
+    if !files.is_empty() {
+        obj.insert("files".to_string(), json!(files));
+    }
+    Value::Object(obj)
+}
+
+fn read_source_capped(path: &Path) -> (String, bool) {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    if text.len() <= SOURCE_CAP_BYTES {
+        return (text, false);
+    }
+    let mut end = SOURCE_CAP_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_string(), true)
+}
+
+/// Builds an `args` JSON Schema from the header's arg list — shared by `describe_kata.args`
+/// and `run_kata`'s `invalid_args.expected` (§5.5), so the two can never drift.
+fn build_args_schema(args: &[Arg]) -> Value {
+    let mut properties = serde_json::Map::new();
+    let mut required = Vec::new();
+    for arg in args {
+        let mut prop = serde_json::Map::new();
+        match &arg.ty {
+            ArgType::Text => {
+                prop.insert("type".to_string(), json!("string"));
+            }
+            ArgType::Int => {
+                prop.insert("type".to_string(), json!("integer"));
+            }
+            ArgType::Bool => {
+                prop.insert("type".to_string(), json!("boolean"));
+            }
+            ArgType::Select { options } => {
+                prop.insert("type".to_string(), json!("string"));
+                prop.insert("enum".to_string(), json!(options));
+            }
+        }
+        if let Some(default) = &arg.default {
+            prop.insert("default".to_string(), default_to_json(default));
+        }
+        if let Some(help) = &arg.help {
+            prop.insert("description".to_string(), json!(help));
+        }
+        properties.insert(arg.name.clone(), Value::Object(prop));
+        if arg.is_required() {
+            required.push(arg.name.clone());
+        }
+    }
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": Value::Object(properties),
+        "required": required,
+    })
+}
+
+fn default_to_json(default: &ArgDefault) -> Value {
+    match default {
+        ArgDefault::Text(s) => json!(s),
+        ArgDefault::Int(i) => json!(i),
+        ArgDefault::Bool(b) => json!(b),
+        ArgDefault::Select(s) => json!(s),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// run_kata
+// ---------------------------------------------------------------------------
+
+pub struct RunArgs {
+    pub id: String,
+    pub args: serde_json::Map<String, Value>,
+    pub dry_run: bool,
+}
+
+fn json_args_to_strings(
+    args: &serde_json::Map<String, Value>,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut out = BTreeMap::new();
+    for (key, value) in args {
+        let text = match value {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            _ => return Err(key.clone()),
+        };
+        out.insert(key.clone(), text);
+    }
+    Ok(out)
+}
+
+fn invalid_args_result(kata: &Kata, message: String) -> (Value, bool) {
+    (
+        json!({
+            "status": "error",
+            "error": "invalid_args",
+            "isError": true,
+            "message": message,
+            "expected": build_args_schema(&kata.args),
+        }),
+        true,
+    )
+}
+
+fn draft_run_result(id: &str) -> (Value, bool) {
+    let human = id
+        .strip_prefix("proposed/")
+        .map(|rest| format!("kadou accept {rest}"))
+        .or_else(|| {
+            id.strip_prefix("mined/")
+                .map(|_| "kadou mine review".to_string())
+        })
+        .unwrap_or_else(|| "kadou accept".to_string());
+    (
+        json!({
+            "status": "error",
+            "error": "draft",
+            "isError": true,
+            "id": id,
+            "message": format!("draft; a human must run: {human}"),
+        }),
+        true,
+    )
+}
+
+/// Executes `run_kata`. `ct` is cancelled by the framework when `notifications/cancelled`
+/// arrives for this request (§6.1).
+pub async fn run_kata(
+    state: &ServerState,
+    config: &kadou_core::Config,
+    mcp_client: Option<String>,
+    ct: CancellationToken,
+    args: RunArgs,
+) -> (Value, bool) {
+    let id = args.id.clone();
+
+    if drafts::is_draft_id(&id) {
+        return draft_run_result(&id);
+    }
+
+    let Some((kata, folder)) = resolve_visible(state, config, &id) else {
+        return no_such_kata(&id);
+    };
+
+    let provided = match json_args_to_strings(&args.args) {
+        Ok(m) => m,
+        Err(bad_key) => {
+            return invalid_args_result(
+                &kata,
+                format!("arg `{bad_key}` must be a string, number, or boolean"),
+            );
+        }
+    };
+
+    let resolved_args = match kadou_core::resolve_args(&kata, &provided) {
+        Ok(v) => v,
+        Err(err) => return invalid_args_result(&kata, err.to_string()),
+    };
+
+    let vault = state.load_vault();
+    let resolved_needs = kadou_core::resolve_needs(&kata, &vault);
+
+    if args.dry_run {
+        let dry = kadou_exec::dry_run(&resolved_args, &resolved_needs);
+        return (
+            json!({
+                "status": "dry_run",
+                "id": kata.id,
+                "env_names": dry.env_names,
+                "env_public": dry.env_public,
+                "secret_env_names": dry.secret_env_names,
+            }),
+            false,
+        );
+    }
+
+    let missing: Vec<String> = resolved_needs
+        .iter()
+        .filter(|n| n.value.is_none())
+        .map(|n| n.name.clone())
+        .collect();
+    if !missing.is_empty() {
+        let fix = format!("kadou vault set {}", missing[0]);
+        return (
+            json!({
+                "status": "error",
+                "error": "missing_needs",
+                "isError": true,
+                "id": kata.id,
+                "needs_missing": missing,
+                "message": fix,
+            }),
+            true,
+        );
+    }
+
+    let Ok(guard) = state.concurrency.try_start(&kata.id) else {
+        return (
+            json!({
+                "status": "error",
+                "error": "busy",
+                "isError": true,
+                "id": kata.id,
+                "message": format!("{} is already running, or the server is at its concurrency limit", kata.id),
+            }),
+            true,
+        );
+    };
+
+    let kata_dir_root = if kata.id.starts_with("./") {
+        state
+            .project_local_kata_dir
+            .clone()
+            .unwrap_or_else(|| state.paths.kata_dir())
+    } else {
+        state.paths.kata_dir()
+    };
+    let mut ctx = kadou_exec::kata_context(&kata_dir_root, &kata);
+    if kata.id.starts_with("./")
+        && let Some(dir) = &state.project_local_kata_dir
+    {
+        ctx.root = dir.clone();
+    }
+
+    let mut env = env::build_mcp_env(std::env::vars(), &config.exec.pass_env);
+    env.extend(kadou_exec::context_env(&ctx));
+    let secret_values: Vec<String> = resolved_needs
+        .iter()
+        .filter(|n| n.secret)
+        .filter_map(|n| n.value.clone())
+        .collect();
+    for arg in &resolved_args {
+        env.push((arg.env_name.clone(), arg.value.clone()));
+    }
+    for need in &resolved_needs {
+        env.push((
+            need.env_name.clone(),
+            need.value.clone().expect("checked missing above"),
+        ));
+    }
+
+    let timeout = kadou_exec::effective_timeout(kata.timeout, &config.exec.timeout);
+    let spec = kadou_exec::RunSpec {
+        shebang: kata.shebang.clone(),
+        file: kata.path.clone(),
+        cwd: ctx.dir.clone(),
+        env,
+        timeout,
+        // `env` above is already the complete allowlisted MCP environment (§6.1) — the
+        // child must not also inherit this server process's own environment.
+        env_clear: true,
+    };
+
+    let history_store = HistoryStore::new(&state.paths.state_dir);
+    let public_args: BTreeMap<String, String> = resolved_args
+        .iter()
+        .map(|a| (a.name.clone(), a.value.clone()))
+        .collect();
+    let record = match history_store.begin(
+        &kata.id,
+        &folder,
+        &public_args,
+        "mcp",
+        &history::current_initiator(),
+        mcp_client.as_deref(),
+    ) {
+        Ok(record) => record,
+        Err(err) => {
+            return (
+                json!({"status":"error","error":"internal","isError":true,"id":kata.id,"message":err.to_string()}),
+                true,
+            );
+        }
+    };
+
+    let max_output_lines = (config.mcp.max_output_lines as usize).clamp(1, 200);
+    let max_wait =
+        humantime::parse_duration(&config.mcp.max_wait).unwrap_or(Duration::from_secs(50));
+
+    let (done_tx, mut done_rx) = tokio::sync::oneshot::channel();
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let outcome = kadou_exec::run(spec, Some(cancel_rx)).await;
+        let _ = done_tx.send(outcome);
+    });
+
+    // `ct` is scoped to this request's own lifetime — it is only meaningful to race here, in
+    // the synchronous branch; once we detach (the `max_wait` branch below), the spawned kata
+    // keeps running on its own and `ct` is no longer watched (§6.1 "cancel via
+    // notifications/cancelled, stdio EOF, or exec.timeout"). `cancel_tx` must stay alive for
+    // as long as the kata might still be running: dropping a oneshot `Sender` resolves the
+    // receiver's `.await` exactly like a real cancel signal, so letting it drop here would
+    // SIGTERM every detached run the instant this function returns.
+    tokio::select! {
+        result = &mut done_rx => {
+            drop(cancel_tx);
+            let value = finish_run(&history_store, record, result, &secret_values, max_output_lines);
+            drop(guard);
+            value
+        }
+        () = ct.cancelled() => {
+            let _ = cancel_tx.send(());
+            let result = done_rx.await;
+            let value = finish_run(&history_store, record, result, &secret_values, max_output_lines);
+            drop(guard);
+            value
+        }
+        () = tokio::time::sleep(max_wait) => {
+            let running_id = kata.id.clone();
+            let history_id = record.history_id.clone();
+            let log_path = record.log_path.display().to_string();
+            let state_dir = state.paths.state_dir.clone();
+            tokio::spawn(async move {
+                let _keep_alive = cancel_tx;
+                let history_store = HistoryStore::new(&state_dir);
+                let result = done_rx.await;
+                let _ = finish_run(&history_store, record, result, &secret_values, max_output_lines);
+                drop(guard);
+            });
+            (
+                json!({
+                    "status": "running",
+                    "id": running_id,
+                    "history_id": history_id,
+                    "log_path": log_path,
+                }),
+                false,
+            )
+        }
+    }
+}
+
+type RunOutcomeResult = Result<kadou_exec::RunOutcome, kadou_exec::ExecError>;
+
+fn finish_run(
+    history_store: &HistoryStore,
+    mut record: HistoryRecord,
+    result: Result<RunOutcomeResult, tokio::sync::oneshot::error::RecvError>,
+    secret_values: &[String],
+    max_output_lines: usize,
+) -> (Value, bool) {
+    let internal_failure = FinishOutcome {
+        status: "failed",
+        exit_code: None,
+        redacted_output: "",
+        output_lines: 0,
+        output_summary: "",
+        duration_ms: 0,
+    };
+    let outcome = match result {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(err)) => {
+            let _ = history_store.finish(&mut record, internal_failure);
+            return (
+                json!({"status":"error","error":"internal","isError":true,"id":record.id,"message":err.to_string()}),
+                true,
+            );
+        }
+        Err(_) => {
+            let _ = history_store.finish(&mut record, internal_failure);
+            return (
+                json!({"status":"error","error":"internal","isError":true,"id":record.id,"message":"the run task ended unexpectedly"}),
+                true,
+            );
+        }
+    };
+
+    let full_output = outcome.output.join("\n");
+    let redacted_full = redact::redact_all(&full_output, secret_values);
+    let redacted_lines: Vec<String> = if redacted_full.is_empty() {
+        Vec::new()
+    } else {
+        redacted_full.split('\n').map(str::to_string).collect()
+    };
+
+    let (view, output_lines, truncated) = truncate_output(&redacted_lines, max_output_lines);
+    let summary = last_non_empty_line(&redacted_lines);
+    let duration_ms = u64::try_from(outcome.duration.as_millis()).unwrap_or(u64::MAX);
+
+    let (status_str, is_error) = match outcome.status {
+        kadou_exec::RunStatus::Success => ("success", false),
+        kadou_exec::RunStatus::Failed => ("failed", true),
+        kadou_exec::RunStatus::TimedOut => ("failed", true),
+        kadou_exec::RunStatus::Cancelled => ("cancelled", true),
+    };
+
+    let _ = history_store.finish(
+        &mut record,
+        FinishOutcome {
+            status: status_str,
+            exit_code: outcome.exit_code,
+            redacted_output: &redacted_full,
+            output_lines: redacted_lines.len(),
+            output_summary: &summary,
+            duration_ms,
+        },
+    );
+
+    let mut obj = serde_json::Map::new();
+    obj.insert("status".to_string(), json!(status_str));
+    obj.insert("id".to_string(), json!(record.id));
+    obj.insert("exit_code".to_string(), json!(outcome.exit_code));
+    obj.insert("duration_ms".to_string(), json!(duration_ms));
+    obj.insert("output_lines".to_string(), json!(output_lines));
+    obj.insert("output".to_string(), json!(view));
+    obj.insert("truncated".to_string(), json!(truncated));
+    obj.insert("summary".to_string(), json!(summary));
+    obj.insert(
+        "log_path".to_string(),
+        json!(record.log_path.display().to_string()),
+    );
+    obj.insert("history_id".to_string(), json!(record.history_id));
+    if is_error {
+        obj.insert("isError".to_string(), json!(true));
+    }
+    (Value::Object(obj), is_error)
+}
+
+/// Last **N** lines (§5.5 default 50, `mcp.max_output_lines`), then a hard cap of 8192 UTF-8
+/// bytes, cutting whole lines from the front until it fits.
+fn truncate_output(lines: &[String], max_lines: usize) -> (String, usize, bool) {
+    let total = lines.len();
+    let take_from = total.saturating_sub(max_lines.max(1));
+    let mut kept: Vec<String> = lines[take_from..].to_vec();
+    let mut truncated = take_from > 0;
+    let mut joined = kept.join("\n");
+
+    while joined.len() > MAX_OUTPUT_BYTES && kept.len() > 1 {
+        kept.remove(0);
+        joined = kept.join("\n");
+        truncated = true;
+    }
+    if joined.len() > MAX_OUTPUT_BYTES {
+        let mut end = MAX_OUTPUT_BYTES;
+        while !joined.is_char_boundary(end) {
+            end -= 1;
+        }
+        joined.truncate(end);
+        truncated = true;
+    }
+    (joined, kept.len(), truncated)
+}
+
+fn last_non_empty_line(lines: &[String]) -> String {
+    let line = lines
+        .iter()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .cloned()
+        .unwrap_or_default();
+    if line.chars().count() > 200 {
+        line.chars().take(200).collect()
+    } else {
+        line
+    }
+}
+
+// ---------------------------------------------------------------------------
+// propose_kata
+// ---------------------------------------------------------------------------
+
+pub struct ProposeArgs {
+    pub id: String,
+    pub source: String,
+}
+
+pub fn propose_kata(state: &ServerState, args: ProposeArgs) -> (Value, bool) {
+    match drafts::propose(
+        &state.paths.state_dir,
+        &state.paths.kata_dir(),
+        &args.id,
+        &args.source,
+    ) {
+        Ok(outcome) => (
+            json!({
+                "status": "proposed",
+                "id": outcome.draft_id,
+                "path": outcome.path.display().to_string(),
+                "diff": outcome.diff,
+                "accept": outcome.accept_command,
+            }),
+            false,
+        ),
+        Err(err) => (
+            json!({
+                "status": "error",
+                "error": "invalid_args",
+                "isError": true,
+                "message": err.to_string(),
+            }),
+            true,
+        ),
+    }
+}

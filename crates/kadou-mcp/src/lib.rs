@@ -8,4 +8,10 @@ mod env;
 mod history;
 mod redact;
 pub mod schema;
+mod server;
+pub mod state;
+mod tools;
 mod visibility;
+
+pub use server::KadouMcpServer;
+pub use state::ServerState;
