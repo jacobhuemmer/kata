@@ -1,6 +1,6 @@
 ---
 name: clean-code-design
-description: Clean Code design maxims for kadou's Rust workspace — DRY, KISS, YAGNI, separation of concerns, composition, Law of Demeter. Use when making architectural decisions, creating new modules or crates, refactoring code structure, or reviewing overall code organization.
+description: Clean Code design maxims for kadou's Rust workspace — DRY, KISS, YAGNI, separation of concerns, composition, Law of Demeter. Use when making architectural decisions, creating new modules or crates, refactoring code structure, or reviewing overall code organization. Triggers on new module/crate proposals, structural refactors, or scope-creep questions.
 user-invocable: false
 ---
 

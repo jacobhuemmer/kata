@@ -1,6 +1,6 @@
 ---
 name: clean-code-errors
-description: Clean Code error handling principles for kadou's Rust codebase. Use when writing, editing, or reviewing error handling — Result returns, error enums, thiserror types, unwrap/expect usage, and error messages surfaced to a human or an agent.
+description: Clean Code error handling principles for kadou's Rust codebase. Use when writing, editing, or reviewing error handling — Result returns, error enums, thiserror types, unwrap/expect usage, and error messages surfaced to a human or an agent. Triggers on new thiserror enums, new unwrap/expect/panic usage, or new user-facing error messages.
 user-invocable: false
 ---
 

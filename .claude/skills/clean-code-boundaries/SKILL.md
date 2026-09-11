@@ -1,6 +1,6 @@
 ---
 name: clean-code-boundaries
-description: Clean Code boundary and encapsulation principles for kadou's Rust crates. Use when integrating third-party crates (rmcp, age, inquire, crossterm), wrapping SDK clients, defining module/crate visibility, or managing dependencies at the edges of the workspace.
+description: Clean Code boundary and encapsulation principles for kadou's Rust crates. Use when integrating third-party crates (rmcp, age, inquire, crossterm), wrapping SDK clients, defining module/crate visibility, or managing dependencies at the edges of the workspace. Triggers on new external-crate usage, new pub/pub(crate) visibility decisions, or new inter-crate dependencies.
 user-invocable: false
 ---
 
