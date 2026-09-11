@@ -7,7 +7,7 @@
 mod check;
 mod config;
 mod digest;
-mod fsutil;
+pub mod fsutil;
 mod header;
 mod import;
 mod kata;
