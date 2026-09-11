@@ -1245,12 +1245,14 @@ version = "0.1.0"
 dependencies = [
  "assert_cmd",
  "clap",
+ "humantime",
  "inquire",
  "kadou-core",
  "kadou-exec",
  "kadou-mcp",
  "predicates",
  "rust-embed",
+ "similar 3.2.0",
  "tempfile",
  "tokio",
 ]

@@ -1,9 +1,16 @@
-//! The embedded starter kata (`docs/design/05-prd.md` §7.4, §7.7, §9 slice 3).
+//! The embedded starter kata (`docs/design/05-prd.md` §7.4, §7.7, §9 slice 3/6).
 //!
 //! Embedded inside the `kadou` bin crate — not `kadou-core` — so `cargo package` works for
-//! `rust-embed` (§3 crate layout note). This slice ships `starter/hello` only; §7.7's other
-//! four starter kata are first-run-experience polish for a later slice.
-
+//! `rust-embed` (§3 crate layout note).
+//!
+//! **Decision D6 (slice 6):** every embedded file under `starter/` is materialized
+//! independently, on **every** command that scans kata (`list`, `check`, `run`, `show`, `mcp
+//! serve`, `grant`, and the bare `kadou` frame) — never only "when `kata/` doesn't exist yet".
+//! The slice-5 version checked that instead, so a home that ran `kadou import` (or only ever
+//! `kadou mcp serve`) before touching `starter` directly never got the starter kata at all,
+//! since `kata/` already existed once any other folder had been written into it. A file that
+//! already exists (materialized before, or a human's own edit) is never overwritten or
+//! recreated once it exists; only files genuinely missing get written.
 use std::path::Path;
 
 use rust_embed::RustEmbed;
@@ -12,16 +19,16 @@ use rust_embed::RustEmbed;
 #[folder = "starter/"]
 struct StarterKata;
 
-/// Materializes the embedded starter kata into `kata_dir/starter/`, but only when `kata_dir`
-/// does not exist yet (§7.4 item 2: "written on first run; yours after that. If deleted, it
-/// stays deleted.").
+/// Materializes every embedded starter file whose destination under `kata_dir/starter/` does
+/// not yet exist (§7.4 item 2, decision D6). Safe to call on every command that scans kata —
+/// a fully-materialized starter folder does no I/O beyond the existence checks.
 pub fn materialize_if_needed(kata_dir: &Path) -> std::io::Result<()> {
-    if kata_dir.exists() {
-        return Ok(());
-    }
     for name in StarterKata::iter() {
-        let file = StarterKata::get(&name).expect("embedded file listed by iter() must exist");
         let dest = kata_dir.join("starter").join(name.as_ref());
+        if dest.exists() {
+            continue;
+        }
+        let file = StarterKata::get(&name).expect("embedded file listed by iter() must exist");
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -43,11 +50,51 @@ mod tests {
     }
 
     #[test]
-    fn does_not_touch_an_already_existing_kata_dir() {
+    fn materializes_missing_files_even_when_kata_dir_already_has_other_folders() {
+        // Reproduces the slice-5 defect (D6): a home that imported a team folder first (so
+        // `kata_dir` already existed) must still get the starter kata on the next scan.
         let dir = tempfile::tempdir().unwrap();
         let kata_dir = dir.path().join("kata");
-        std::fs::create_dir_all(&kata_dir).unwrap();
+        std::fs::create_dir_all(kata_dir.join("team")).unwrap();
+        std::fs::write(kata_dir.join("team/other.sh"), "#!/bin/sh\necho hi\n").unwrap();
+
         materialize_if_needed(&kata_dir).unwrap();
-        assert!(!kata_dir.join("starter").exists());
+
+        assert!(kata_dir.join("starter/hello.sh").is_file());
+        assert!(kata_dir.join("starter/disk-usage.sh").is_file());
+        assert!(kata_dir.join("starter/git-status.sh").is_file());
+        assert!(kata_dir.join("starter/health.sh").is_file());
+        assert!(kata_dir.join("starter/list-path.sh").is_file());
+        // The pre-existing folder is untouched.
+        assert!(kata_dir.join("team/other.sh").is_file());
+    }
+
+    #[test]
+    fn never_overwrites_an_existing_starter_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let kata_dir = dir.path().join("kata");
+        materialize_if_needed(&kata_dir).unwrap();
+
+        let hello = kata_dir.join("starter/hello.sh");
+        std::fs::write(&hello, "#!/bin/sh\necho customized\n").unwrap();
+
+        materialize_if_needed(&kata_dir).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&hello).unwrap(),
+            "#!/bin/sh\necho customized\n"
+        );
+    }
+
+    #[test]
+    fn a_deleted_starter_file_is_recreated_on_the_next_scan() {
+        // Decision D6: unlike the old "only if kata/ is entirely absent" rule, a single
+        // deleted starter file is treated as "missing" and comes back on the next scan.
+        let dir = tempfile::tempdir().unwrap();
+        let kata_dir = dir.path().join("kata");
+        materialize_if_needed(&kata_dir).unwrap();
+        std::fs::remove_file(kata_dir.join("starter/hello.sh")).unwrap();
+
+        materialize_if_needed(&kata_dir).unwrap();
+        assert!(kata_dir.join("starter/hello.sh").is_file());
     }
 }

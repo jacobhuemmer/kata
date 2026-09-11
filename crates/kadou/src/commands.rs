@@ -11,7 +11,11 @@ use kadou_core::{
     Config, GoVaultSource, KadouPaths, Kata, LastArgsStore, LookupResult, RiskLevel, Vault,
     VaultStore,
 };
+use kadou_mcp::history::{FinishOutcome, HistoryStore, current_initiator};
+use kadou_mcp::pending::{self, PendingRecord, PendingStore};
+use kadou_mcp::redact;
 
+use crate::confirm::{self, ConfirmOutcome};
 use crate::starter;
 
 /// Resolves [`KadouPaths`] from the real process environment, printing a fatal error and
@@ -82,6 +86,27 @@ fn load_vault(paths: &KadouPaths) -> Vault {
     })
 }
 
+/// Materializes any missing starter kata (decision D6, §7.4, §9 slice 6): called by every
+/// command that scans kata (`list`, `check`, `run`, `show`, `mcp serve`, `grant`, and the bare
+/// `kadou` frame in `main.rs`) so a home is never missing the starter kata just because some
+/// other folder got there first. A failure here is a warning, not fatal — the command that
+/// called it can still make progress against whatever is already on disk.
+fn materialize_starter(paths: &KadouPaths) {
+    if let Err(err) = starter::materialize_if_needed(&paths.kata_dir()) {
+        eprintln!(
+            "warning: failed to materialize the starter kata into {}: {err}",
+            paths.kata_dir().display()
+        );
+    }
+}
+
+/// The bare `kadou` frame (a stub until slice 8) still scans kata for its preview, so it still
+/// needs decision D6's materialize-on-scan behavior; `main.rs` calls this before printing the
+/// stub message.
+pub fn materialize_starter_for_bare_invocation() {
+    materialize_starter(&resolve_paths());
+}
+
 /// The human ceiling for `folder`, per §6.2's formula: `folder[f].max_risk ?? max_risk`.
 fn human_ceiling(config: &Config, folder: &str) -> RiskLevel {
     config
@@ -91,23 +116,11 @@ fn human_ceiling(config: &Config, folder: &str) -> RiskLevel {
         .unwrap_or(config.max_risk)
 }
 
-/// Slice 4's stopgap safety gate (planner decision, `docs/design/05-prd.md` §9 slice 4):
-/// until slice 6 ships the full confirm protocol (§6.3, §6.4), `kadou run` never actually
-/// executes a high or critical kata, and never a kata above the human ceiling either. Both
-/// are exit-2 refusals with a fix line; neither applies to `--dry-run`, which never spawns
-/// (§6.1 "`dry_run` does not spawn").
-fn stopgap_gate(kata: &Kata, config: &Config) -> Result<(), ExitCode> {
-    if matches!(kata.risk, RiskLevel::High | RiskLevel::Critical) {
-        eprintln!(
-            "error: {} is {} risk; confirmation lands in slice 6",
-            kata.id, kata.risk
-        );
-        eprintln!(
-            "  = high and critical kata cannot run yet (docs/design/05-prd.md §6.3, §9 slice 6)"
-        );
-        return Err(ExitCode::from(2));
-    }
-
+/// The human ceiling still applies regardless of the confirm protocol (§6.2, §6.3 "The human
+/// ceiling still applies"): a kata above `max_risk`/`[folder.<f>] max_risk` never runs, no
+/// matter what `--confirm` or a TTY prompt says. `--dry-run` never spawns, so it bypasses this
+/// too (§6.1).
+fn check_human_ceiling(kata: &Kata, config: &Config) -> Result<(), ExitCode> {
     let folder = kata.id.split('/').next().unwrap_or(&kata.id);
     let ceiling = human_ceiling(config, folder);
     if kata.risk > ceiling {
@@ -118,8 +131,54 @@ fn stopgap_gate(kata: &Kata, config: &Config) -> Result<(), ExitCode> {
         eprintln!("  = raise it with `max_risk` (or `[folder.{folder}] max_risk`) in kadou.toml");
         return Err(ExitCode::from(2));
     }
-
     Ok(())
+}
+
+/// The real CLI half of the unified confirm protocol (§6.3, decision 4): wraps
+/// [`confirm::confirm_protocol`] with the real terminal and real `inquire` prompts, and turns
+/// its outcome into the exact user-facing messages and exit codes the PRD specifies.
+/// `replay_line` is the full non-interactive command line to print on `NeedsConfirm` — the
+/// caller's own invocation with `--confirm <id>` appended (§6.3's worked example).
+fn cli_confirm(kata: &Kata, confirm_flag: Option<&str>, replay_line: &str) -> Result<(), ExitCode> {
+    let is_tty = std::io::stdin().is_terminal();
+    let outcome = confirm::confirm_protocol(
+        kata.risk,
+        &kata.id,
+        confirm_flag,
+        is_tty,
+        || {
+            inquire::Confirm::new(&format!("run {}?", kata.id))
+                .with_default(false)
+                .prompt()
+                .unwrap_or(false)
+        },
+        || {
+            inquire::Text::new(&format!("type {} to confirm", kata.id))
+                .prompt()
+                .ok()
+        },
+    );
+
+    match outcome {
+        ConfirmOutcome::Proceed => Ok(()),
+        ConfirmOutcome::Declined => {
+            eprintln!("cancelled");
+            Err(ExitCode::from(1))
+        }
+        ConfirmOutcome::ConfirmMismatch => {
+            eprintln!(
+                "error: --confirm {} does not match {}",
+                confirm_flag.unwrap_or(""),
+                kata.id
+            );
+            Err(ExitCode::from(2))
+        }
+        ConfirmOutcome::NeedsConfirm => {
+            eprintln!("error: {} is {} and needs confirmation", kata.id, kata.risk);
+            eprintln!("  = {replay_line}");
+            Err(ExitCode::from(2))
+        }
+    }
 }
 
 /// Reads a vault value from a TTY prompt (masked unless `plain`) or, off a TTY, from stdin
@@ -161,6 +220,7 @@ fn parse_risk(s: &str) -> Option<RiskLevel> {
 /// [CLI]`); untrusted project-local folders are out of scope for this slice.
 pub fn run_list(query: Option<String>, folder: Option<String>, risk: Option<String>) -> ExitCode {
     let paths = resolve_paths();
+    materialize_starter(&paths);
     let config = load_config(&paths);
 
     let risk_filter = match risk.as_deref() {
@@ -243,6 +303,7 @@ pub fn run_list(query: Option<String>, folder: Option<String>, risk: Option<Stri
 /// a single kata file checks just that file.
 pub fn run_check(folder_or_path: Option<String>, verbose: bool) -> ExitCode {
     let paths = resolve_paths();
+    materialize_starter(&paths);
     let kata_dir = paths.kata_dir();
     let display_root = paths.config_dir.clone();
     let vault = load_vault(&paths);
@@ -414,7 +475,12 @@ fn find_kata_or_report(kata_dir: &Path, id: &str) -> Result<Kata, ExitCode> {
 
 /// `kadou run <id> [k=v…] [--dry-run]` (§7.1, §6.1, §9 slice 3). No picker: a missing id is a
 /// stub for slice 8, same as the bare `kadou` frame.
-pub fn run_run(id: Option<String>, kv: Vec<String>, dry_run: bool) -> ExitCode {
+pub fn run_run(
+    id: Option<String>,
+    kv: Vec<String>,
+    dry_run: bool,
+    confirm_flag: Option<String>,
+) -> ExitCode {
     let Some(id) = id else {
         eprintln!("error: 'run' with no id is not yet implemented (slice 8)");
         eprintln!("  = kadou run <id>, or kadou list");
@@ -422,12 +488,7 @@ pub fn run_run(id: Option<String>, kv: Vec<String>, dry_run: bool) -> ExitCode {
     };
 
     let paths = resolve_paths();
-    if let Err(err) = starter::materialize_if_needed(&paths.kata_dir()) {
-        eprintln!(
-            "warning: failed to materialize the starter kata into {}: {err}",
-            paths.kata_dir().display()
-        );
-    }
+    materialize_starter(&paths);
     let config = load_config(&paths);
 
     let provided = match parse_kv(&kv) {
@@ -477,7 +538,17 @@ pub fn run_run(id: Option<String>, kv: Vec<String>, dry_run: bool) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    if let Err(code) = stopgap_gate(&kata, &config) {
+    if let Err(code) = check_human_ceiling(&kata, &config) {
+        return code;
+    }
+
+    let mut replay_line = format!("kadou run {id}");
+    for pair in &kv {
+        replay_line.push(' ');
+        replay_line.push_str(pair);
+    }
+    replay_line.push_str(&format!(" --confirm {id}"));
+    if let Err(code) = cli_confirm(&kata, confirm_flag.as_deref(), &replay_line) {
         return code;
     }
 
@@ -588,12 +659,7 @@ pub fn run_show(id: Option<String>) -> ExitCode {
     };
 
     let paths = resolve_paths();
-    if let Err(err) = starter::materialize_if_needed(&paths.kata_dir()) {
-        eprintln!(
-            "warning: failed to materialize the starter kata into {}: {err}",
-            paths.kata_dir().display()
-        );
-    }
+    materialize_starter(&paths);
 
     let kata = match find_kata_or_report(&paths.kata_dir(), &id) {
         Ok(k) => k,
@@ -737,12 +803,7 @@ pub fn run_mcp_serve(
     };
 
     let paths = resolve_paths();
-    if let Err(err) = starter::materialize_if_needed(&paths.kata_dir()) {
-        eprintln!(
-            "warning: failed to materialize the starter kata into {}: {err}",
-            paths.kata_dir().display()
-        );
-    }
+    materialize_starter(&paths);
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     // Default concurrency limit of 2 (§6.1 "A per-server concurrency limit (default 2)").
@@ -798,6 +859,413 @@ pub fn run_vault_rm(name: String) -> ExitCode {
         }
         Err(err) => {
             eprintln!("error: failed to save the vault: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// kadou grant * (§6.4, §7.1, §9 slice 6)
+// ---------------------------------------------------------------------------
+
+fn render_args(args: &BTreeMap<String, String>) -> String {
+    args.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The status column `kadou grant list`/`show` prints: the run's own terminal status once
+/// approved, else `expired` (§6.4 item 2 "shows expired records as expired") or `pending`.
+fn grant_status_label(record: &PendingRecord) -> String {
+    match &record.status {
+        Some(status) => status.clone(),
+        None if record.is_expired() => "expired".to_string(),
+        None => "pending".to_string(),
+    }
+}
+
+/// `kadou grant list` (§7.1, §6.4 item 4).
+pub fn run_grant_list() -> ExitCode {
+    let paths = resolve_paths();
+    materialize_starter(&paths);
+    let store = PendingStore::new(&paths.state_dir);
+    let mut records = store.list();
+    records.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+    if records.is_empty() {
+        println!("no pending grants");
+        return ExitCode::SUCCESS;
+    }
+
+    for record in &records {
+        println!(
+            "{:<36} {:<8} {:<28} {:<9} {}",
+            record.pending_id,
+            record.risk,
+            record.id,
+            grant_status_label(record),
+            render_args(&record.args),
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// `kadou grant show <pending_id>` (§7.1, §6.4 item 4: "the record and a kata diff since
+/// request").
+pub fn run_grant_show(pending_id: String) -> ExitCode {
+    let paths = resolve_paths();
+    materialize_starter(&paths);
+    let store = PendingStore::new(&paths.state_dir);
+
+    let Some(record) = store.get(&pending_id) else {
+        eprintln!("error: no pending grant `{pending_id}`");
+        return ExitCode::from(2);
+    };
+
+    println!(
+        "{}   {}   {}",
+        record.id,
+        record.risk,
+        grant_status_label(&record)
+    );
+    println!();
+    println!("pending_id  {}", record.pending_id);
+    println!(
+        "requester   {} ({})",
+        record.requester,
+        record.mcp_client.as_deref().unwrap_or("-")
+    );
+    println!("requested   {}", record.timestamp);
+    println!("expires     {}", record.expires);
+    println!("sha256      {}", record.sha256);
+    if let Some(head) = &record.folder_head {
+        println!("folder_head {head}");
+    }
+    if !record.args.is_empty() {
+        println!();
+        println!("args");
+        for (name, value) in &record.args {
+            println!("  {name} = {value}");
+        }
+    }
+    if let Some(history_id) = &record.history_id {
+        println!();
+        println!("history_id  {history_id}");
+        println!("status      {}", record.status.as_deref().unwrap_or("?"));
+        if let Some(log_path) = &record.log_path {
+            println!("log_path    {}", log_path.display());
+        }
+    }
+
+    println!();
+    match kadou_core::find_kata(&paths.kata_dir(), &record.id) {
+        Ok(LookupResult::Found(kata)) => {
+            let current = std::fs::read_to_string(&kata.path).unwrap_or_default();
+            if current == record.source {
+                println!("no changes to the kata since the request");
+            } else {
+                let diff = similar::TextDiff::from_lines(&record.source, &current)
+                    .unified_diff()
+                    .header("requested", "current")
+                    .to_string();
+                print!("{diff}");
+            }
+        }
+        _ => println!("(the kata no longer exists on disk)"),
+    }
+
+    ExitCode::SUCCESS
+}
+
+/// `kadou grant deny <pending_id>` (§6.4 item 6: "deletes the record").
+pub fn run_grant_deny(pending_id: String) -> ExitCode {
+    let paths = resolve_paths();
+    let store = PendingStore::new(&paths.state_dir);
+    if store.get(&pending_id).is_none() {
+        eprintln!("error: no pending grant `{pending_id}`");
+        return ExitCode::from(2);
+    }
+    match store.delete(&pending_id) {
+        Ok(()) => {
+            println!("denied and removed {pending_id}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: failed to remove {pending_id}: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `kadou grant allow <id> [--any-version]` (§6.4 item 5, §7.1): a config edit appending to
+/// `[agent].allow`, pinned to the current sha256 unless `--any-version`. Idempotent: a repeat
+/// call replaces this id's prior entry (bare or pinned) rather than accumulating stale ones.
+pub fn run_grant_allow(id: String, any_version: bool) -> ExitCode {
+    let paths = resolve_paths();
+    materialize_starter(&paths);
+
+    let kata = match find_kata_or_report(&paths.kata_dir(), &id) {
+        Ok(k) => k,
+        Err(code) => return code,
+    };
+
+    let entry = if any_version {
+        id.clone()
+    } else {
+        match kadou_core::file_sha256(&kata.path) {
+            Ok(sha256) => format!("{id}@{sha256}"),
+            Err(err) => {
+                eprintln!("error: failed to hash {}: {err}", kata.path.display());
+                return ExitCode::FAILURE;
+            }
+        }
+    };
+
+    let mut config = load_config(&paths);
+    let pin_prefix = format!("{id}@");
+    config
+        .agent
+        .allow
+        .retain(|existing| existing != &id && !existing.starts_with(&pin_prefix));
+    config.agent.allow.push(entry.clone());
+
+    match config.save(&paths.config_file()) {
+        Ok(()) => {
+            println!("allowed {entry}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!(
+                "error: failed to save {}: {err}",
+                paths.config_file().display()
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `kadou grant approve <pending_id> [--confirm <id>]` (§6.4 item 5): one-shot executes the
+/// pinned kata in the CLI's own full environment (not MCP's allowlisted one), subject to the
+/// same confirm protocol as `kadou run` for high/critical, refusing on a sha256/folder-HEAD
+/// mismatch or expiry.
+pub fn run_grant_approve(pending_id: String, confirm_flag: Option<String>) -> ExitCode {
+    let paths = resolve_paths();
+    materialize_starter(&paths);
+    let store = PendingStore::new(&paths.state_dir);
+
+    let Some(mut record) = store.get(&pending_id) else {
+        eprintln!("error: no pending grant `{pending_id}`");
+        return ExitCode::from(2);
+    };
+
+    if record.history_id.is_some() {
+        eprintln!(
+            "error: {pending_id} was already approved (history_id {})",
+            record.history_id.as_deref().unwrap_or("?")
+        );
+        return ExitCode::from(2);
+    }
+    if record.is_expired() {
+        eprintln!("error: {pending_id} expired at {}", record.expires);
+        eprintln!("  = ask the agent to request {} again", record.id);
+        return ExitCode::from(2);
+    }
+
+    let kata = match find_kata_or_report(&paths.kata_dir(), &record.id) {
+        Ok(k) => k,
+        Err(code) => return code,
+    };
+
+    let current_sha256 = match kadou_core::file_sha256(&kata.path) {
+        Ok(sha256) => sha256,
+        Err(err) => {
+            eprintln!("error: failed to hash {}: {err}", kata.path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    if current_sha256 != record.sha256 {
+        eprintln!(
+            "error: {} changed since the request (sha256 no longer matches)",
+            record.id
+        );
+        eprintln!("  = kadou grant show {pending_id} to see the diff, then ask for a fresh grant");
+        return ExitCode::from(2);
+    }
+    if let Some(pinned_head) = &record.folder_head {
+        let folder_dir = paths.kata_dir().join(&record.folder);
+        if pending::git_head(&folder_dir).as_deref() != Some(pinned_head.as_str()) {
+            eprintln!(
+                "error: {}'s folder git HEAD changed since the request",
+                record.id
+            );
+            eprintln!(
+                "  = kadou grant show {pending_id} to see the diff, then ask for a fresh grant"
+            );
+            return ExitCode::from(2);
+        }
+    }
+
+    let replay_line = format!("kadou grant approve {pending_id} --confirm {}", record.id);
+    if let Err(code) = cli_confirm(&kata, confirm_flag.as_deref(), &replay_line) {
+        return code;
+    }
+
+    let resolved_args = match kadou_core::resolve_args(&kata, &record.args) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("error: the pinned args no longer resolve against the current header: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let vault_store_handle = vault_store(&paths);
+    auto_import_go_vault(&vault_store_handle);
+    let vault = vault_store_handle.load().unwrap_or_else(|err| {
+        eprintln!("warning: failed to load the vault: {err}");
+        Vault::default()
+    });
+    let resolved_needs = kadou_core::resolve_needs(&kata, &vault);
+    let missing_needs: Vec<String> = resolved_needs
+        .iter()
+        .filter(|n| n.value.is_none())
+        .map(|n| n.name.clone())
+        .collect();
+    if !missing_needs.is_empty() {
+        eprintln!(
+            "error: {} needs {} but the vault isn't set up yet",
+            kata.id,
+            missing_needs.join(", ")
+        );
+        for name in &missing_needs {
+            eprintln!("  = kadou vault set {name}");
+        }
+        return ExitCode::from(2);
+    }
+
+    // Approval runs in the CLI's own full environment (§6.4 item 5 "Approval runs in the
+    // human CLI's environment (full parent env, not the MCP server's allowlisted one)").
+    let config = load_config(&paths);
+    let ctx = kadou_exec::kata_context(&paths.kata_dir(), &kata);
+    let mut env = kadou_exec::context_env(&ctx);
+    let secret_values: Vec<String> = resolved_needs
+        .iter()
+        .filter(|n| n.secret)
+        .filter_map(|n| n.value.clone())
+        .collect();
+    for arg in &resolved_args {
+        env.push((arg.env_name.clone(), arg.value.clone()));
+    }
+    for need in &resolved_needs {
+        env.push((
+            need.env_name.clone(),
+            need.value.clone().expect("checked above"),
+        ));
+    }
+
+    let timeout = kadou_exec::effective_timeout(kata.timeout, &config.exec.timeout);
+    let spec = kadou_exec::RunSpec {
+        shebang: kata.shebang.clone(),
+        file: kata.path.clone(),
+        cwd: ctx.dir.clone(),
+        env,
+        timeout,
+        env_clear: false,
+    };
+
+    let history_store = HistoryStore::new(&paths.state_dir);
+    let public_args: BTreeMap<String, String> = resolved_args
+        .iter()
+        .map(|a| (a.name.clone(), a.value.clone()))
+        .collect();
+    let mut hist_record = match history_store.begin(
+        &kata.id,
+        &record.folder,
+        &public_args,
+        "cli",
+        &current_initiator(),
+        None,
+    ) {
+        Ok(r) => r,
+        Err(err) => {
+            eprintln!("error: failed to start a history record: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match kadou_exec::run_blocking(spec) {
+        Ok(outcome) => {
+            for line in &outcome.output {
+                println!("{line}");
+            }
+            let full_output = outcome.output.join("\n");
+            let redacted = redact::redact_all(&full_output, &secret_values);
+            let output_lines = if redacted.is_empty() {
+                0
+            } else {
+                redacted.split('\n').count()
+            };
+            let summary = redacted
+                .split('\n')
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .to_string();
+            let duration_ms = u64::try_from(outcome.duration.as_millis()).unwrap_or(u64::MAX);
+            let status_str = match outcome.status {
+                kadou_exec::RunStatus::Success => "success",
+                kadou_exec::RunStatus::Failed | kadou_exec::RunStatus::TimedOut => "failed",
+                kadou_exec::RunStatus::Cancelled => "cancelled",
+            };
+
+            let _ = history_store.finish(
+                &mut hist_record,
+                FinishOutcome {
+                    status: status_str,
+                    exit_code: outcome.exit_code,
+                    redacted_output: &redacted,
+                    output_lines,
+                    output_summary: &summary,
+                    duration_ms,
+                },
+            );
+
+            // §6.4 item 5: "On success the pending record gains history_id, status, and
+            // log_path, all readable via pending_path" — written back regardless of the run's
+            // own outcome, so a failed approved run is still visible via `grant show`.
+            record.history_id = Some(hist_record.history_id.clone());
+            record.status = Some(status_str.to_string());
+            record.log_path = Some(hist_record.log_path.clone());
+            if let Err(err) = store.save(&record) {
+                eprintln!("warning: failed to update the pending record: {err}");
+            }
+
+            match outcome.status {
+                kadou_exec::RunStatus::Success => ExitCode::SUCCESS,
+                kadou_exec::RunStatus::Failed => ExitCode::FAILURE,
+                kadou_exec::RunStatus::TimedOut => {
+                    eprintln!("error: {} timed out after {timeout:?}", kata.id);
+                    ExitCode::FAILURE
+                }
+                kadou_exec::RunStatus::Cancelled => {
+                    eprintln!("cancelled");
+                    ExitCode::from(130)
+                }
+            }
+        }
+        Err(err) => {
+            let _ = history_store.finish(
+                &mut hist_record,
+                FinishOutcome {
+                    status: "failed",
+                    exit_code: None,
+                    redacted_output: "",
+                    output_lines: 0,
+                    output_summary: "",
+                    duration_ms: 0,
+                },
+            );
+            eprintln!("error: {err}");
             ExitCode::FAILURE
         }
     }

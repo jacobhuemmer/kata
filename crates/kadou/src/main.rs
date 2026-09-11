@@ -5,6 +5,7 @@
 use clap::{Args, Parser, Subcommand};
 
 mod commands;
+mod confirm;
 mod starter;
 
 /// kadou (稼働): a script library that is also an MCP server for AI agents.
@@ -143,6 +144,9 @@ enum GrantAction {
     },
     Approve {
         pending_id: String,
+        /// Required non-interactively for a high/critical kata (§6.3, §6.4).
+        #[arg(long, value_name = "ID")]
+        confirm: Option<String>,
     },
     Deny {
         pending_id: String,
@@ -216,7 +220,13 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        None => stub("kadou", 8, None),
+        // Decision D6 (§7.4, §9 slice 6): the bare `kadou` frame is a stub until slice 8, but
+        // it still scans kata (the "1 folder · 5 kata" preview it'll print), so it still
+        // materializes the starter kata on a fresh home.
+        None => {
+            commands::materialize_starter_for_bare_invocation();
+            stub("kadou", 8, None)
+        }
         Some(Command::Version) => {
             println!("kadou {}", env!("CARGO_PKG_VERSION"));
             std::process::ExitCode::SUCCESS
@@ -227,12 +237,22 @@ fn main() -> std::process::ExitCode {
             verbose,
         }) => commands::run_check(folder_or_path, verbose),
         Some(Command::Import { dir, as_folder }) => commands::run_import(dir, as_folder),
-        Some(Command::Run(args)) => commands::run_run(args.id, args.kv, args.dry_run),
+        Some(Command::Run(args)) => commands::run_run(args.id, args.kv, args.dry_run, args.confirm),
         Some(Command::Show { id }) => commands::run_show(id),
         Some(Command::Vault(cmd)) => match cmd.action {
             VaultAction::Set { name, plain } => commands::run_vault_set(name, plain),
             VaultAction::List => commands::run_vault_list(),
             VaultAction::Rm { name } => commands::run_vault_rm(name),
+        },
+        Some(Command::Grant(cmd)) => match cmd.action {
+            GrantAction::List => commands::run_grant_list(),
+            GrantAction::Show { pending_id } => commands::run_grant_show(pending_id),
+            GrantAction::Approve {
+                pending_id,
+                confirm,
+            } => commands::run_grant_approve(pending_id, confirm),
+            GrantAction::Deny { pending_id } => commands::run_grant_deny(pending_id),
+            GrantAction::Allow { id, any_version } => commands::run_grant_allow(id, any_version),
         },
         Some(Command::Mcp(cmd)) => match cmd.action {
             McpAction::Serve {
@@ -258,7 +278,7 @@ fn main() -> std::process::ExitCode {
                 Command::Trust { .. } => ("trust", 5),
                 Command::Vault(_) => unreachable!("handled above"),
                 Command::History { .. } => ("history", 5),
-                Command::Grant(_) => ("grant", 6),
+                Command::Grant(_) => unreachable!("handled above"),
                 Command::Mine(_) => ("mine", 9),
                 Command::Mcp(_) => unreachable!("handled above"),
                 Command::Completion { .. } => ("completion", 8),
@@ -282,7 +302,11 @@ fn stub(command: &str, slice: u8, parsed: Option<&Command>) -> ! {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use assert_cmd::Command as AssertCommand;
+    use kadou_core::RiskLevel;
+    use kadou_mcp::pending::PendingStore;
     use predicates::prelude::*;
 
     fn kadou() -> AssertCommand {
@@ -550,14 +574,85 @@ parameters:
     }
 
     #[test]
-    fn list_with_no_kata_says_so() {
+    fn list_on_a_fresh_home_shows_the_five_starter_kata() {
+        // Decision D6 (§7.4, §9 slice 6): `list` materializes the starter kata on scan, so an
+        // empty home is never truly empty — it replaces the old slice-2 expectation of
+        // "no kata found".
         let home = tempfile::tempdir().unwrap();
         kadou()
             .env("KADOU_HOME", home.path())
             .arg("list")
             .assert()
             .success()
-            .stdout(predicate::str::contains("no kata found"));
+            .stdout(predicate::str::contains("starter/hello"))
+            .stdout(predicate::str::contains("starter/disk-usage"))
+            .stdout(predicate::str::contains("starter/git-status"))
+            .stdout(predicate::str::contains("starter/health"))
+            .stdout(predicate::str::contains("starter/list-path"));
+    }
+
+    #[test]
+    fn import_then_list_still_shows_the_starter_kata() {
+        // Reproduces the slice-5 defect (D6): importing a team folder first used to
+        // permanently prevent the starter kata from ever materializing, since `kata_dir`
+        // already existed the first time anything scanned it.
+        let home = tempfile::tempdir().unwrap();
+        let src = home.path().join("catalog/src/widget");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("runbook.yaml"),
+            "name: widget\ndescription: Say hello\nrisk_level: low\nscript: script.sh\nparameters: []\n",
+        )
+        .unwrap();
+        std::fs::write(src.join("script.sh"), "#!/bin/sh\necho hi\n").unwrap();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args([
+                "import",
+                home.path().join("catalog/src").to_str().unwrap(),
+                "--as",
+                "sesami",
+            ])
+            .assert()
+            .success();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .arg("list")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("sesami/widget"))
+            .stdout(predicate::str::contains("starter/hello"));
+    }
+
+    #[test]
+    fn mcp_serve_on_a_fresh_home_materializes_the_starter_kata() {
+        // §9 slice 6 D6 fix: a home that only ever ran `kadou mcp serve` (never `kadou list`
+        // directly) must still get the starter kata — materialization happens at server
+        // startup, before the transport ever completes an `initialize` handshake, so this
+        // holds even for a peer that connects and immediately disconnects (closing stdin here
+        // is EOF with no client on the other end at all, which the server reports as a
+        // "connection closed" error — the exit code is not the point of this test, the
+        // materialized files are).
+        let home = tempfile::tempdir().unwrap();
+        let _ = kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["mcp", "serve"])
+            .write_stdin("")
+            .timeout(std::time::Duration::from_secs(10))
+            .output();
+
+        assert!(
+            home.path()
+                .join(".config/kadou/kata/starter/hello.sh")
+                .is_file()
+        );
+        assert!(
+            home.path()
+                .join(".config/kadou/kata/starter/disk-usage.sh")
+                .is_file()
+        );
     }
 
     #[test]
@@ -761,15 +856,8 @@ parameters:
     }
 
     #[test]
-    fn stopgap_gate_refuses_high_and_critical_but_dry_run_still_works() {
-        let home = tempfile::tempdir().unwrap();
-        let kata_dir = home.path().join(".config/kadou/kata/sesami");
-        std::fs::create_dir_all(&kata_dir).unwrap();
-        std::fs::write(
-            kata_dir.join("ses-deploy.sh"),
-            "#!/bin/sh\n# ---\n# about: Deploy SES\n# risk:  critical\n# ---\necho would-deploy\n",
-        )
-        .unwrap();
+    fn run_critical_without_confirm_still_works_as_dry_run_only() {
+        let home = critical_ceiling_home("ses-deploy", "critical");
 
         kadou()
             .env("KADOU_HOME", home.path())
@@ -778,14 +866,120 @@ parameters:
             .assert()
             .success()
             .stdout(predicate::str::contains("sesami/ses-deploy"));
+    }
+
+    /// Writes a home with `max_risk = "critical"` (so the human ceiling never interferes) and
+    /// one kata at `risk` under `sesami/<id>.sh` — the fixture every §6.3 confirm-protocol test
+    /// below shares.
+    fn critical_ceiling_home(id: &str, risk: &str) -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        let kata_dir = home.path().join(".config/kadou/kata/sesami");
+        std::fs::create_dir_all(&kata_dir).unwrap();
+        std::fs::write(
+            kata_dir.join(format!("{id}.sh")),
+            format!(
+                "#!/bin/sh\n# ---\n# about: Test kata\n# risk:  {risk}\n# args:\n#   version: text = 1.0\n# ---\necho ran-{id}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            home.path().join(".config/kadou/kadou.toml"),
+            "max_risk = \"critical\"\n",
+        )
+        .unwrap();
+        home
+    }
+
+    #[test]
+    fn non_tty_high_without_confirm_exits_2_with_the_copyable_confirm_line() {
+        let home = critical_ceiling_home("ses-release-build", "high");
 
         kadou()
             .env("KADOU_HOME", home.path())
             .env_remove("HOME")
-            .args(["run", "sesami/ses-deploy"])
+            .args(["run", "sesami/ses-release-build"])
+            .write_stdin("")
             .assert()
             .code(2)
-            .stderr(predicate::str::contains("confirmation lands in slice 6"));
+            .stderr(predicate::str::contains(
+                "sesami/ses-release-build is high and needs confirmation",
+            ))
+            .stderr(predicate::str::contains(
+                "= kadou run sesami/ses-release-build --confirm sesami/ses-release-build",
+            ));
+    }
+
+    #[test]
+    fn non_tty_critical_without_confirm_exits_2_with_the_copyable_confirm_line_including_args() {
+        let home = critical_ceiling_home("ses-deploy", "critical");
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["run", "sesami/ses-deploy", "version=1.2.3"])
+            .write_stdin("")
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(
+                "sesami/ses-deploy is critical and needs confirmation",
+            ))
+            .stderr(predicate::str::contains(
+                "= kadou run sesami/ses-deploy version=1.2.3 --confirm sesami/ses-deploy",
+            ));
+    }
+
+    #[test]
+    fn matching_confirm_flag_runs_a_high_risk_kata_non_interactively() {
+        let home = critical_ceiling_home("ses-release-build", "high");
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args([
+                "run",
+                "sesami/ses-release-build",
+                "--confirm",
+                "sesami/ses-release-build",
+            ])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("ran-ses-release-build"));
+    }
+
+    #[test]
+    fn a_mismatched_confirm_flag_is_rejected() {
+        let home = critical_ceiling_home("ses-deploy", "critical");
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["run", "sesami/ses-deploy", "--confirm", "sesami/wrong-id"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("does not match"));
+    }
+
+    #[test]
+    fn the_human_ceiling_still_applies_even_with_a_matching_confirm_flag() {
+        // §6.3: "The human ceiling still applies" — `--confirm` satisfies the confirm
+        // protocol, but a kata above `max_risk` is refused regardless.
+        let home = tempfile::tempdir().unwrap();
+        let kata_dir = home.path().join(".config/kadou/kata/sesami");
+        std::fs::create_dir_all(&kata_dir).unwrap();
+        std::fs::write(
+            kata_dir.join("ses-deploy.sh"),
+            "#!/bin/sh\n# ---\n# about: Deploy SES\n# risk:  critical\n# ---\necho would-deploy\n",
+        )
+        .unwrap();
+        // Default `max_risk` (medium) is left in place — no kadou.toml override.
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["run", "sesami/ses-deploy", "--confirm", "sesami/ses-deploy"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("max_risk"));
     }
 
     #[test]
@@ -833,5 +1027,455 @@ parameters:
             .stdout(predicate::str::contains("\"run_kata\""))
             .stdout(predicate::str::contains("\"propose_kata\""))
             .stdout(predicate::str::contains("bytes: 2028"));
+    }
+
+    // -----------------------------------------------------------------------
+    // kadou grant * (§6.4, §7.1, §9 slice 6)
+    // -----------------------------------------------------------------------
+
+    /// Writes `<home>/.config/kadou/kata/<folder>/<name>.sh` with the given risk/body and
+    /// returns its `folder/name` id and current sha256 — the fixture kata every grant test
+    /// below runs against.
+    fn write_grant_kata(
+        home: &std::path::Path,
+        folder: &str,
+        name: &str,
+        risk: &str,
+        body: &str,
+    ) -> (String, String) {
+        let kata_dir = home.join(".config/kadou/kata").join(folder);
+        std::fs::create_dir_all(&kata_dir).unwrap();
+        let source =
+            format!("#!/bin/sh\n# ---\n# about: Test kata\n# risk:  {risk}\n# ---\n{body}");
+        let path = kata_dir.join(format!("{name}.sh"));
+        std::fs::write(&path, &source).unwrap();
+        let sha256 = kadou_core::file_sha256(&path).unwrap();
+        (format!("{folder}/{name}"), sha256)
+    }
+
+    fn pending_store(home: &std::path::Path) -> PendingStore {
+        PendingStore::new(&home.join(".local/state/kadou"))
+    }
+
+    /// Simulates what `run_kata` would have written for a visible, not-allow-listed high/
+    /// critical kata (§6.4 item 1), without needing a live MCP server subprocess.
+    fn write_pending(
+        home: &std::path::Path,
+        id: &str,
+        folder: &str,
+        risk: RiskLevel,
+        sha256: &str,
+        source: &str,
+        args: &[(&str, &str)],
+    ) -> String {
+        let store = pending_store(home);
+        let args: BTreeMap<String, String> = args
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let record = store
+            .create(
+                id,
+                folder,
+                risk,
+                args,
+                "mcp",
+                Some("claude-code"),
+                sha256,
+                source,
+                None,
+            )
+            .unwrap();
+        record.pending_id
+    }
+
+    #[test]
+    fn grant_list_says_so_when_empty() {
+        let home = tempfile::tempdir().unwrap();
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .arg("grant")
+            .arg("list")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("no pending grants"));
+    }
+
+    #[test]
+    fn grant_list_and_show_a_pending_record() {
+        let home = tempfile::tempdir().unwrap();
+        let (id, sha256) = write_grant_kata(
+            home.path(),
+            "sesami",
+            "ses-deploy",
+            "critical",
+            "echo would-deploy\n",
+        );
+        let source =
+            std::fs::read_to_string(home.path().join(".config/kadou/kata/sesami/ses-deploy.sh"))
+                .unwrap();
+        let pending_id = write_pending(
+            home.path(),
+            &id,
+            "sesami",
+            RiskLevel::Critical,
+            &sha256,
+            &source,
+            &[("version", "1.2.3")],
+        );
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .arg("grant")
+            .arg("list")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(pending_id.as_str()))
+            .stdout(predicate::str::contains("sesami/ses-deploy"))
+            .stdout(predicate::str::contains("pending"))
+            .stdout(predicate::str::contains("version=1.2.3"));
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["grant", "show", &pending_id])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("sesami/ses-deploy"))
+            .stdout(predicate::str::contains("critical"))
+            .stdout(predicate::str::contains("claude-code"))
+            .stdout(predicate::str::contains("version = 1.2.3"))
+            .stdout(predicate::str::contains(
+                "no changes to the kata since the request",
+            ));
+    }
+
+    #[test]
+    fn grant_show_prints_a_diff_when_the_kata_changed_since_the_request() {
+        let home = tempfile::tempdir().unwrap();
+        let (id, sha256) =
+            write_grant_kata(home.path(), "sesami", "ses-deploy", "critical", "echo v1\n");
+        let pending_id = write_pending(
+            home.path(),
+            &id,
+            "sesami",
+            RiskLevel::Critical,
+            &sha256,
+            "#!/bin/sh\n# ---\n# about: Test kata\n# risk:  critical\n# ---\necho v1\n",
+            &[],
+        );
+        write_grant_kata(home.path(), "sesami", "ses-deploy", "critical", "echo v2\n");
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["grant", "show", &pending_id])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("-echo v1"))
+            .stdout(predicate::str::contains("+echo v2"));
+    }
+
+    #[test]
+    fn grant_show_unknown_pending_id_is_a_clean_error() {
+        let home = tempfile::tempdir().unwrap();
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["grant", "show", "does-not-exist"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("no pending grant"));
+    }
+
+    #[test]
+    fn grant_deny_removes_the_record() {
+        let home = tempfile::tempdir().unwrap();
+        let (id, sha256) =
+            write_grant_kata(home.path(), "sesami", "ses-deploy", "critical", "echo hi\n");
+        let pending_id = write_pending(
+            home.path(),
+            &id,
+            "sesami",
+            RiskLevel::Critical,
+            &sha256,
+            "src",
+            &[],
+        );
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["grant", "deny", &pending_id])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("denied"));
+
+        assert!(pending_store(home.path()).get(&pending_id).is_none());
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["grant", "deny", &pending_id])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("no pending grant"));
+    }
+
+    #[test]
+    fn grant_approve_runs_a_low_risk_kata_and_writes_back_history() {
+        let home = tempfile::tempdir().unwrap();
+        let (id, sha256) = write_grant_kata(
+            home.path(),
+            "team",
+            "low-task",
+            "low",
+            "echo approved-and-ran\n",
+        );
+        let source =
+            std::fs::read_to_string(home.path().join(".config/kadou/kata/team/low-task.sh"))
+                .unwrap();
+        let pending_id = write_pending(
+            home.path(),
+            &id,
+            "team",
+            RiskLevel::Low,
+            &sha256,
+            &source,
+            &[],
+        );
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["grant", "approve", &pending_id])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("approved-and-ran"));
+
+        let record = pending_store(home.path()).get(&pending_id).unwrap();
+        assert_eq!(record.status.as_deref(), Some("success"));
+        assert!(record.history_id.is_some());
+        let log_path = record.log_path.unwrap();
+        assert!(log_path.is_file());
+        assert!(
+            std::fs::read_to_string(&log_path)
+                .unwrap()
+                .contains("approved-and-ran")
+        );
+
+        // A second approve on the same (now-completed) record is refused.
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["grant", "approve", &pending_id])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("already approved"));
+    }
+
+    #[test]
+    fn grant_approve_refuses_when_the_kata_changed_since_the_request() {
+        let home = tempfile::tempdir().unwrap();
+        let (id, sha256) = write_grant_kata(home.path(), "team", "task", "low", "echo v1\n");
+        let pending_id = write_pending(
+            home.path(),
+            &id,
+            "team",
+            RiskLevel::Low,
+            &sha256,
+            "src",
+            &[],
+        );
+        // The kata changes on disk after the grant was requested.
+        write_grant_kata(home.path(), "team", "task", "low", "echo v2\n");
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["grant", "approve", &pending_id])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("sha256"));
+
+        assert!(
+            pending_store(home.path())
+                .get(&pending_id)
+                .unwrap()
+                .history_id
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn grant_approve_refuses_an_expired_record() {
+        let home = tempfile::tempdir().unwrap();
+        let (id, sha256) = write_grant_kata(home.path(), "team", "task", "low", "echo hi\n");
+        let pending_id = write_pending(
+            home.path(),
+            &id,
+            "team",
+            RiskLevel::Low,
+            &sha256,
+            "src",
+            &[],
+        );
+        let store = pending_store(home.path());
+        let mut record = store.get(&pending_id).unwrap();
+        record.expires = humantime::format_rfc3339_seconds(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(60),
+        )
+        .to_string();
+        store.save(&record).unwrap();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["grant", "approve", &pending_id])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("expired"));
+    }
+
+    #[test]
+    fn grant_approve_runs_in_the_cli_environment_not_an_mcp_allowlisted_one() {
+        // §6.4 item 5: "Approval runs in the human CLI's environment (full parent env, not
+        // the MCP server's allowlisted one)". `FOO_CLI_ONLY` is not on the MCP allowlist
+        // (`crates/kadou-mcp/src/env.rs`) — it must still reach an approved run because
+        // approval never goes through that allowlist at all.
+        let home = tempfile::tempdir().unwrap();
+        let (id, sha256) = write_grant_kata(
+            home.path(),
+            "team",
+            "env-check",
+            "low",
+            "echo \"leak=${FOO_CLI_ONLY:-none}\"\n",
+        );
+        let source =
+            std::fs::read_to_string(home.path().join(".config/kadou/kata/team/env-check.sh"))
+                .unwrap();
+        let pending_id = write_pending(
+            home.path(),
+            &id,
+            "team",
+            RiskLevel::Low,
+            &sha256,
+            &source,
+            &[],
+        );
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .env("FOO_CLI_ONLY", "visible-in-cli")
+            .args(["grant", "approve", &pending_id])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("leak=visible-in-cli"));
+    }
+
+    #[test]
+    fn grant_approve_of_a_critical_kata_needs_confirm_non_interactively() {
+        let home = tempfile::tempdir().unwrap();
+        let (id, sha256) = write_grant_kata(
+            home.path(),
+            "sesami",
+            "ses-deploy",
+            "critical",
+            "echo deployed\n",
+        );
+        std::fs::write(
+            home.path().join(".config/kadou/kadou.toml"),
+            "max_risk = \"critical\"\n",
+        )
+        .unwrap();
+        let source =
+            std::fs::read_to_string(home.path().join(".config/kadou/kata/sesami/ses-deploy.sh"))
+                .unwrap();
+        let pending_id = write_pending(
+            home.path(),
+            &id,
+            "sesami",
+            RiskLevel::Critical,
+            &sha256,
+            &source,
+            &[],
+        );
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["grant", "approve", &pending_id])
+            .write_stdin("")
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("needs confirmation"))
+            .stderr(predicate::str::contains(format!(
+                "kadou grant approve {pending_id} --confirm sesami/ses-deploy"
+            )));
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args([
+                "grant",
+                "approve",
+                &pending_id,
+                "--confirm",
+                "sesami/ses-deploy",
+            ])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("deployed"));
+    }
+
+    #[test]
+    fn grant_allow_pins_to_the_current_sha256_by_default() {
+        let home = tempfile::tempdir().unwrap();
+        let (id, sha256) =
+            write_grant_kata(home.path(), "sesami", "ses-deploy", "critical", "echo hi\n");
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["grant", "allow", &id])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(sha256.as_str()));
+
+        let config =
+            kadou_core::Config::load(&home.path().join(".config/kadou/kadou.toml")).unwrap();
+        assert_eq!(config.agent.allow, vec![format!("{id}@{sha256}")]);
+    }
+
+    #[test]
+    fn grant_allow_any_version_pins_to_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        let (id, _sha256) =
+            write_grant_kata(home.path(), "sesami", "ses-deploy", "critical", "echo hi\n");
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["grant", "allow", &id, "--any-version"])
+            .assert()
+            .success();
+
+        let config =
+            kadou_core::Config::load(&home.path().join(".config/kadou/kadou.toml")).unwrap();
+        assert_eq!(config.agent.allow, vec![id.clone()]);
+    }
+
+    #[test]
+    fn grant_allow_is_idempotent_replacing_a_prior_entry_for_the_same_id() {
+        let home = tempfile::tempdir().unwrap();
+        let (id, _sha256) =
+            write_grant_kata(home.path(), "sesami", "ses-deploy", "critical", "echo v1\n");
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["grant", "allow", &id])
+            .assert()
+            .success();
+
+        write_grant_kata(home.path(), "sesami", "ses-deploy", "critical", "echo v2\n");
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["grant", "allow", &id])
+            .assert()
+            .success();
+
+        let config =
+            kadou_core::Config::load(&home.path().join(".config/kadou/kadou.toml")).unwrap();
+        assert_eq!(config.agent.allow.len(), 1, "must replace, not accumulate");
     }
 }
