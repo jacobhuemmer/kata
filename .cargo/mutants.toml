@@ -1,0 +1,23 @@
+# cargo-mutants config (docs/design/10-mutation-baseline.md has the measured baseline and the
+# CI ratchet this config feeds). Schema: `cargo mutants --emit-schema=config`, or
+# https://github.com/sourcefrog/cargo-mutants/blob/v27.1.0/src/config.rs.
+#
+# `crates/kadou` (the `kadou` bin) and `crates/kadou-mine` (empty stub, docs/design/05-prd.md
+# §9 slice 9) are excluded wholesale, not just their `main`/generated bits, because
+# `crates/kadou/src/main.rs` has unit tests that call `assert_cmd::Command::cargo_bin("kadou")`
+# from *inside the same bin target's own test harness*. `CARGO_BIN_EXE_kadou` is only set for
+# other targets in the package (integration tests, other bins) — never for a bin's own unit
+# tests — so `cargo test -p kadou` fails on a clean, unmutated checkout (see the doc's
+# "Known blocker" section). `--workspace` baselines with `cargo test --workspace`, so as long
+# as `kadou` is in the mutated-package set at all, the baseline aborts before any mutant runs,
+# taking kadou-core/-exec/-mcp down with it. Excluding it here is a scoping workaround, not a
+# fix: the doc's #1 recommended follow-up is moving those tests to `crates/kadou/tests/`.
+exclude_globs = ["crates/kadou/**", "crates/kadou-mine/**"]
+
+# kadou-exec spawns real child processes and asserts on SIGTERM/SIGKILL timing (KILL_GRACE =
+# 5s in crates/kadou-exec/src/lib.rs); a mutant that breaks the kill path can let a `sleep 30`
+# child run to completion. Baseline suite time is ~8s; 60s floor plus a 5x multiplier gives
+# enough headroom to tell "genuinely slow" apart from "actually hung" without inflating a
+# clean run's cost.
+minimum_test_timeout = 60
+timeout_multiplier = 5.0

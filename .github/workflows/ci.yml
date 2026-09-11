@@ -69,3 +69,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # Mutation testing ratchet (docs/design/10-mutation-baseline.md has the measured baseline
+  # and the exact commands). macOS only, like `test`/`msrv` above, since kadou-exec's process
+  # tests are platform-sensitive and this exercises the same binaries. `.cargo/mutants.toml`
+  # excludes the `kadou` bin crate (its unit tests can't run at all right now — see the doc's
+  # "Known blocker" section) and the empty `kadou-mine` stub, so this only covers kadou-core,
+  # kadou-exec, and kadou-mcp.
+  #
+  # This job has never actually run under Actions — the repo isn't hosted on GitHub yet (see
+  # the note at the top of this file) — so its real CI wall-clock time is unverified. The
+  # local baseline run took ~14 minutes at `-j 4` on an 18-core machine; if the first real
+  # run on a GitHub-hosted macOS runner blows past ~40 minutes, shard with `cargo mutants
+  # --shard i/N` across a matrix rather than raising this timeout.
+  mutants:
+    name: mutants
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-mutants --version 27.1.0 --locked
+      - run: cargo mutants --workspace -j 3
+      - name: Enforce the per-crate caught-ratio floor
+        run: |
+          set -euo pipefail
+          check() {
+            crate="$1"; min="$2"
+            caught=$(grep -c "crates/$crate/" mutants.out/caught.txt || true)
+            missed=$(grep -c "crates/$crate/" mutants.out/missed.txt || true)
+            timedout=$(grep -c "crates/$crate/" mutants.out/timeout.txt || true)
+            viable=$((caught + missed + timedout))
+            if [ "$viable" -eq 0 ]; then
+              echo "::error::no viable $crate mutants were generated; check .cargo/mutants.toml"
+              exit 1
+            fi
+            pct=$(awk -v c="$caught" -v v="$viable" 'BEGIN { printf "%.1f", (c / v) * 100 }')
+            echo "$crate: $caught/$viable viable mutants caught (${pct}%), floor ${min}%"
+            awk -v pct="$pct" -v min="$min" 'BEGIN { exit !(pct + 0 >= min) }' ||
+              { echo "::error::$crate caught ratio ${pct}% is below the ${min}% floor"; exit 1; }
+          }
+          # Floors are the 2026-09-11 baseline (docs/design/10-mutation-baseline.md), rounded
+          # down to the nearest 5%. Raise a floor only after re-measuring a real improvement;
+          # never lower one just to make a red build pass.
+          check kadou-core 80
+          check kadou-exec 75
+          check kadou-mcp 55
