@@ -3,7 +3,9 @@
 //! `inputSchema`s and no resources/prompts on the default list (`docs/design/05-prd.md` §5).
 
 mod concurrency;
+mod drafts;
 mod env;
+mod history;
 mod redact;
 pub mod schema;
 mod visibility;
