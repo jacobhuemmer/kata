@@ -43,6 +43,8 @@ struct DopsParam {
     default: Option<String>,
     #[serde(default)]
     options: Vec<String>,
+    #[serde(default)]
+    secret: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -205,6 +207,17 @@ fn convert_one(
                 default,
             });
             continue;
+        }
+
+        if param.secret {
+            return Err(ImportError::Param {
+                kata: name.to_string(),
+                param: param.name.clone(),
+                message: "secret: true on a non-global parameter would become a plain, \
+                    agent-settable arg; re-declare it with scope: global so it imports as a \
+                    need instead"
+                    .to_string(),
+            });
         }
 
         let arg = convert_arg(param, name, summary)?;
