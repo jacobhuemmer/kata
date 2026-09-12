@@ -15,6 +15,7 @@ pub mod extract;
 pub mod model;
 pub mod normalize;
 pub mod parse;
+pub mod propose;
 pub mod rank;
 pub mod redact;
 pub mod risk;
