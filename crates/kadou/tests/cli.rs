@@ -1020,6 +1020,70 @@ fn grant_approve_runs_a_low_risk_kata_and_writes_back_history() {
 }
 
 #[test]
+fn grant_approve_accepts_an_unambiguous_prefix() {
+    // R11: PendingStore::resolve accepts any unambiguous prefix of at least 4 characters —
+    // the short form §5.5/§7.2's own examples show, not the full 36-character uuid.
+    let home = tempfile::tempdir().unwrap();
+    let (id, sha256) = write_grant_kata(
+        home.path(),
+        "team",
+        "low-task",
+        "low",
+        "echo approved-via-prefix\n",
+    );
+    let source =
+        std::fs::read_to_string(home.path().join(".config/kadou/kata/team/low-task.sh")).unwrap();
+    let pending_id = write_pending(
+        home.path(),
+        &id,
+        "team",
+        RiskLevel::Low,
+        &sha256,
+        &source,
+        &[],
+    );
+
+    kadou_in(home.path())
+        .args(["grant", "approve", &pending_id[..4]])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("approved-via-prefix"));
+}
+
+#[test]
+fn grant_show_rejects_an_ambiguous_prefix() {
+    // R11: two pending records sharing a short prefix must not silently resolve to whichever
+    // one a listing happens to return first.
+    let home = tempfile::tempdir().unwrap();
+    let (id, sha256) = write_grant_kata(home.path(), "team", "a-task", "low", "echo a\n");
+    let source =
+        std::fs::read_to_string(home.path().join(".config/kadou/kata/team/a-task.sh")).unwrap();
+    let a = write_pending(
+        home.path(),
+        &id,
+        "team",
+        RiskLevel::Low,
+        &sha256,
+        &source,
+        &[],
+    );
+
+    let store = pending_store(home.path());
+    let mut record_b = store.get(&a).unwrap();
+    record_b.pending_id = format!("{a}extra");
+    record_b.id = "team/b-task".to_string();
+    store.save(&record_b).unwrap();
+
+    kadou_in(home.path())
+        .args(["grant", "show", &a[..8]])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "matches more than one pending grant",
+        ));
+}
+
+#[test]
 fn grant_approve_refuses_when_the_kata_changed_since_the_request() {
     let home = tempfile::tempdir().unwrap();
     let (id, sha256) = write_grant_kata(home.path(), "team", "task", "low", "echo v1\n");
@@ -1147,7 +1211,9 @@ fn grant_approve_of_a_critical_kata_needs_confirm_non_interactively() {
         .code(2)
         .stderr(predicate::str::contains("needs confirmation"))
         .stderr(predicate::str::contains(format!(
-            "kadou grant approve {pending_id} --confirm sesami/ses-deploy"
+            // R11: the replay line prints the short (8-char) form, not the full uuid.
+            "kadou grant approve {} --confirm sesami/ses-deploy",
+            &pending_id[..8]
         )));
 
     kadou_in(home.path())

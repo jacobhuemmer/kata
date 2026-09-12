@@ -1005,6 +1005,30 @@ fn render_args(args: &BTreeMap<String, String>) -> String {
         .join(" ")
 }
 
+/// Resolves `pending_id` (a full id or an unambiguous R11 prefix) to its record, printing a
+/// clean error and returning `Err(exit code)` on `NotFound`/`Ambiguous` so every `grant *`
+/// subcommand handles both the same way.
+fn resolve_pending_or_report(
+    store: &PendingStore,
+    pending_id: &str,
+) -> Result<PendingRecord, ExitCode> {
+    match store.resolve(pending_id) {
+        pending::PendingLookup::Found(record) => Ok(*record),
+        pending::PendingLookup::NotFound => {
+            eprintln!("error: no pending grant `{pending_id}`");
+            Err(ExitCode::from(2))
+        }
+        pending::PendingLookup::Ambiguous(matches) => {
+            eprintln!("error: `{pending_id}` matches more than one pending grant:");
+            for candidate in &matches {
+                eprintln!("  {candidate}");
+            }
+            eprintln!("  = use more characters to disambiguate");
+            Err(ExitCode::from(2))
+        }
+    }
+}
+
 /// The status column `kadou grant list`/`show` prints: the run's own terminal status once
 /// approved, else `expired` (§6.4 item 2 "shows expired records as expired") or `pending`.
 fn grant_status_label(record: &PendingRecord) -> String {
@@ -1048,9 +1072,9 @@ pub fn run_grant_show(pending_id: String) -> ExitCode {
     materialize_starter(&paths);
     let store = PendingStore::new(&paths.state_dir);
 
-    let Some(record) = store.get(&pending_id) else {
-        eprintln!("error: no pending grant `{pending_id}`");
-        return ExitCode::from(2);
+    let record = match resolve_pending_or_report(&store, &pending_id) {
+        Ok(r) => r,
+        Err(code) => return code,
     };
 
     println!(
@@ -1112,17 +1136,20 @@ pub fn run_grant_show(pending_id: String) -> ExitCode {
 pub fn run_grant_deny(pending_id: String) -> ExitCode {
     let paths = resolve_paths();
     let store = PendingStore::new(&paths.state_dir);
-    if store.get(&pending_id).is_none() {
-        eprintln!("error: no pending grant `{pending_id}`");
-        return ExitCode::from(2);
-    }
-    match store.delete(&pending_id) {
+    let record = match resolve_pending_or_report(&store, &pending_id) {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    match store.delete(&record.pending_id) {
         Ok(()) => {
-            println!("denied and removed {pending_id}");
+            println!(
+                "denied and removed {}",
+                pending::short_pending_id(&record.pending_id)
+            );
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("error: failed to remove {pending_id}: {err}");
+            eprintln!("error: failed to remove {}: {err}", record.pending_id);
             ExitCode::FAILURE
         }
     }
@@ -1215,6 +1242,30 @@ fn missing_needs_error(
     Err(ExitCode::from(2))
 }
 
+/// Resolves the pinned args against the kata's current header and the needs against the
+/// vault — the setup `run_grant_approve` needs before it can spawn.
+#[allow(clippy::type_complexity)]
+fn resolve_grant_args_and_needs(
+    paths: &KadouPaths,
+    kata: &Kata,
+    record: &PendingRecord,
+) -> Result<(Vec<kadou_core::ResolvedVar>, Vec<kadou_core::ResolvedNeed>), ExitCode> {
+    let resolved_args = kadou_core::resolve_args(kata, &record.args).map_err(|err| {
+        eprintln!("error: the pinned args no longer resolve against the current header: {err}");
+        ExitCode::from(2)
+    })?;
+
+    let vault_store_handle = vault_store(paths);
+    auto_import_go_vault(&vault_store_handle);
+    let vault = vault_store_handle.load().unwrap_or_else(|err| {
+        eprintln!("warning: failed to load the vault: {err}");
+        Vault::default()
+    });
+    let resolved_needs = kadou_core::resolve_needs(kata, &vault);
+    missing_needs_error(kata, &resolved_needs)?;
+    Ok((resolved_args, resolved_needs))
+}
+
 /// Every check a pending record must clear before it may be approved (§6.4 item 5): not
 /// already approved, not expired, the kata unchanged since the request (sha256, and the
 /// folder's git HEAD when the request pinned one).
@@ -1291,42 +1342,35 @@ pub fn run_grant_approve(pending_id: String, confirm_flag: Option<String>) -> Ex
     materialize_starter(&paths);
     let store = PendingStore::new(&paths.state_dir);
 
-    let Some(mut record) = store.get(&pending_id) else {
-        eprintln!("error: no pending grant `{pending_id}`");
-        return ExitCode::from(2);
+    let mut record = match resolve_pending_or_report(&store, &pending_id) {
+        Ok(r) => r,
+        Err(code) => return code,
     };
 
     let kata = match find_kata_or_report(&paths.kata_dir(), &record.id) {
         Ok(k) => k,
         Err(code) => return code,
     };
-    if let Err(code) = validate_pending_record(&record, &pending_id, &kata, &paths.kata_dir()) {
+    if let Err(code) =
+        validate_pending_record(&record, &record.pending_id, &kata, &paths.kata_dir())
+    {
         return code;
     }
 
-    let replay_line = format!("kadou grant approve {pending_id} --confirm {}", record.id);
+    let replay_line = format!(
+        "kadou grant approve {} --confirm {}",
+        pending::short_pending_id(&record.pending_id),
+        record.id
+    );
     if let Err(code) = cli_confirm(&kata, confirm_flag.as_deref(), &replay_line) {
         return code;
     }
 
-    let resolved_args = match kadou_core::resolve_args(&kata, &record.args) {
+    let (resolved_args, resolved_needs) = match resolve_grant_args_and_needs(&paths, &kata, &record)
+    {
         Ok(v) => v,
-        Err(err) => {
-            eprintln!("error: the pinned args no longer resolve against the current header: {err}");
-            return ExitCode::from(2);
-        }
+        Err(code) => return code,
     };
-
-    let vault_store_handle = vault_store(&paths);
-    auto_import_go_vault(&vault_store_handle);
-    let vault = vault_store_handle.load().unwrap_or_else(|err| {
-        eprintln!("warning: failed to load the vault: {err}");
-        Vault::default()
-    });
-    let resolved_needs = kadou_core::resolve_needs(&kata, &vault);
-    if let Err(code) = missing_needs_error(&kata, &resolved_needs) {
-        return code;
-    }
 
     // Approval runs in the CLI's own full environment (§6.4 item 5 "Approval runs in the
     // human CLI's environment (full parent env, not the MCP server's allowlisted one)").

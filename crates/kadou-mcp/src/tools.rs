@@ -816,7 +816,7 @@ fn pending_grant_result(
                         record.id,
                         record.risk,
                         mcp_client.as_deref().unwrap_or("an agent"),
-                        record.pending_id
+                        pending::short_pending_id(&record.pending_id)
                     );
                     notify::notify(config, "kadou · grant wanted", &body);
                     record
@@ -838,7 +838,10 @@ fn pending_grant_result(
             "risk": kata.risk.as_str(),
             "pending_id": record.pending_id,
             "pending_path": store.path(&record.pending_id).display().to_string(),
-            "approve": format!("kadou grant approve {}", record.pending_id),
+            "approve": format!(
+                "kadou grant approve {}",
+                pending::short_pending_id(&record.pending_id)
+            ),
             "expires": record.expires,
             "reason": format!("{}; not in [agent] allow", kata.risk),
         }),

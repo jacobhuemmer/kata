@@ -50,6 +50,27 @@ pub struct PendingRecord {
     pub log_path: Option<PathBuf>,
 }
 
+/// The short form a human is meant to copy (§5.5/§7.2's own examples show `7c1e`, not a full
+/// UUID) — the first 8 characters, unambiguous in practice for how many pending grants exist
+/// at once; [`PendingStore::resolve`] (R11) accepts any prefix of at least 4.
+pub fn short_pending_id(pending_id: &str) -> &str {
+    let end = pending_id
+        .char_indices()
+        .nth(8)
+        .map_or(pending_id.len(), |(i, _)| i);
+    &pending_id[..end]
+}
+
+/// The result of [`PendingStore::resolve`] (R11): a `pending_id` prefix resolves to exactly
+/// one record, no matches, or more than one — an ambiguous prefix names every full id it
+/// could mean, so the caller can show them rather than guessing.
+#[derive(Debug)]
+pub enum PendingLookup {
+    Found(Box<PendingRecord>),
+    NotFound,
+    Ambiguous(Vec<String>),
+}
+
 impl PendingRecord {
     pub fn is_expired(&self) -> bool {
         match humantime::parse_rfc3339(&self.expires) {
@@ -126,6 +147,34 @@ impl PendingStore {
     pub fn get(&self, pending_id: &str) -> Option<PendingRecord> {
         let text = std::fs::read_to_string(self.path(pending_id)).ok()?;
         serde_json::from_str(&text).ok()
+    }
+
+    /// Resolves `input` to exactly one record: an exact `pending_id` match first, else an
+    /// unambiguous prefix of at least 4 characters (R11, the `git` convention — §7.2's own
+    /// examples show a short id like `7c1e`). A prefix under 4 characters is never resolved,
+    /// even if it happens to be unambiguous today: as more records accumulate it would start
+    /// silently picking whichever one still matches.
+    pub fn resolve(&self, input: &str) -> PendingLookup {
+        if let Some(record) = self.get(input) {
+            return PendingLookup::Found(Box::new(record));
+        }
+        if input.len() < 4 {
+            return PendingLookup::NotFound;
+        }
+        let matches: Vec<String> = self
+            .list()
+            .into_iter()
+            .filter(|r| r.pending_id.starts_with(input))
+            .map(|r| r.pending_id)
+            .collect();
+        match matches.len() {
+            0 => PendingLookup::NotFound,
+            1 => self
+                .get(&matches[0])
+                .map(|r| PendingLookup::Found(Box::new(r)))
+                .unwrap_or(PendingLookup::NotFound),
+            _ => PendingLookup::Ambiguous(matches),
+        }
     }
 
     /// An outstanding record for the same `(id, args_hash)`, if one already exists — the
@@ -272,6 +321,82 @@ mod tests {
                 & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    #[test]
+    fn resolve_accepts_an_unambiguous_four_char_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PendingStore::new(dir.path());
+        let record = store
+            .create(
+                "sesami/ses-deploy",
+                "sesami",
+                kadou_core::RiskLevel::Critical,
+                args(&[]),
+                "mcp",
+                None,
+                "sha256:abc",
+                "#!/bin/sh\necho hi\n",
+                None,
+            )
+            .unwrap();
+
+        let prefix = &record.pending_id[..4];
+        match store.resolve(prefix) {
+            PendingLookup::Found(found) => assert_eq!(found.pending_id, record.pending_id),
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_rejects_an_ambiguous_prefix() {
+        // Two records constructed to share the same first four hex characters, by editing
+        // the on-disk filename directly (the id itself is a real uuid, but the collision is
+        // what resolve() must detect regardless of how it arose).
+        let dir = tempfile::tempdir().unwrap();
+        let store = PendingStore::new(dir.path());
+        let a = store
+            .create(
+                "sesami/a",
+                "sesami",
+                kadou_core::RiskLevel::Critical,
+                args(&[]),
+                "mcp",
+                None,
+                "sha256:a",
+                "echo a\n",
+                None,
+            )
+            .unwrap();
+        let mut b = a.clone();
+        b.pending_id = format!("{}extra", a.pending_id);
+        b.id = "sesami/b".to_string();
+        store.save(&b).unwrap();
+
+        let prefix = &a.pending_id[..8];
+        match store.resolve(prefix) {
+            PendingLookup::Ambiguous(mut matches) => {
+                matches.sort();
+                let mut expected = vec![a.pending_id.clone(), b.pending_id];
+                expected.sort();
+                assert_eq!(matches, expected);
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_requires_at_least_four_characters() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PendingStore::new(dir.path());
+        assert!(matches!(store.resolve("abc"), PendingLookup::NotFound));
+    }
+
+    #[test]
+    fn resolve_not_found_for_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PendingStore::new(dir.path());
+        assert!(matches!(store.resolve("nope1234"), PendingLookup::NotFound));
     }
 
     #[test]
