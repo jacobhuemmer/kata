@@ -170,6 +170,67 @@ pub fn get_folder(
     Ok(target)
 }
 
+/// The per-folder result of `kadou update` (§7.1, §9 slice 7): every folder is reported, none
+/// silently ignored, whether it was pulled, skipped (not git-backed), left alone (dirty), or
+/// failed outright.
+#[derive(Debug)]
+pub enum UpdateOutcome {
+    Pulled { folder: String },
+    NotGitBacked { folder: String },
+    Dirty { folder: String },
+    Failed { folder: String, error: String },
+}
+
+/// `kadou update <folder>` for one named folder.
+pub fn update_folder(kata_dir: &Path, folder: &str) -> UpdateOutcome {
+    let target = kata_dir.join(folder);
+    if !target.is_dir() {
+        return UpdateOutcome::Failed {
+            folder: folder.to_string(),
+            error: "no such folder".to_string(),
+        };
+    }
+    if !git::is_git_backed(&target) {
+        return UpdateOutcome::NotGitBacked {
+            folder: folder.to_string(),
+        };
+    }
+    if git::has_local_changes(&target) {
+        return UpdateOutcome::Dirty {
+            folder: folder.to_string(),
+        };
+    }
+    match git::pull(&target) {
+        Ok(()) => UpdateOutcome::Pulled {
+            folder: folder.to_string(),
+        },
+        Err(err) => UpdateOutcome::Failed {
+            folder: folder.to_string(),
+            error: err.to_string(),
+        },
+    }
+}
+
+/// Every immediate subdirectory of `kata_dir`, dot/underscore-prefixed names excluded (the
+/// same rule `scan_kata_dir` uses), sorted, each pulled independently -- `kadou update` with
+/// no folder argument (§7.1).
+pub fn update_all(kata_dir: &Path) -> Vec<UpdateOutcome> {
+    let Ok(entries) = std::fs::read_dir(kata_dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| !n.starts_with('.') && !n.starts_with('_'))
+        .collect();
+    names.sort();
+    names
+        .iter()
+        .map(|name| update_folder(kata_dir, name))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -418,7 +479,12 @@ mod tests {
 
     fn super_clone(bare: &Path, dest: &Path) {
         let status = std::process::Command::new("git")
-            .args(["clone", "-q", bare.to_str().unwrap(), dest.to_str().unwrap()])
+            .args([
+                "clone",
+                "-q",
+                bare.to_str().unwrap(),
+                dest.to_str().unwrap(),
+            ])
             .status()
             .unwrap();
         assert!(status.success());
