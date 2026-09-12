@@ -10,6 +10,7 @@ mod check;
 mod config;
 mod digest;
 pub mod fsutil;
+pub mod git;
 mod header;
 pub mod history;
 mod import;
