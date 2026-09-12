@@ -410,3 +410,25 @@ fn run_locked(config: &MineConfig, home: &MineHome) -> RunSummary {
 fn default_risk_for(cluster: &Cluster) -> RiskLevel {
     crate::risk::default_risk(&cluster.template)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_redaction_failure_is_recorded_as_one_r14_high_entropy_jsonl_line() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let home = MineHome::new(state_dir.path());
+        let fingerprint = "f".repeat(64);
+
+        record_redaction_failure(&home, &fingerprint);
+
+        let text = std::fs::read_to_string(home.redaction_failures_path()).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 1, "{text}");
+        let line: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(line["fingerprint"], fingerprint);
+        assert_eq!(line["rule_id"], "R14_HIGH_ENTROPY");
+        assert!(line["when"].is_string(), "{line}");
+    }
+}
