@@ -155,6 +155,33 @@ fn slug_is_derived_from_the_first_step_and_is_a_valid_id_segment() {
 }
 
 #[test]
+fn context_and_namespace_are_required_with_no_default_never_leaking_the_example_value() {
+    // 06 §6.4's own worked example: context/namespace are `required: true` with no default at
+    // all, unlike app/tail which do get one. A captured example like "eks-dev" is exactly the
+    // per-environment identifier a human should supply fresh, not a value worth hardcoding --
+    // and never writing it also means it can never leak an internal environment name.
+    let (cluster, steps) = worked_example_cluster();
+    let proposal = build_proposal(&cluster, &steps, 4.2, RiskLevel::Medium, &[]).unwrap();
+
+    let (header, _) = kadou_core::parse_header(&proposal.kata_source);
+    let header = header.unwrap();
+    let context_arg = header.args.iter().find(|a| a.name == "context").unwrap();
+    let namespace_arg = header.args.iter().find(|a| a.name == "namespace").unwrap();
+    assert!(context_arg.is_required(), "{context_arg:?}");
+    assert!(namespace_arg.is_required(), "{namespace_arg:?}");
+
+    assert!(!proposal.kata_source.contains("eks-dev"));
+    assert!(!proposal.kata_source.contains("payments"));
+    assert!(proposal.kata_source.contains("CONTEXT=\"${CONTEXT:?"));
+    assert!(proposal.kata_source.contains("NAMESPACE=\"${NAMESPACE:?"));
+
+    // app/tail still get their observed value as a default.
+    let app_arg = header.args.iter().find(|a| a.name == "app").unwrap();
+    assert!(!app_arg.is_required(), "{app_arg:?}");
+    assert!(proposal.kata_source.contains("APP=\"${APP:-api}\""));
+}
+
+#[test]
 fn redact_extra_terms_apply_to_the_about_line_and_body() {
     let cluster = Cluster {
         fingerprint: "jkl012".to_string(),
