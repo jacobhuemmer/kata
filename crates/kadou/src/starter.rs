@@ -86,15 +86,17 @@ mod tests {
     }
 
     #[test]
-    fn a_deleted_starter_file_is_recreated_on_the_next_scan() {
-        // Decision D6: unlike the old "only if kata/ is entirely absent" rule, a single
-        // deleted starter file is treated as "missing" and comes back on the next scan.
+    fn a_deleted_starter_file_stays_deleted() {
+        // Decision D6 (revised, I-2): "materialized from the embed only if kata/starter/
+        // does not exist. If deleted, it stays deleted; kadou get starter restores it." Once
+        // the starter/ directory exists at all, materialize_if_needed never touches it again
+        // -- a single deleted file inside it is not recreated on the next scan.
         let dir = tempfile::tempdir().unwrap();
         let kata_dir = dir.path().join("kata");
         materialize_if_needed(&kata_dir).unwrap();
         std::fs::remove_file(kata_dir.join("starter/hello.sh")).unwrap();
 
         materialize_if_needed(&kata_dir).unwrap();
-        assert!(kata_dir.join("starter/hello.sh").is_file());
+        assert!(!kata_dir.join("starter/hello.sh").exists());
     }
 }
