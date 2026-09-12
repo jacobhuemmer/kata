@@ -1,10 +1,33 @@
 use std::collections::BTreeMap;
-use std::io::{self, Write as _};
+use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::fsutil::write_atomic_0600;
 use crate::risk::RiskLevel;
+
+/// `humantime`-shaped `Duration` fields (`"30m"`, `"50s"`) that fail loudly at config load
+/// instead of silently falling back to a default (R6, A3): `[exec] timeout` and `[mcp]
+/// max_wait` are safety-relevant bounds, so a typo like `"30 minuts"` should be a `ConfigError`,
+/// not a quietly-ignored 30-minute default.
+mod duration_toml {
+    use std::time::Duration;
+
+    use serde::{Deserialize as _, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &Duration, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&humantime::format_duration(*value).to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        humantime::parse_duration(&raw).map_err(|err| {
+            serde::de::Error::custom(format!("invalid duration `{raw}`: {err}"))
+        })
+    }
+}
 
 /// The literal first-run file content (`docs/design/05-prd.md` §7.6, §7.4 item 1). Writing
 /// this rather than a fully-populated file keeps every key absent until a human sets it, so
@@ -82,33 +105,36 @@ pub struct TrustConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExecConfig {
-    /// A `humantime`-shaped duration (`"30m"`); parsed by `kadou-exec`, not this crate.
-    pub timeout: String,
+    /// Parsed from a `humantime`-shaped TOML string (`"30m"`) at load time (R6, A3): an
+    /// unparseable value is a load-time `ConfigError`, not a silently-ignored default.
+    #[serde(with = "duration_toml")]
+    pub timeout: Duration,
     pub pass_env: Vec<String>,
 }
 
 impl Default for ExecConfig {
     fn default() -> Self {
         Self {
-            timeout: "30m".to_string(),
+            timeout: Duration::from_secs(30 * 60),
             pass_env: Vec::new(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct McpConfig {
     pub max_output_lines: u32,
-    /// A `humantime`-shaped duration (`"50s"`).
-    pub max_wait: String,
+    /// Parsed from a `humantime`-shaped TOML string (`"50s"`) at load time (R6, A3).
+    #[serde(with = "duration_toml")]
+    pub max_wait: Duration,
 }
 
 impl Default for McpConfig {
     fn default() -> Self {
         Self {
             max_output_lines: 50,
-            max_wait: "50s".to_string(),
+            max_wait: Duration::from_secs(50),
         }
     }
 }
@@ -238,30 +264,6 @@ impl Config {
     }
 }
 
-fn write_atomic_0600(path: &Path, contents: &[u8]) -> io::Result<()> {
-    let dir = match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => {
-            std::fs::create_dir_all(parent)?;
-            parent
-        }
-        _ => Path::new("."),
-    };
-
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-    tmp.write_all(contents)?;
-    tmp.as_file().sync_all()?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tmp.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,10 +294,10 @@ mod tests {
             }
         );
         assert!(config.trust.paths.is_empty());
-        assert_eq!(config.exec.timeout, "30m");
+        assert_eq!(config.exec.timeout, Duration::from_secs(30 * 60));
         assert!(config.exec.pass_env.is_empty());
         assert_eq!(config.mcp.max_output_lines, 50);
-        assert_eq!(config.mcp.max_wait, "50s");
+        assert_eq!(config.mcp.max_wait, Duration::from_secs(50));
         assert!(!config.vault.keyring);
         assert!(config.notify.enabled);
     }
@@ -305,6 +307,22 @@ mod tests {
         let config: Config = toml::from_str("[agent]\nallow = [\"sesami/ses-deploy\"]\n").unwrap();
         assert_eq!(config.agent.max_risk, RiskLevel::Low);
         assert_eq!(config.agent.allow, vec!["sesami/ses-deploy".to_string()]);
+    }
+
+    #[test]
+    fn an_unparseable_exec_timeout_is_a_load_error_not_a_silent_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kadou.toml");
+        std::fs::write(&path, "[exec]\ntimeout = \"30 minuts\"\n").unwrap();
+        assert!(Config::load(&path).is_err());
+    }
+
+    #[test]
+    fn an_unparseable_mcp_max_wait_is_a_load_error_not_a_silent_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kadou.toml");
+        std::fs::write(&path, "[mcp]\nmax_wait = \"nope\"\n").unwrap();
+        assert!(Config::load(&path).is_err());
     }
 
     #[test]

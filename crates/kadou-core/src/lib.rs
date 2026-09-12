@@ -18,6 +18,7 @@ mod paths;
 pub mod redact;
 mod resolve;
 mod risk;
+pub mod runner;
 mod scan;
 mod vault;
 

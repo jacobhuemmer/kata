@@ -11,14 +11,17 @@
 //! environment") lands in slice 5. [`RunSpec::env`] is set on top of whatever the caller's own
 //! process env already is (inherited by default, exactly the "CLI keeps the full parent
 //! environment" rule, §6.1).
+//!
+//! This crate knows nothing about a kata, a header, or a vault — [`kadou_core::runner`] owns
+//! building [`RunSpec`] from those (R2, `docs/design/11-code-review.md` B8): kadou-exec is the
+//! process-execution primitive, not the domain layer, so kadou-core can depend on it (and does,
+//! for `runner::run_one`) without a cycle.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use std::collections::BTreeMap;
-
-use kadou_core::{Kata, ResolvedNeed, ResolvedVar};
 use tokio::io::{AsyncBufReadExt as _, AsyncRead};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
@@ -38,47 +41,6 @@ pub enum ExecError {
     Wait(#[source] std::io::Error),
     #[error("failed to start the exec runtime: {0}")]
     Runtime(#[source] std::io::Error),
-}
-
-/// `KADOU_ID`/`KADOU_FILE`/`KADOU_DIR`/`KADOU_ROOT` for one kata (§6.1).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KataContext {
-    pub id: String,
-    pub file: PathBuf,
-    /// cwd for the exec: the kata's directory (folder form) or the folder containing the
-    /// file.
-    pub dir: PathBuf,
-    /// The top-level folder under `kata/` — the git checkout root for a `kadou get` folder,
-    /// regardless of how deeply the kata itself is nested.
-    pub root: PathBuf,
-}
-
-/// Builds the `KADOU_*` context from a resolved [`Kata`] and the `kata/` root it was found
-/// under.
-pub fn kata_context(kata_dir: &Path, kata: &Kata) -> KataContext {
-    let dir = kata
-        .path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| kata_dir.to_path_buf());
-    let top_level = kata.id.split('/').next().unwrap_or(&kata.id);
-    KataContext {
-        id: kata.id.clone(),
-        file: kata.path.clone(),
-        dir,
-        root: kata_dir.join(top_level),
-    }
-}
-
-/// `KADOU_ID`/`KADOU_FILE`/`KADOU_DIR`/`KADOU_ROOT` as env pairs, ready to fold into
-/// [`RunSpec::env`] (§6.1).
-pub fn context_env(ctx: &KataContext) -> Vec<(String, String)> {
-    vec![
-        ("KADOU_ID".to_string(), ctx.id.clone()),
-        ("KADOU_FILE".to_string(), ctx.file.display().to_string()),
-        ("KADOU_DIR".to_string(), ctx.dir.display().to_string()),
-        ("KADOU_ROOT".to_string(), ctx.root.display().to_string()),
-    ]
 }
 
 /// Splits a shebang line into its argv words, or `["/bin/sh"]` when there is none (§6.1). Not
@@ -138,15 +100,22 @@ fn on_path(cmd: &str) -> bool {
 }
 
 /// `[exec] timeout`, lowered or raised by the kata's own `timeout:` header, up to the 24h max
-/// the header parser already enforces (§4.3, §6.1).
-pub fn effective_timeout(kata_timeout: Option<Duration>, config_timeout_raw: &str) -> Duration {
-    kata_timeout.unwrap_or_else(|| {
-        humantime::parse_duration(config_timeout_raw).unwrap_or(Duration::from_secs(30 * 60))
-    })
+/// the header parser already enforces (§4.3, §6.1). `config_timeout` is already a parsed
+/// `Duration` — an unparseable `[exec] timeout` string is a `ConfigError` at config load, not
+/// a silent fallback here (R6, A3).
+pub fn effective_timeout(kata_timeout: Option<Duration>, config_timeout: Duration) -> Duration {
+    kata_timeout.unwrap_or(config_timeout)
 }
 
+/// A line transformer applied to every merged stdout/stderr line before it reaches
+/// [`RunOutcome::output`] or the log sink (R2, §6.6 "redaction happens in the line stream,
+/// before the log is written"). An `Arc<dyn Fn>` rather than a `kadou-core` type: this crate
+/// has no dependency on kadou-core (that would cycle back, since kadou-core depends on this
+/// crate for `runner::run_one`) — the caller closes over whatever redaction logic it wants.
+pub type LineRedactor = Arc<dyn Fn(&str) -> String + Send + Sync>;
+
 /// One exec request: everything [`run`] needs, already resolved (§6.1).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RunSpec {
     pub shebang: Option<String>,
     /// Absolute path to the kata file.
@@ -162,6 +131,29 @@ pub struct RunSpec {
     /// the complete allowlisted set (§6.1 "MCP child environment"); the CLI leaves it `false`
     /// ("CLI keeps the full parent environment", §6.1).
     pub env_clear: bool,
+    /// Applied to every line before it is collected or logged (R2). `None` means the merged
+    /// stream is never redacted (a `dry_run`-shaped caller with nothing to hide).
+    pub redact: Option<LineRedactor>,
+    /// When set, every already-redacted line is appended (with a trailing `\n`) to this file
+    /// as it arrives, so a `status: running` history log holds partial output while the run is
+    /// still in flight (R2, I-7) instead of staying empty until the run ends. The file must
+    /// already exist — `kadou_core::history::HistoryStore::begin` creates it at `0600`.
+    pub log_sink: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for RunSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunSpec")
+            .field("shebang", &self.shebang)
+            .field("file", &self.file)
+            .field("cwd", &self.cwd)
+            .field("env", &self.env)
+            .field("timeout", &self.timeout)
+            .field("env_clear", &self.env_clear)
+            .field("redact", &self.redact.as_ref().map(|_| "<fn>"))
+            .field("log_sink", &self.log_sink)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,44 +171,6 @@ pub struct RunOutcome {
     /// The merged stdout/stderr line stream (§6.1 "merged line stream").
     pub output: Vec<String>,
     pub duration: Duration,
-}
-
-/// `dry_run`'s result: every env name a real run would set, split into the public values an
-/// agent may see and the names that are secret-shaped and never get a value shown (§5.5).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DryRunResult {
-    pub env_names: Vec<String>,
-    pub env_public: BTreeMap<String, String>,
-    pub secret_env_names: Vec<String>,
-}
-
-/// Resolves env names without spawning (§6.1 "`dry_run` does not spawn. It returns env
-/// names, not a command line."). Needs and args are already resolved by
-/// `kadou_core::resolve_needs`/`resolve_args` — this just applies the public/secret split
-/// (§5.5) that `run`'s real env-building step also needs.
-pub fn dry_run(args: &[ResolvedVar], needs: &[ResolvedNeed]) -> DryRunResult {
-    let mut env_names = Vec::with_capacity(args.len() + needs.len());
-    let mut env_public = BTreeMap::new();
-    let mut secret_env_names = Vec::new();
-
-    for need in needs {
-        env_names.push(need.env_name.clone());
-        if need.secret {
-            secret_env_names.push(need.env_name.clone());
-        } else if let Some(value) = &need.value {
-            env_public.insert(need.env_name.clone(), value.clone());
-        }
-    }
-    for arg in args {
-        env_names.push(arg.env_name.clone());
-        env_public.insert(arg.env_name.clone(), arg.value.clone());
-    }
-
-    DryRunResult {
-        env_names,
-        env_public,
-        secret_env_names,
-    }
 }
 
 /// Execs one kata to completion (`docs/design/05-prd.md` §6.1). Builds a private
@@ -266,8 +220,15 @@ pub async fn run(
     })?;
     let pid = child.id();
 
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
+    // `Stdio::piped()` above guarantees both are `Some` immediately after spawn; falling
+    // through to `Wait` on the (unreachable in practice) `None` case keeps this fn panic-free
+    // rather than asserting an invariant with `expect` (R6).
+    let stdout = child.stdout.take().ok_or_else(|| {
+        ExecError::Wait(std::io::Error::other("child stdout was not piped"))
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        ExecError::Wait(std::io::Error::other("child stderr was not piped"))
+    })?;
     let (tx, mut rx) = mpsc::unbounded_channel();
     let out_task = tokio::spawn(pump_lines(stdout, tx.clone()));
     let err_task = tokio::spawn(pump_lines(stderr, tx.clone()));
@@ -403,6 +364,8 @@ mod tests {
             env: Vec::new(),
             timeout: Duration::from_secs(10),
             env_clear: false,
+            redact: None,
+            log_sink: None,
         }
     }
 
@@ -667,97 +630,76 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_puts_secret_shaped_needs_in_secret_names_not_public() {
-        let args = vec![ResolvedVar {
-            name: "branch".to_string(),
-            env_name: "BRANCH".to_string(),
-            value: "dev".to_string(),
-        }];
-        let needs = vec![
-            ResolvedNeed {
-                name: "jenkins_url".to_string(),
-                env_name: "JENKINS_URL".to_string(),
-                value: Some("https://ci.example.com".to_string()),
-                secret: false,
-            },
-            ResolvedNeed {
-                name: "jenkins_token".to_string(),
-                env_name: "JENKINS_TOKEN".to_string(),
-                value: None,
-                secret: true,
-            },
-        ];
-
-        let result = dry_run(&args, &needs);
-        assert_eq!(
-            result.env_names,
-            vec![
-                "JENKINS_URL".to_string(),
-                "JENKINS_TOKEN".to_string(),
-                "BRANCH".to_string(),
-            ]
-        );
-        assert_eq!(result.secret_env_names, vec!["JENKINS_TOKEN".to_string()]);
-        assert!(!result.env_public.contains_key("JENKINS_TOKEN"));
-        assert_eq!(
-            result.env_public.get("JENKINS_URL"),
-            Some(&"https://ci.example.com".to_string())
-        );
-        assert_eq!(result.env_public.get("BRANCH"), Some(&"dev".to_string()));
-    }
-
-    #[test]
     fn effective_timeout_prefers_the_kata_header_override() {
         assert_eq!(
-            effective_timeout(Some(Duration::from_secs(10)), "30m"),
+            effective_timeout(Some(Duration::from_secs(10)), Duration::from_secs(30 * 60)),
             Duration::from_secs(10)
         );
-        assert_eq!(effective_timeout(None, "30m"), Duration::from_secs(30 * 60));
         assert_eq!(
-            effective_timeout(None, "not-a-duration"),
+            effective_timeout(None, Duration::from_secs(30 * 60)),
             Duration::from_secs(30 * 60)
         );
     }
 
     #[tokio::test]
-    async fn kadou_context_env_is_set() {
+    async fn redact_transforms_every_line_before_it_is_collected() {
         let dir = tempfile::tempdir().unwrap();
+        let file = write_script(dir.path(), "kata.sh", "#!/bin/sh\necho hunter2ok\n");
+        let mut s = spec(Some("#!/bin/sh"), file, dir.path().to_path_buf());
+        s.redact = Some(Arc::new(|line: &str| line.replace("hunter2ok", "****")));
+
+        let outcome = run(s, None).await.unwrap();
+        assert_eq!(outcome.output, vec!["****".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn log_sink_holds_already_redacted_partial_output_while_the_run_is_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
         let file = write_script(
             dir.path(),
             "kata.sh",
-            "#!/bin/sh\necho \"$KADOU_ID $KADOU_FILE $KADOU_DIR $KADOU_ROOT\"\n",
+            "#!/bin/sh\necho hunter2ok\n: > \"$READY\"\nsleep 30\n",
         );
-        let kata_dir = dir.path().join("kata");
-        std::fs::create_dir_all(kata_dir.join("starter")).unwrap();
-        std::fs::rename(&file, kata_dir.join("starter/hello.sh")).unwrap();
+        let log_path = dir.path().join("run.log");
+        std::fs::write(&log_path, b"").unwrap();
 
-        let kata = Kata {
-            id: "starter/hello".to_string(),
-            path: kata_dir.join("starter/hello.sh"),
-            about: "Test".to_string(),
-            risk: kadou_core::RiskLevel::Low,
-            needs: Vec::new(),
-            args: Vec::new(),
-            alias: Vec::new(),
-            timeout: None,
-            notes: None,
-            shebang: Some("#!/bin/sh".to_string()),
-        };
-        let ctx = kata_context(&kata_dir, &kata);
-        assert_eq!(ctx.root, kata_dir.join("starter"));
-        assert_eq!(ctx.dir, kata_dir.join("starter"));
+        let mut s = spec(Some("#!/bin/sh"), file, dir.path().to_path_buf());
+        s.env
+            .push(("READY".to_string(), ready.display().to_string()));
+        s.redact = Some(Arc::new(|line: &str| line.replace("hunter2ok", "****")));
+        s.log_sink = Some(log_path.clone());
 
-        let mut s = spec(Some("#!/bin/sh"), ctx.file.clone(), ctx.dir.clone());
-        s.env = context_env(&ctx);
-        let outcome = run(s, None).await.unwrap();
-        assert_eq!(
-            outcome.output,
-            vec![format!(
-                "starter/hello {} {} {}",
-                ctx.file.display(),
-                ctx.dir.display(),
-                ctx.root.display()
-            )]
-        );
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let handle = tokio::spawn(run(s, Some(cancel_rx)));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline, "script never became ready");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // Give the collector task a moment to drain the line the script already wrote before
+        // asserting on the log file — the readiness file and the echoed line race each other
+        // over the same pipe, but both are written before `sleep 30`.
+        let log_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let contents = std::fs::read_to_string(&log_path).unwrap();
+            if contents.contains("****") {
+                assert!(
+                    !contents.contains("hunter2ok"),
+                    "the log must never hold the raw secret: {contents:?}"
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < log_deadline,
+                "log never gained the redacted line while the run was still in flight"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        cancel_tx.send(()).unwrap();
+        let outcome = handle.await.unwrap().unwrap();
+        assert_eq!(outcome.status, RunStatus::Cancelled);
     }
 }

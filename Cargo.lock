@@ -1268,6 +1268,7 @@ dependencies = [
  "etcetera",
  "humantime",
  "insta",
+ "kadou-exec",
  "keyring-core",
  "serde",
  "serde_json",
@@ -1286,8 +1287,6 @@ dependencies = [
 name = "kadou-exec"
 version = "0.1.0"
 dependencies = [
- "humantime",
- "kadou-core",
  "nix",
  "tempfile",
  "thiserror 2.0.20",
