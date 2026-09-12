@@ -621,14 +621,14 @@ fn gate(
 /// `cancel_tx` must stay alive for as long as the kata might still be running: dropping a
 /// oneshot `Sender` resolves the receiver's `.await` exactly like a real cancel signal, so
 /// letting it drop here would SIGTERM every detached run the instant this function returns.
-async fn spawn_and_await(
+/// Builds the `kata_dir_root`/env/`RunOneRequest` and calls `kadou_core::runner::begin` — the
+/// part of `spawn_and_await` that can fail before anything is spawned.
+fn begin_mcp_run(
     state: &ServerState,
     config: &kadou_core::Config,
-    mcp_client: Option<String>,
-    ct: CancellationToken,
-    req: ResolvedRequest,
-    guard: crate::concurrency::RunGuard,
-) -> (Value, bool) {
+    mcp_client: Option<&str>,
+    req: &ResolvedRequest,
+) -> Result<kadou_core::runner::PreparedRun, (Value, bool)> {
     let kata_dir_root = if req.kata.id.starts_with("./") {
         state
             .project_local_kata_dir
@@ -647,7 +647,7 @@ async fn spawn_and_await(
         kata_dir_root: &kata_dir_root,
         interface: "mcp",
         initiator: &initiator,
-        mcp_client: mcp_client.as_deref(),
+        mcp_client,
         base_env,
         // `env` above is already the complete allowlisted MCP environment (§6.1) — the child
         // must not also inherit this server process's own environment.
@@ -655,14 +655,27 @@ async fn spawn_and_await(
         config_exec_timeout: config.exec.timeout,
     };
 
-    let prepared = match kadou_core::runner::begin(&state.paths.state_dir, &runner_req) {
+    kadou_core::runner::begin(&state.paths.state_dir, &runner_req).map_err(|err| {
+        (
+            json!({"status":"error","error":"internal","isError":true,"id":req.kata.id,"message":err.to_string()}),
+            true,
+        )
+    })
+}
+
+async fn spawn_and_await(
+    state: &ServerState,
+    config: &kadou_core::Config,
+    mcp_client: Option<String>,
+    ct: CancellationToken,
+    req: ResolvedRequest,
+    guard: crate::concurrency::RunGuard,
+) -> (Value, bool) {
+    let prepared = match begin_mcp_run(state, config, mcp_client.as_deref(), &req) {
         Ok(p) => p,
-        Err(err) => {
+        Err(result) => {
             drop(guard);
-            return (
-                json!({"status":"error","error":"internal","isError":true,"id":req.kata.id,"message":err.to_string()}),
-                true,
-            );
+            return result;
         }
     };
     let history_store = prepared.history_store;

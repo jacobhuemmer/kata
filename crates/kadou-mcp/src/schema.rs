@@ -25,6 +25,13 @@ pub const PROPOSE_SOURCE_MAX_BYTES: usize = 65536;
 
 /// The exact `tools/list` response body, matching `docs/design/tools-list.json` byte for
 /// byte once serialized compactly.
+///
+/// Deliberately one `json!` literal, not four smaller functions: this *is* the wire contract
+/// (CLAUDE.md invariant 1, "`crates/kadou-mcp/src/schema.rs` is the only place this JSON is
+/// built") and reads as the single source of truth a byte-identity test can check against
+/// `docs/design/tools-list.json` — splitting it by tool would only move lines around a value
+/// that must stay reviewable as one block.
+#[allow(clippy::too_many_lines)]
 pub fn tools_list_value() -> Value {
     json!({
         "tools": [

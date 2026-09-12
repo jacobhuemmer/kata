@@ -105,9 +105,40 @@ struct Frame<'a> {
     close_idx: usize,
 }
 
-/// CRLF/empty-file guards, shebang detection, and the `# ---` opener/closer scan (§4.3):
-/// every line from the opener to the closer must start with `#`, must not contain a tab, and
-/// the whole block must fit in [`MAX_HEADER_LINES`].
+/// From `open_idx + 1`, finds the closing `# ---` — every line up to it must start with `#`
+/// and hold no tab, and the whole block must fit in [`MAX_HEADER_LINES`].
+fn find_closer(lines: &[&str], open_idx: usize) -> Result<usize, Vec<Diagnostic>> {
+    let mut i = open_idx + 1;
+    while i < lines.len() && i < open_idx + MAX_HEADER_LINES {
+        let line = lines[i];
+        if line.trim_end() == "# ---" {
+            return Ok(i);
+        }
+        if !line.starts_with('#') {
+            return Err(vec![
+                Diagnostic::error(i + 1, 1, line.chars().count().max(1), "header not closed")
+                    .with_fix("every line until the closing `# ---` must start with `#`"),
+            ]);
+        }
+        if let Some(col) = line.find('\t') {
+            return Err(vec![
+                Diagnostic::error(i + 1, col + 1, 1, "tabs are not allowed in the header")
+                    .with_fix("use spaces"),
+            ]);
+        }
+        i += 1;
+    }
+    Err(vec![
+        Diagnostic::error(
+            open_idx + 1,
+            1,
+            5,
+            "header exceeds 64 lines or is never closed",
+        )
+        .with_fix("close the header with a line containing only `# ---`"),
+    ])
+}
+
 fn scan_frame(source: &str) -> Result<Frame<'_>, Vec<Diagnostic>> {
     if source.contains("\r\n") {
         return Err(vec![
@@ -141,39 +172,7 @@ fn scan_frame(source: &str) -> Result<Frame<'_>, Vec<Diagnostic>> {
         )]);
     };
 
-    let mut close_idx = None;
-    let mut i = open_idx + 1;
-    while i < lines.len() && i < open_idx + MAX_HEADER_LINES {
-        let line = lines[i];
-        if line.trim_end() == "# ---" {
-            close_idx = Some(i);
-            break;
-        }
-        if !line.starts_with('#') {
-            return Err(vec![
-                Diagnostic::error(i + 1, 1, line.chars().count().max(1), "header not closed")
-                    .with_fix("every line until the closing `# ---` must start with `#`"),
-            ]);
-        }
-        if let Some(col) = line.find('\t') {
-            return Err(vec![
-                Diagnostic::error(i + 1, col + 1, 1, "tabs are not allowed in the header")
-                    .with_fix("use spaces"),
-            ]);
-        }
-        i += 1;
-    }
-    let Some(close_idx) = close_idx else {
-        return Err(vec![
-            Diagnostic::error(
-                open_idx + 1,
-                1,
-                5,
-                "header exceeds 64 lines or is never closed",
-            )
-            .with_fix("close the header with a line containing only `# ---`"),
-        ]);
-    };
+    let close_idx = find_closer(&lines, open_idx)?;
 
     Ok(Frame {
         lines,
@@ -194,6 +193,209 @@ struct ParsedKeys {
     timeout: Option<Duration>,
 }
 
+/// An indented (two-space) continuation line: only valid inside an `args:` block, where it's
+/// one `name: type[ = default][  # help]` entry (§4.3).
+fn handle_indented_line(
+    rest: &str,
+    line_no: usize,
+    active_block: Option<&str>,
+    args: &mut Vec<Arg>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    match active_block {
+        Some("args") => {
+            // Column of `rest` in the raw line: 1 (for '#') + 1 (space) + 2 (indent).
+            let col_offset = 5;
+            match parse_arg_line(rest, line_no, col_offset) {
+                Ok(arg) if args.iter().any(|a: &Arg| a.name == arg.name) => {
+                    diags.push(Diagnostic::error(
+                        line_no,
+                        col_offset,
+                        arg.name.len(),
+                        format!("duplicate arg `{}`", arg.name),
+                    ));
+                }
+                Ok(arg) => args.push(arg),
+                Err(diag) => diags.push(diag),
+            }
+        }
+        _ => {
+            diags.push(
+                Diagnostic::error(line_no, 3, rest.len(), "unexpected indented line")
+                    .with_fix("only an `args:` block takes indented continuation lines"),
+            );
+        }
+    }
+}
+
+/// Applies one already-validated (known, not-yet-seen) top-level `key: value` line to `acc`.
+/// Returns `Some("args")` when this line opens the `args:` block, so the caller's
+/// `active_block` tracking stays alongside the rest of `parse_keys`'s per-line state.
+fn apply_about(
+    value: &str,
+    line_no: usize,
+    key_col: usize,
+    acc: &mut ParsedKeys,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if value.is_empty() {
+        diags.push(
+            Diagnostic::error(line_no, key_col, 5, "about must not be empty")
+                .with_fix("add a one-line description, 1-120 characters"),
+        );
+    } else {
+        acc.about = Some((value.to_string(), line_no));
+    }
+}
+
+fn apply_risk(
+    value: &str,
+    line_no: usize,
+    value_col: usize,
+    acc: &mut ParsedKeys,
+    diags: &mut Vec<Diagnostic>,
+) {
+    match value {
+        "low" => acc.risk = Some((RiskLevel::Low, line_no)),
+        "medium" => acc.risk = Some((RiskLevel::Medium, line_no)),
+        "high" => acc.risk = Some((RiskLevel::High, line_no)),
+        "critical" => acc.risk = Some((RiskLevel::Critical, line_no)),
+        other => {
+            diags.push(
+                Diagnostic::error(
+                    line_no,
+                    value_col,
+                    other.len().max(1),
+                    format!("unknown risk level `{other}`"),
+                )
+                .with_fix("risk is one of low, medium, high, critical"),
+            );
+        }
+    }
+}
+
+fn apply_needs(
+    value: &str,
+    line_no: usize,
+    key_col: usize,
+    acc: &mut ParsedKeys,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for token in value.split_whitespace() {
+        let (name, default) = match token.split_once('=') {
+            Some((n, d)) => (n, Some(d.to_string())),
+            None => (token, None),
+        };
+        if let Err(msg) = validate_name(name) {
+            diags.push(Diagnostic::error(
+                line_no,
+                key_col,
+                token.len(),
+                format!("invalid need name `{name}`: {msg}"),
+            ));
+            continue;
+        }
+        acc.needs.push(Need {
+            name: name.to_string(),
+            default,
+        });
+    }
+}
+
+fn apply_alias(
+    value: &str,
+    line_no: usize,
+    key_col: usize,
+    acc: &mut ParsedKeys,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for token in value.split_whitespace() {
+        if !is_valid_id_segment(token) {
+            diags.push(
+                Diagnostic::error(
+                    line_no,
+                    key_col,
+                    token.len(),
+                    format!("invalid alias `{token}`"),
+                )
+                .with_fix(
+                    "aliases match ^[a-z0-9][a-z0-9-]*$, the same shape as a folder/name segment",
+                ),
+            );
+            continue;
+        }
+        acc.alias.push(token.to_string());
+    }
+}
+
+fn apply_timeout(
+    value: &str,
+    line_no: usize,
+    key_col: usize,
+    acc: &mut ParsedKeys,
+    diags: &mut Vec<Diagnostic>,
+) {
+    match humantime::parse_duration(value) {
+        Ok(d) if d > MAX_TIMEOUT => {
+            diags.push(Diagnostic::error(
+                line_no,
+                key_col,
+                value.len(),
+                "timeout exceeds the 24h maximum",
+            ));
+        }
+        Ok(d) => acc.timeout = Some(d),
+        Err(_) => {
+            diags.push(
+                Diagnostic::error(
+                    line_no,
+                    key_col,
+                    value.len(),
+                    format!("invalid timeout `{value}`"),
+                )
+                .with_fix("use a duration like 30s, 10m, or 2h"),
+            );
+        }
+    }
+}
+
+/// Applies one already-validated (known, not-yet-seen) top-level `key: value` line to `acc`.
+/// Returns `Some("args")` when this line opens the `args:` block, so the caller's
+/// `active_block` tracking stays alongside the rest of `parse_keys`'s per-line state.
+fn apply_top_level_key<'a>(
+    key: &'a str,
+    value: &str,
+    line_no: usize,
+    key_col: usize,
+    value_col: usize,
+    acc: &mut ParsedKeys,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<&'a str> {
+    match key {
+        "about" => apply_about(value, line_no, key_col, acc, diags),
+        "risk" => apply_risk(value, line_no, value_col, acc, diags),
+        "needs" => apply_needs(value, line_no, key_col, acc, diags),
+        "args" => {
+            if !value.is_empty() {
+                diags.push(
+                    Diagnostic::error(
+                        line_no,
+                        key_col,
+                        value.len(),
+                        "`args:` takes no value on its own line",
+                    )
+                    .with_fix("put each arg on its own indented line below `args:`"),
+                );
+            }
+            return Some("args");
+        }
+        "alias" => apply_alias(value, line_no, key_col, acc, diags),
+        "timeout" => apply_timeout(value, line_no, key_col, acc, diags),
+        _ => unreachable!("filtered by KNOWN_KEYS above"),
+    }
+    None
+}
+
 /// Walks every line between the opener and closer, dispatching each top-level `key: value`
 /// line (and each indented `args:` continuation) into `ParsedKeys`, pushing a [`Diagnostic`]
 /// for every grammar violation along the way.
@@ -203,12 +405,14 @@ fn parse_keys(
     close_idx: usize,
     diags: &mut Vec<Diagnostic>,
 ) -> ParsedKeys {
-    let mut about: Option<(String, usize)> = None;
-    let mut risk: Option<(RiskLevel, usize)> = None;
-    let mut needs: Vec<Need> = Vec::new();
-    let mut args: Vec<Arg> = Vec::new();
-    let mut alias: Vec<String> = Vec::new();
-    let mut timeout: Option<Duration> = None;
+    let mut acc = ParsedKeys {
+        about: None,
+        risk: None,
+        needs: Vec::new(),
+        args: Vec::new(),
+        alias: Vec::new(),
+        timeout: None,
+    };
     let mut seen_keys: Vec<&str> = Vec::new();
     let mut active_block: Option<&str> = None;
 
@@ -222,30 +426,7 @@ fn parse_keys(
         }
 
         if let Some(rest) = content.strip_prefix("  ") {
-            match active_block {
-                Some("args") => {
-                    // Column of `rest` in the raw line: 1 (for '#') + 1 (space) + 2 (indent).
-                    let col_offset = 5;
-                    match parse_arg_line(rest, line_no, col_offset) {
-                        Ok(arg) if args.iter().any(|a: &Arg| a.name == arg.name) => {
-                            diags.push(Diagnostic::error(
-                                line_no,
-                                col_offset,
-                                arg.name.len(),
-                                format!("duplicate arg `{}`", arg.name),
-                            ));
-                        }
-                        Ok(arg) => args.push(arg),
-                        Err(diag) => diags.push(diag),
-                    }
-                }
-                _ => {
-                    diags.push(
-                        Diagnostic::error(line_no, 3, content.len(), "unexpected indented line")
-                            .with_fix("only an `args:` block takes indented continuation lines"),
-                    );
-                }
-            }
+            handle_indented_line(rest, line_no, active_block, &mut acc.args, diags);
             continue;
         }
 
@@ -286,120 +467,14 @@ fn parse_keys(
         }
         seen_keys.push(key);
 
-        match key {
-            "about" => {
-                if value.is_empty() {
-                    diags.push(
-                        Diagnostic::error(line_no, key_col, 5, "about must not be empty")
-                            .with_fix("add a one-line description, 1-120 characters"),
-                    );
-                } else {
-                    about = Some((value.to_string(), line_no));
-                }
-            }
-            "risk" => match value {
-                "low" => risk = Some((RiskLevel::Low, line_no)),
-                "medium" => risk = Some((RiskLevel::Medium, line_no)),
-                "high" => risk = Some((RiskLevel::High, line_no)),
-                "critical" => risk = Some((RiskLevel::Critical, line_no)),
-                other => {
-                    diags.push(
-                        Diagnostic::error(
-                            line_no,
-                            value_col,
-                            other.len().max(1),
-                            format!("unknown risk level `{other}`"),
-                        )
-                        .with_fix("risk is one of low, medium, high, critical"),
-                    );
-                }
-            },
-            "needs" => {
-                for token in value.split_whitespace() {
-                    let (name, default) = match token.split_once('=') {
-                        Some((n, d)) => (n, Some(d.to_string())),
-                        None => (token, None),
-                    };
-                    if let Err(msg) = validate_name(name) {
-                        diags.push(Diagnostic::error(
-                            line_no,
-                            key_col,
-                            token.len(),
-                            format!("invalid need name `{name}`: {msg}"),
-                        ));
-                        continue;
-                    }
-                    needs.push(Need {
-                        name: name.to_string(),
-                        default,
-                    });
-                }
-            }
-            "args" => {
-                if !value.is_empty() {
-                    diags.push(
-                        Diagnostic::error(
-                            line_no,
-                            key_col,
-                            value.len(),
-                            "`args:` takes no value on its own line",
-                        )
-                        .with_fix("put each arg on its own indented line below `args:`"),
-                    );
-                }
-                active_block = Some("args");
-            }
-            "alias" => {
-                for token in value.split_whitespace() {
-                    if !is_valid_id_segment(token) {
-                        diags.push(
-                            Diagnostic::error(
-                                line_no,
-                                key_col,
-                                token.len(),
-                                format!("invalid alias `{token}`"),
-                            )
-                            .with_fix("aliases match ^[a-z0-9][a-z0-9-]*$, the same shape as a folder/name segment"),
-                        );
-                        continue;
-                    }
-                    alias.push(token.to_string());
-                }
-            }
-            "timeout" => match humantime::parse_duration(value) {
-                Ok(d) if d > MAX_TIMEOUT => {
-                    diags.push(Diagnostic::error(
-                        line_no,
-                        key_col,
-                        value.len(),
-                        "timeout exceeds the 24h maximum",
-                    ));
-                }
-                Ok(d) => timeout = Some(d),
-                Err(_) => {
-                    diags.push(
-                        Diagnostic::error(
-                            line_no,
-                            key_col,
-                            value.len(),
-                            format!("invalid timeout `{value}`"),
-                        )
-                        .with_fix("use a duration like 30s, 10m, or 2h"),
-                    );
-                }
-            },
-            _ => unreachable!("filtered by KNOWN_KEYS above"),
+        if let Some(block) =
+            apply_top_level_key(key, value, line_no, key_col, value_col, &mut acc, diags)
+        {
+            active_block = Some(block);
         }
     }
 
-    ParsedKeys {
-        about,
-        risk,
-        needs,
-        args,
-        alias,
-        timeout,
-    }
+    acc
 }
 
 /// The required-key checks (`about`/`risk`), the error/warning split, and notes extraction —

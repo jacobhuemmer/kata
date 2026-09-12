@@ -176,9 +176,9 @@ type NeedsSeen<'a> = BTreeMap<&'a str, Vec<(&'a str, &'a str, &'a Option<String>
 /// (folder, kata_id), grouped by alias name.
 type AliasSeen<'a> = BTreeMap<&'a str, Vec<(&'a str, &'a str)>>;
 
-fn cross_kata_diagnostics(folders: &[(String, Vec<ScannedFile>)]) -> Vec<(String, ScannedFile)> {
-    let mut out = Vec::new();
-
+fn collect_needs_and_aliases<'a>(
+    folders: &'a [(String, Vec<ScannedFile>)],
+) -> (NeedsSeen<'a>, AliasSeen<'a>) {
     let mut needs_seen: NeedsSeen = BTreeMap::new();
     let mut alias_seen: AliasSeen = BTreeMap::new();
 
@@ -202,8 +202,13 @@ fn cross_kata_diagnostics(folders: &[(String, Vec<ScannedFile>)]) -> Vec<(String
             }
         }
     }
+    (needs_seen, alias_seen)
+}
 
-    for (name, entries) in &needs_seen {
+/// One diagnostic per folder touched by a need declared with conflicting defaults (§4.4).
+fn conflicting_need_diagnostics(needs_seen: &NeedsSeen<'_>) -> Vec<(String, ScannedFile)> {
+    let mut out = Vec::new();
+    for (name, entries) in needs_seen {
         let defaults: Vec<&Option<String>> = entries.iter().map(|(_, _, d)| *d).collect();
         let conflicting = defaults.windows(2).any(|w| w[0] != w[1]);
         if !conflicting {
@@ -230,8 +235,13 @@ fn cross_kata_diagnostics(folders: &[(String, Vec<ScannedFile>)]) -> Vec<(String
             ));
         }
     }
+    out
+}
 
-    for (name, entries) in &alias_seen {
+/// One diagnostic per folder touched by an alias declared more than once (§4.2).
+fn duplicate_alias_diagnostics(alias_seen: &AliasSeen<'_>) -> Vec<(String, ScannedFile)> {
+    let mut out = Vec::new();
+    for (name, entries) in alias_seen {
         if entries.len() < 2 {
             continue;
         }
@@ -252,7 +262,13 @@ fn cross_kata_diagnostics(folders: &[(String, Vec<ScannedFile>)]) -> Vec<(String
             ));
         }
     }
+    out
+}
 
+fn cross_kata_diagnostics(folders: &[(String, Vec<ScannedFile>)]) -> Vec<(String, ScannedFile)> {
+    let (needs_seen, alias_seen) = collect_needs_and_aliases(folders);
+    let mut out = conflicting_need_diagnostics(&needs_seen);
+    out.extend(duplicate_alias_diagnostics(&alias_seen));
     out
 }
 

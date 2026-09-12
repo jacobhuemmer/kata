@@ -186,19 +186,9 @@ pub fn run_blocking(spec: RunSpec) -> Result<RunOutcome, ExecError> {
     rt.block_on(run(spec, None))
 }
 
-/// Async form of [`run_blocking`], with an optional cancellation signal (`notifications/cancelled`
-/// in MCP terms, §6.1) alongside the timeout every run already carries.
-pub async fn run(
-    spec: RunSpec,
-    cancel: Option<oneshot::Receiver<()>>,
-) -> Result<RunOutcome, ExecError> {
-    let start = Instant::now();
-
-    let mut argv = resolve_argv(spec.shebang.as_deref(), &spec.file);
-    let program = argv.remove(0);
-
-    let mut cmd = Command::new(&program);
-    cmd.args(&argv)
+fn build_command(spec: &RunSpec, program: &str, argv: &[String]) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.args(argv)
         .current_dir(&spec.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -215,13 +205,25 @@ pub async fn run(
         // the whole tree the kata spawned, not just the immediate child (§6.1).
         cmd.process_group(0);
     }
+    cmd
+}
 
-    let mut child = cmd.spawn().map_err(|source| ExecError::Spawn {
-        program: program.clone(),
-        source,
-    })?;
-    let pid = child.id();
+type LineCollector = tokio::task::JoinHandle<Vec<String>>;
 
+/// Takes the child's piped stdout/stderr, spawns the two line-pump tasks and the collector
+/// that merges them (redacting and logging each line as it arrives, R2) into one ordered
+/// stream. Returns the three task handles for the caller to await once the child has exited.
+fn spawn_line_pumps(
+    child: &mut Child,
+    spec: &RunSpec,
+) -> Result<
+    (
+        tokio::task::JoinHandle<()>,
+        tokio::task::JoinHandle<()>,
+        LineCollector,
+    ),
+    ExecError,
+> {
     // `Stdio::piped()` above guarantees both are `Some` immediately after spawn; falling
     // through to `Wait` on the (unreachable in practice) `None` case keeps this fn panic-free
     // rather than asserting an invariant with `expect` (R6).
@@ -237,6 +239,7 @@ pub async fn run(
     let out_task = tokio::spawn(pump_lines(stdout, tx.clone()));
     let err_task = tokio::spawn(pump_lines(stderr, tx.clone()));
     drop(tx);
+
     let redact = spec.redact.clone();
     let log_sink = spec.log_sink.clone();
     let collector = tokio::spawn(async move {
@@ -264,6 +267,23 @@ pub async fn run(
         lines
     });
 
+    Ok((out_task, err_task, collector))
+}
+
+enum Race {
+    Exited(std::io::Result<std::process::ExitStatus>),
+    TimedOut,
+    Cancelled,
+}
+
+/// Races the child's own exit against `timeout` and `cancel`, terminating the process group
+/// (§6.1's SIGTERM-then-SIGKILL escalation) on whichever of those fires first.
+async fn race_to_completion(
+    child: &mut Child,
+    pid: Option<u32>,
+    timeout: Duration,
+    cancel: Option<oneshot::Receiver<()>>,
+) -> Result<(RunStatus, Option<i32>), ExecError> {
     let cancel_fut = async move {
         match cancel {
             Some(rx) => {
@@ -273,37 +293,53 @@ pub async fn run(
         }
     };
 
-    enum Race {
-        Exited(std::io::Result<std::process::ExitStatus>),
-        TimedOut,
-        Cancelled,
-    }
-
     let race = tokio::select! {
         res = child.wait() => Race::Exited(res),
-        () = tokio::time::sleep(spec.timeout) => Race::TimedOut,
+        () = tokio::time::sleep(timeout) => Race::TimedOut,
         () = cancel_fut => Race::Cancelled,
     };
 
-    let (status, exit_code) = match race {
+    match race {
         Race::Exited(Ok(exit_status)) => {
             let status = if exit_status.success() {
                 RunStatus::Success
             } else {
                 RunStatus::Failed
             };
-            (status, exit_code_of(exit_status))
+            Ok((status, exit_code_of(exit_status)))
         }
-        Race::Exited(Err(source)) => return Err(ExecError::Wait(source)),
+        Race::Exited(Err(source)) => Err(ExecError::Wait(source)),
         Race::TimedOut => {
-            terminate(pid, &mut child).await;
-            (RunStatus::TimedOut, None)
+            terminate(pid, child).await;
+            Ok((RunStatus::TimedOut, None))
         }
         Race::Cancelled => {
-            terminate(pid, &mut child).await;
-            (RunStatus::Cancelled, None)
+            terminate(pid, child).await;
+            Ok((RunStatus::Cancelled, None))
         }
-    };
+    }
+}
+
+/// Async form of [`run_blocking`], with an optional cancellation signal (`notifications/cancelled`
+/// in MCP terms, §6.1) alongside the timeout every run already carries.
+pub async fn run(
+    spec: RunSpec,
+    cancel: Option<oneshot::Receiver<()>>,
+) -> Result<RunOutcome, ExecError> {
+    let start = Instant::now();
+
+    let mut argv = resolve_argv(spec.shebang.as_deref(), &spec.file);
+    let program = argv.remove(0);
+    let mut cmd = build_command(&spec, &program, &argv);
+
+    let mut child = cmd.spawn().map_err(|source| ExecError::Spawn {
+        program: program.clone(),
+        source,
+    })?;
+    let pid = child.id();
+
+    let (out_task, err_task, collector) = spawn_line_pumps(&mut child, &spec)?;
+    let (status, exit_code) = race_to_completion(&mut child, pid, spec.timeout, cancel).await?;
 
     let _ = out_task.await;
     let _ = err_task.await;

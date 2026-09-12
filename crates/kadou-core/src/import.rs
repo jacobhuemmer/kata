@@ -88,8 +88,11 @@ pub struct ConvertedKata {
     pub relative_path: PathBuf,
     pub content: String,
     /// Extra files copied verbatim alongside a multi-file kata (source path -> bytes).
-    pub extra_files: Vec<(PathBuf, Vec<u8>)>,
+    pub extra_files: ExtraFiles,
 }
+
+/// Extra files copied verbatim alongside a multi-file kata: source-relative path -> bytes.
+type ExtraFiles = Vec<(PathBuf, Vec<u8>)>;
 
 #[derive(Debug, Default)]
 pub struct ImportSummary {
@@ -102,42 +105,41 @@ pub struct ImportSummary {
 
 /// Converts every `<src_dir>/<name>/runbook.yaml` into `<kata_dir>/<folder>/...` (§4.6).
 /// Refuses to run at all if `<kata_dir>/<folder>` already exists.
-pub fn import_catalog(
-    src_dir: &Path,
-    kata_dir: &Path,
-    folder: &str,
-) -> Result<ImportSummary, ImportError> {
-    if !src_dir.is_dir() {
-        return Err(ImportError::SourceNotFound(src_dir.to_path_buf()));
-    }
-    let target_dir = kata_dir.join(folder);
-    if target_dir.exists() {
-        return Err(ImportError::TargetExists(target_dir));
-    }
-
-    let mut kata_names: Vec<String> = Vec::new();
+/// Every immediate subdirectory of `src_dir` that looks like a dops kata (carries its own
+/// `runbook.yaml`), sorted.
+fn find_kata_names(src_dir: &Path) -> Result<Vec<String>, ImportError> {
+    let mut kata_names = Vec::new();
     for entry in read_dir_sorted(src_dir)? {
-        if !entry.path().is_dir() {
-            continue;
-        }
-        if entry.path().join("runbook.yaml").is_file() {
+        if entry.path().is_dir() && entry.path().join("runbook.yaml").is_file() {
             kata_names.push(entry.file_name().to_string_lossy().to_string());
         }
     }
+    Ok(kata_names)
+}
 
-    let mut summary = ImportSummary::default();
-    let mut converted: Vec<(String, ConvertedKata)> = Vec::new();
+/// Converts every named kata in memory before anything is written — a bad file partway
+/// through the batch must never leave a half-written folder.
+fn convert_all(
+    src_dir: &Path,
+    kata_names: &[String],
+    summary: &mut ImportSummary,
+) -> Result<Vec<(String, ConvertedKata)>, ImportError> {
+    kata_names
+        .iter()
+        .map(|name| {
+            let converted = convert_one(&src_dir.join(name), name, summary)?;
+            Ok((name.clone(), converted))
+        })
+        .collect()
+}
 
-    for name in &kata_names {
-        let kata_src = src_dir.join(name);
-        let converted_kata = convert_one(&kata_src, name, &mut summary)?;
-        converted.push((name.clone(), converted_kata));
-    }
-
-    // Only write once every kata has converted cleanly, so a bad file in the batch never
-    // leaves a half-written folder.
-    fs_err_create_dir_all(&target_dir)?;
-    for (_, kata) in &converted {
+fn write_converted(
+    target_dir: &Path,
+    converted: &[(String, ConvertedKata)],
+    summary: &mut ImportSummary,
+) -> Result<(), ImportError> {
+    fs_err_create_dir_all(target_dir)?;
+    for (_, kata) in converted {
         let dest = target_dir.join(&kata.relative_path);
         if let Some(parent) = dest.parent() {
             fs_err_create_dir_all(parent)?;
@@ -155,51 +157,69 @@ pub fn import_catalog(
         }
         summary.kata_written += 1;
     }
+    Ok(())
+}
 
-    // The shared helper scripts the 29 wrappers reach via $KADOU_ROOT (§4.6) live one
-    // level up from `<dops-catalog-dir>/src`, not inside it.
-    if let Some(catalog_root) = src_dir.parent() {
-        let shared_scripts = catalog_root.join("scripts");
-        if shared_scripts.is_dir() {
-            copy_dir_recursive(&shared_scripts, &target_dir.join("scripts"))?;
-        }
+/// The shared helper scripts the 29 wrappers reach via `$KADOU_ROOT` (§4.6) live one level up
+/// from `<dops-catalog-dir>/src`, not inside it.
+fn copy_shared_scripts(src_dir: &Path, target_dir: &Path) -> Result<(), ImportError> {
+    let Some(catalog_root) = src_dir.parent() else {
+        return Ok(());
+    };
+    let shared_scripts = catalog_root.join("scripts");
+    if shared_scripts.is_dir() {
+        copy_dir_recursive(&shared_scripts, &target_dir.join("scripts"))?;
     }
+    Ok(())
+}
+
+pub fn import_catalog(
+    src_dir: &Path,
+    kata_dir: &Path,
+    folder: &str,
+) -> Result<ImportSummary, ImportError> {
+    if !src_dir.is_dir() {
+        return Err(ImportError::SourceNotFound(src_dir.to_path_buf()));
+    }
+    let target_dir = kata_dir.join(folder);
+    if target_dir.exists() {
+        return Err(ImportError::TargetExists(target_dir));
+    }
+
+    let kata_names = find_kata_names(src_dir)?;
+    let mut summary = ImportSummary::default();
+    let converted = convert_all(src_dir, &kata_names, &mut summary)?;
+    write_converted(&target_dir, &converted, &mut summary)?;
+    copy_shared_scripts(src_dir, &target_dir)?;
 
     Ok(summary)
 }
 
-fn convert_one(
-    kata_src: &Path,
+fn parse_risk_level(risk_level: &str, name: &str) -> Result<RiskLevel, ImportError> {
+    match risk_level {
+        "low" => Ok(RiskLevel::Low),
+        "medium" => Ok(RiskLevel::Medium),
+        "high" => Ok(RiskLevel::High),
+        "critical" => Ok(RiskLevel::Critical),
+        other => Err(ImportError::UnknownRisk {
+            kata: name.to_string(),
+            risk_level: other.to_string(),
+        }),
+    }
+}
+
+/// Splits a runbook's parameters into needs (`scope: global`) and args (everything else) —
+/// a non-global `secret: true` parameter is a hard `ImportError::Param` (I-15): it would
+/// otherwise cross silently into the agent-settable arg namespace.
+fn convert_params(
+    parameters: &[DopsParam],
     name: &str,
     summary: &mut ImportSummary,
-) -> Result<ConvertedKata, ImportError> {
-    let yaml_path = kata_src.join("runbook.yaml");
-    let yaml_text = read_to_string(&yaml_path)?;
-    let runbook: DopsRunbook =
-        serde_yaml_ng::from_str(&yaml_text).map_err(|source| ImportError::Yaml {
-            path: yaml_path.clone(),
-            source: Box::new(source),
-        })?;
-
-    let risk = match runbook.risk_level.as_str() {
-        "low" => RiskLevel::Low,
-        "medium" => RiskLevel::Medium,
-        "high" => RiskLevel::High,
-        "critical" => RiskLevel::Critical,
-        other => {
-            return Err(ImportError::UnknownRisk {
-                kata: name.to_string(),
-                risk_level: other.to_string(),
-            });
-        }
-    };
-
-    let about = runbook.description.trim().to_string();
-
+) -> Result<(Vec<Need>, Vec<Arg>), ImportError> {
     let mut needs: Vec<Need> = Vec::new();
     let mut args: Vec<Arg> = Vec::new();
 
-    for param in &runbook.parameters {
+    for param in parameters {
         if param.scope == GLOBAL_SCOPE {
             let default = param.default.as_ref().filter(|d| !d.is_empty()).cloned();
             needs.push(Need {
@@ -220,24 +240,24 @@ fn convert_one(
             });
         }
 
-        let arg = convert_arg(param, name, summary)?;
-        args.push(arg);
+        args.push(convert_arg(param, name, summary)?);
     }
+    Ok((needs, args))
+}
 
-    let script_path = kata_src.join(&runbook.script);
-    let script_body = read_to_string(&script_path)?;
-    let (shebang, body) = split_shebang(&script_body);
-    let body = rewrite_repo_root_idiom(body);
-
-    let rendered = render_header(shebang, &about, risk, &needs, &args, &[], None, &body);
-
-    // Multi-file kata: anything in the source directory besides runbook.yaml and the
-    // script itself travels along, opaque (§4.6 device-log-metrics).
+/// Multi-file kata: anything in the source directory besides `runbook.yaml` and the script
+/// itself travels along, opaque (§4.6 device-log-metrics). Returns the collected extra files
+/// and whether there were any at all (which decides the kata's own relative path shape).
+fn collect_extra_files(
+    kata_src: &Path,
+    name: &str,
+    script_name: &str,
+) -> Result<(ExtraFiles, bool), ImportError> {
     let mut extra_files = Vec::new();
     let mut has_extra = false;
     for entry in read_dir_sorted(kata_src)? {
         let file_name = entry.file_name().to_string_lossy().to_string();
-        if file_name == "runbook.yaml" || file_name == runbook.script {
+        if file_name == "runbook.yaml" || file_name == script_name {
             continue;
         }
         has_extra = true;
@@ -247,6 +267,33 @@ fn convert_one(
             &mut extra_files,
         )?;
     }
+    Ok((extra_files, has_extra))
+}
+
+fn convert_one(
+    kata_src: &Path,
+    name: &str,
+    summary: &mut ImportSummary,
+) -> Result<ConvertedKata, ImportError> {
+    let yaml_path = kata_src.join("runbook.yaml");
+    let yaml_text = read_to_string(&yaml_path)?;
+    let runbook: DopsRunbook =
+        serde_yaml_ng::from_str(&yaml_text).map_err(|source| ImportError::Yaml {
+            path: yaml_path.clone(),
+            source: Box::new(source),
+        })?;
+
+    let risk = parse_risk_level(&runbook.risk_level, name)?;
+    let about = runbook.description.trim().to_string();
+    let (needs, args) = convert_params(&runbook.parameters, name, summary)?;
+
+    let script_path = kata_src.join(&runbook.script);
+    let script_body = read_to_string(&script_path)?;
+    let (shebang, body) = split_shebang(&script_body);
+    let body = rewrite_repo_root_idiom(body);
+
+    let rendered = render_header(shebang, &about, risk, &needs, &args, &[], None, &body);
+    let (extra_files, has_extra) = collect_extra_files(kata_src, name, &runbook.script)?;
 
     let relative_path = if has_extra {
         PathBuf::from(name).join("kata.sh")
@@ -259,6 +306,73 @@ fn convert_one(
         content: rendered,
         extra_files,
     })
+}
+
+fn convert_boolean_default(
+    effective_default: Option<&str>,
+    summary: &mut ImportSummary,
+    param_err: impl Fn(String) -> ImportError,
+) -> Result<Option<ArgDefault>, ImportError> {
+    let default = match effective_default {
+        None => None,
+        Some("true") => Some(ArgDefault::Bool(true)),
+        Some("false") => Some(ArgDefault::Bool(false)),
+        Some(other) => {
+            return Err(param_err(format!(
+                "cannot coerce boolean default `{other}` to true/false"
+            )));
+        }
+    };
+    if default.is_some() {
+        summary.booleans_coerced += 1;
+    }
+    Ok(default)
+}
+
+fn convert_number_default(
+    effective_default: Option<&str>,
+    summary: &mut ImportSummary,
+    param_err: impl Fn(String) -> ImportError,
+) -> Result<Option<ArgDefault>, ImportError> {
+    let default = match effective_default {
+        None => None,
+        Some(raw) => Some(ArgDefault::Int(raw.parse::<i64>().map_err(|_| {
+            param_err(format!(
+                "cannot coerce number default `{raw}` to an integer"
+            ))
+        })?)),
+    };
+    if default.is_some() {
+        summary.integers_coerced += 1;
+    }
+    Ok(default)
+}
+
+fn convert_select_default(
+    param: &DopsParam,
+    effective_default: Option<&str>,
+    param_err: impl Fn(String) -> ImportError,
+) -> Result<(ArgType, Option<ArgDefault>), ImportError> {
+    if param.options.is_empty() {
+        return Err(param_err("select parameter has no options".to_string()));
+    }
+    let default = match effective_default {
+        None => None,
+        Some(raw) => {
+            if !param.options.iter().any(|o| o == raw) {
+                return Err(param_err(format!(
+                    "default `{raw}` is not one of the declared options"
+                )));
+            }
+            Some(ArgDefault::Select(raw.to_string()))
+        }
+    };
+    Ok((
+        ArgType::Select {
+            options: param.options.clone(),
+        },
+        default,
+    ))
 }
 
 fn convert_arg(
@@ -284,84 +398,33 @@ fn convert_arg(
     let drop_default = param.required && raw_default.is_some_and(str::is_empty);
     let effective_default = if drop_default { None } else { raw_default };
 
-    match param.ty.as_str() {
-        "string" => {
-            let default = effective_default.map(|d| ArgDefault::Text(d.to_string()));
-            Ok(Arg {
-                name: param.name.clone(),
-                ty: ArgType::Text,
-                default,
-                help,
-            })
+    let (ty, default) = match param.ty.as_str() {
+        "string" => (
+            ArgType::Text,
+            effective_default.map(|d| ArgDefault::Text(d.to_string())),
+        ),
+        "boolean" => (
+            ArgType::Bool,
+            convert_boolean_default(effective_default, summary, param_err)?,
+        ),
+        "number" => (
+            ArgType::Int,
+            convert_number_default(effective_default, summary, param_err)?,
+        ),
+        "select" => convert_select_default(param, effective_default, param_err)?,
+        other => {
+            return Err(param_err(format!(
+                "unsupported dops parameter type `{other}`"
+            )));
         }
-        "boolean" => {
-            let default = match effective_default {
-                None => None,
-                Some("true") => Some(ArgDefault::Bool(true)),
-                Some("false") => Some(ArgDefault::Bool(false)),
-                Some(other) => {
-                    return Err(param_err(format!(
-                        "cannot coerce boolean default `{other}` to true/false"
-                    )));
-                }
-            };
-            if default.is_some() {
-                summary.booleans_coerced += 1;
-            }
-            Ok(Arg {
-                name: param.name.clone(),
-                ty: ArgType::Bool,
-                default,
-                help,
-            })
-        }
-        "number" => {
-            let default = match effective_default {
-                None => None,
-                Some(raw) => Some(ArgDefault::Int(raw.parse::<i64>().map_err(|_| {
-                    param_err(format!(
-                        "cannot coerce number default `{raw}` to an integer"
-                    ))
-                })?)),
-            };
-            if default.is_some() {
-                summary.integers_coerced += 1;
-            }
-            Ok(Arg {
-                name: param.name.clone(),
-                ty: ArgType::Int,
-                default,
-                help,
-            })
-        }
-        "select" => {
-            if param.options.is_empty() {
-                return Err(param_err("select parameter has no options".to_string()));
-            }
-            let default = match effective_default {
-                None => None,
-                Some(raw) => {
-                    if !param.options.iter().any(|o| o == raw) {
-                        return Err(param_err(format!(
-                            "default `{raw}` is not one of the declared options"
-                        )));
-                    }
-                    Some(ArgDefault::Select(raw.to_string()))
-                }
-            };
-            Ok(Arg {
-                name: param.name.clone(),
-                ty: ArgType::Select {
-                    options: param.options.clone(),
-                },
-                default,
-                help,
-            })
-        }
-        other => Err(param_err(format!(
-            "unsupported dops parameter type `{other}`"
-        ))),
-    }
+    };
+
+    Ok(Arg {
+        name: param.name.clone(),
+        ty,
+        default,
+        help,
+    })
 }
 
 /// Splits off a leading shebang line, if any, returning `(shebang, rest)`.

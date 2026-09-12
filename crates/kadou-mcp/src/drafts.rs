@@ -111,37 +111,14 @@ fn render_diagnostics(input_id: &str, source: &str, diagnostics: Vec<Diagnostic>
     kadou_core::render_report(&report, Path::new(""), false)
 }
 
-/// Writes `source` as a draft at `<state_dir>/proposed/<input_id>.sh`, strict-loading the
-/// header first (§6.7 "strict-loads the header at propose time"). `rmcp` does not validate
-/// `inputSchema` server-side (I-13), so `input_id` and `source` are validated here against
-/// the exact same shape and size cap the schema declares (`schema::PROPOSE_ID_PATTERN`,
-/// `schema::PROPOSE_SOURCE_MAX_BYTES`) before anything is written — the schema alone is
-/// advisory to a client, not enforcement. The resolved parent directory is canonicalized and
-/// checked for containment under `proposed/` *before* the write, not after (§5.4).
-pub fn propose(
+/// Canonicalizes the resolved *parent* before writing (not the target after, I-13): verifies
+/// containment under `state_dir`'s `proposed/` root, then writes `source` at `<proposed_root>/
+/// <input_id>.sh` and returns that path.
+fn write_draft_contained(
     state_dir: &Path,
-    kata_dir: &Path,
     input_id: &str,
     source: &str,
-) -> Result<ProposeOutcome, ProposeError> {
-    if source.len() > schema::PROPOSE_SOURCE_MAX_BYTES {
-        return Err(ProposeError::SourceTooLarge { len: source.len() });
-    }
-    if !valid_propose_id(input_id) {
-        return Err(ProposeError::InvalidId {
-            id: input_id.to_string(),
-        });
-    }
-
-    let (header, diagnostics) = kadou_core::parse_header(source);
-    if header.is_none() {
-        return Err(ProposeError::BadHeader(render_diagnostics(
-            input_id,
-            source,
-            diagnostics,
-        )));
-    }
-
+) -> Result<PathBuf, ProposeError> {
     let proposed_root = state_dir.join(PROPOSED_NS);
     kadou_core::fsutil::ensure_dir_0700(&proposed_root).map_err(|source| ProposeError::Write {
         path: proposed_root.clone(),
@@ -184,7 +161,12 @@ pub fn propose(
             source: source_err,
         }
     })?;
+    Ok(target)
+}
 
+/// A unified diff against the currently-accepted kata's source, or against `/dev/null` when
+/// `input_id` names no existing kata (§6.7).
+fn render_diff(kata_dir: &Path, input_id: &str, source: &str) -> String {
     let existing = existing_kata_source(kata_dir, input_id);
     let label = format!("{input_id}.sh");
     let old_label = if existing.is_some() {
@@ -192,10 +174,45 @@ pub fn propose(
     } else {
         "/dev/null"
     };
-    let diff = similar::TextDiff::from_lines(existing.as_deref().unwrap_or(""), source)
+    similar::TextDiff::from_lines(existing.as_deref().unwrap_or(""), source)
         .unified_diff()
         .header(old_label, &label)
-        .to_string();
+        .to_string()
+}
+
+/// Writes `source` as a draft at `<state_dir>/proposed/<input_id>.sh`, strict-loading the
+/// header first (§6.7 "strict-loads the header at propose time"). `rmcp` does not validate
+/// `inputSchema` server-side (I-13), so `input_id` and `source` are validated here against
+/// the exact same shape and size cap the schema declares (`schema::PROPOSE_ID_PATTERN`,
+/// `schema::PROPOSE_SOURCE_MAX_BYTES`) before anything is written — the schema alone is
+/// advisory to a client, not enforcement. The resolved parent directory is canonicalized and
+/// checked for containment under `proposed/` *before* the write, not after (§5.4).
+pub fn propose(
+    state_dir: &Path,
+    kata_dir: &Path,
+    input_id: &str,
+    source: &str,
+) -> Result<ProposeOutcome, ProposeError> {
+    if source.len() > schema::PROPOSE_SOURCE_MAX_BYTES {
+        return Err(ProposeError::SourceTooLarge { len: source.len() });
+    }
+    if !valid_propose_id(input_id) {
+        return Err(ProposeError::InvalidId {
+            id: input_id.to_string(),
+        });
+    }
+
+    let (header, diagnostics) = kadou_core::parse_header(source);
+    if header.is_none() {
+        return Err(ProposeError::BadHeader(render_diagnostics(
+            input_id,
+            source,
+            diagnostics,
+        )));
+    }
+
+    let target = write_draft_contained(state_dir, input_id, source)?;
+    let diff = render_diff(kata_dir, input_id, source);
 
     Ok(ProposeOutcome {
         draft_id: format!("{PROPOSED_NS}/{input_id}"),

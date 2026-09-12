@@ -266,30 +266,20 @@ fn main() -> std::process::ExitCode {
             } => commands::run_mcp_serve(transport, bind, max_risk),
             McpAction::Schema { bytes } => commands::run_mcp_schema(bytes),
         },
-        Some(command) => {
-            let (name, slice) = match &command {
-                Command::Run(_) => unreachable!("handled above"),
-                Command::List(_) => ("list", 2),
-                Command::Show { .. } => unreachable!("handled above"),
-                Command::New { .. } => ("new", 8),
-                Command::Edit { .. } => ("edit", 8),
-                Command::Check { .. } => ("check", 2),
-                Command::Get { .. } => ("get", 7),
-                Command::Update { .. } => ("update", 7),
-                Command::Remove { .. } => ("remove", 7),
-                Command::Import { .. } => ("import", 2),
-                Command::Accept { .. } => ("accept", 7),
-                Command::Trust { .. } => ("trust", 5),
-                Command::Vault(_) => unreachable!("handled above"),
-                Command::History { .. } => ("history", 5),
-                Command::Grant(_) => unreachable!("handled above"),
-                Command::Mine(_) => ("mine", 9),
-                Command::Mcp(_) => unreachable!("handled above"),
-                Command::Completion { .. } => ("completion", 8),
-                Command::Version => unreachable!("handled above"),
-            };
-            stub(name, slice, Some(&command))
-        }
+        // A4: each still-stubbed variant names its own (label, slice) right in its own arm,
+        // rather than in a second match that has to be kept in sync with this one by hand —
+        // an already-dispatched variant added here would be a normal "duplicate match arm"
+        // compile error, never a live `unreachable!()`.
+        Some(cmd @ Command::New { .. }) => stub("new", 8, Some(&cmd)),
+        Some(cmd @ Command::Edit { .. }) => stub("edit", 8, Some(&cmd)),
+        Some(cmd @ Command::Get { .. }) => stub("get", 7, Some(&cmd)),
+        Some(cmd @ Command::Update { .. }) => stub("update", 7, Some(&cmd)),
+        Some(cmd @ Command::Remove { .. }) => stub("remove", 7, Some(&cmd)),
+        Some(cmd @ Command::Accept { .. }) => stub("accept", 7, Some(&cmd)),
+        Some(cmd @ Command::Trust { .. }) => stub("trust", 5, Some(&cmd)),
+        Some(cmd @ Command::History { .. }) => stub("history", 5, Some(&cmd)),
+        Some(cmd @ Command::Mine(_)) => stub("mine", 9, Some(&cmd)),
+        Some(cmd @ Command::Completion { .. }) => stub("completion", 8, Some(&cmd)),
     }
 }
 

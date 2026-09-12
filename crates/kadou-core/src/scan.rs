@@ -85,14 +85,26 @@ pub fn scan_kata_dir(kata_dir: &Path) -> Result<Vec<(String, Vec<ScannedFile>)>,
     Ok(folders)
 }
 
-fn scan_dir(dir: &Path, id_prefix: &str, out: &mut Vec<ScannedFile>) -> Result<(), ScanError> {
-    let entries = read_dir_sorted(dir)?;
+/// One directory's immediate entries, sorted into single-file kata candidates, multi-file
+/// (`kata.sh`) kata directories, and namespace subdirectories to recurse into — a helper file
+/// with no header marker is pushed straight into `out` here rather than tracked, since it
+/// never participates in the collision/dedupe logic below.
+struct Entries {
+    file_candidates: BTreeMap<String, PathBuf>,
+    dir_kata: BTreeMap<String, PathBuf>,
+    namespace_dirs: Vec<PathBuf>,
+}
 
+fn classify_entries(
+    dir: &Path,
+    id_prefix: &str,
+    out: &mut Vec<ScannedFile>,
+) -> Result<Entries, ScanError> {
     let mut file_candidates: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut dir_kata: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut namespace_dirs: Vec<PathBuf> = Vec::new();
 
-    for entry in entries {
+    for entry in read_dir_sorted(dir)? {
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with('_') || name.starts_with('.') {
             continue;
@@ -132,6 +144,20 @@ fn scan_dir(dir: &Path, id_prefix: &str, out: &mut Vec<ScannedFile>) -> Result<(
             }
         }
     }
+
+    Ok(Entries {
+        file_candidates,
+        dir_kata,
+        namespace_dirs,
+    })
+}
+
+fn scan_dir(dir: &Path, id_prefix: &str, out: &mut Vec<ScannedFile>) -> Result<(), ScanError> {
+    let Entries {
+        file_candidates,
+        dir_kata,
+        namespace_dirs,
+    } = classify_entries(dir, id_prefix, out)?;
 
     for (stem, file_path) in &file_candidates {
         if let Some(dir_path) = dir_kata.get(stem) {

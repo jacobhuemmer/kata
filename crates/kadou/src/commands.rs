@@ -218,6 +218,75 @@ fn parse_risk(s: &str) -> Option<RiskLevel> {
 /// `kadou list [--folder F] [--risk R] [query]` — the CLI projection of `list_kata` (§7.1).
 /// A human's own ceiling applies (§6.2 `visible(k,f) = rank(k.risk) ≤ human_ceiling(f)
 /// [CLI]`); untrusted project-local folders are out of scope for this slice.
+type ScannedFolders = Vec<(String, Vec<kadou_core::ScannedFile>)>;
+
+/// One folder's visible-and-matching rows: gated on the human ceiling (§6.2 [CLI]), then the
+/// `--risk` and free-text query filters.
+fn list_rows_for_folder(
+    files: &[kadou_core::ScannedFile],
+    ceiling: RiskLevel,
+    risk_filter: Option<RiskLevel>,
+    query_lower: Option<&str>,
+) -> Vec<(String, RiskLevel, String)> {
+    let mut rows = Vec::new();
+    for file in files {
+        let Some(header) = &file.header else {
+            continue;
+        };
+        if header.risk > ceiling {
+            continue;
+        }
+        if let Some(want) = risk_filter
+            && header.risk != want
+        {
+            continue;
+        }
+        if let Some(q) = query_lower {
+            let haystack = format!(
+                "{} {} {}",
+                file.id.to_lowercase(),
+                header.about.to_lowercase(),
+                header.alias.join(" ").to_lowercase()
+            );
+            if !haystack.contains(q) {
+                continue;
+            }
+        }
+        rows.push((file.id.clone(), header.risk, header.about.clone()));
+    }
+    rows
+}
+
+fn list_rows(
+    scanned: &ScannedFolders,
+    folder: Option<&str>,
+    risk_filter: Option<RiskLevel>,
+    query_lower: Option<&str>,
+    config: &Config,
+) -> Vec<(String, RiskLevel, String)> {
+    let mut rows = Vec::new();
+    for (name, files) in scanned {
+        if let Some(want) = folder
+            && name != want
+        {
+            continue;
+        }
+        let ceiling = config
+            .folder
+            .get(name)
+            .and_then(|f| f.max_risk)
+            .unwrap_or(config.max_risk);
+        rows.extend(list_rows_for_folder(
+            files,
+            ceiling,
+            risk_filter,
+            query_lower,
+        ));
+    }
+    rows.sort();
+    rows
+}
+
 pub fn run_list(query: Option<String>, folder: Option<String>, risk: Option<String>) -> ExitCode {
     let paths = resolve_paths();
     materialize_starter(&paths);
@@ -244,48 +313,13 @@ pub fn run_list(query: Option<String>, folder: Option<String>, risk: Option<Stri
     };
 
     let query_lower = query.map(|q| q.to_lowercase());
-    let mut rows: Vec<(String, RiskLevel, String)> = Vec::new();
-
-    for (name, files) in &scanned {
-        if let Some(want) = &folder
-            && name != want
-        {
-            continue;
-        }
-        let ceiling = config
-            .folder
-            .get(name)
-            .and_then(|f| f.max_risk)
-            .unwrap_or(config.max_risk);
-
-        for file in files {
-            let Some(header) = &file.header else {
-                continue;
-            };
-            if header.risk > ceiling {
-                continue;
-            }
-            if let Some(want) = risk_filter
-                && header.risk != want
-            {
-                continue;
-            }
-            if let Some(q) = &query_lower {
-                let haystack = format!(
-                    "{} {} {}",
-                    file.id.to_lowercase(),
-                    header.about.to_lowercase(),
-                    header.alias.join(" ").to_lowercase()
-                );
-                if !haystack.contains(q) {
-                    continue;
-                }
-            }
-            rows.push((file.id.clone(), header.risk, header.about.clone()));
-        }
-    }
-
-    rows.sort();
+    let rows = list_rows(
+        &scanned,
+        folder.as_deref(),
+        risk_filter,
+        query_lower.as_deref(),
+        &config,
+    );
 
     if rows.is_empty() {
         println!("no kata found");
@@ -530,6 +564,36 @@ fn resolve_missing_needs_interactively(
     }
 }
 
+/// Builds the `RunOneRequest` and runs it to completion — the one shared shape `kadou run` and
+/// `kadou grant approve` both call into (§6.4 item 5 "Approval runs in the human CLI's
+/// environment (full parent env, not the MCP server's allowlisted one)" applies to both).
+fn run_one_cli(
+    paths: &KadouPaths,
+    config: &Config,
+    kata: &Kata,
+    folder: &str,
+    resolved_args: &[kadou_core::ResolvedVar],
+    resolved_needs: &[kadou_core::ResolvedNeed],
+    mcp_client: Option<&str>,
+) -> Result<kadou_core::runner::RunReport, kadou_core::runner::RunOneError> {
+    let initiator = current_initiator();
+    let req = RunOneRequest {
+        kata,
+        folder,
+        resolved_args,
+        resolved_needs,
+        kata_dir_root: &paths.kata_dir(),
+        interface: "cli",
+        initiator: &initiator,
+        mcp_client,
+        // CLI keeps the full parent environment (§6.1) — nothing extra to layer on top.
+        base_env: Vec::new(),
+        env_clear: false,
+        config_exec_timeout: config.exec.timeout,
+    };
+    run_one_blocking(&paths.state_dir, &req)
+}
+
 /// Prints a completed run's output and maps its terminal status to an exit code, writing
 /// last-used args on success (§6.6 D5). Shared shape between `kadou run` and `kadou grant
 /// approve`'s own report handling.
@@ -686,23 +750,15 @@ pub fn run_run(
         .next()
         .unwrap_or(&prep.kata.id)
         .to_string();
-    let initiator = current_initiator();
-    let req = RunOneRequest {
-        kata: &prep.kata,
-        folder: &folder,
-        resolved_args: &prep.resolved_args,
-        resolved_needs: &prep.resolved_needs,
-        kata_dir_root: &paths.kata_dir(),
-        interface: "cli",
-        initiator: &initiator,
-        mcp_client: None,
-        // CLI keeps the full parent environment (§6.1) — nothing extra to layer on top.
-        base_env: Vec::new(),
-        env_clear: false,
-        config_exec_timeout: config.exec.timeout,
-    };
-
-    match run_one_blocking(&paths.state_dir, &req) {
+    match run_one_cli(
+        &paths,
+        &config,
+        &prep.kata,
+        &folder,
+        &prep.resolved_args,
+        &prep.resolved_needs,
+        None,
+    ) {
         Ok(report) => print_run_report_and_exit_code(
             &report,
             &prep.kata,
@@ -1149,6 +1205,32 @@ pub fn run_grant_allow(id: String, any_version: bool) -> ExitCode {
 /// pinned kata in the CLI's own full environment (not MCP's allowlisted one), subject to the
 /// same confirm protocol as `kadou run` for high/critical, refusing on a sha256/folder-HEAD
 /// mismatch or expiry.
+/// A missing need is a hard stop with the `kadou vault set` fix line, never a guessed/prompted
+/// value (§4.4) — shared between `run_grant_approve` and (in spirit) `run_run`'s own
+/// non-interactive branch.
+fn missing_needs_error(
+    kata: &Kata,
+    resolved_needs: &[kadou_core::ResolvedNeed],
+) -> Result<(), ExitCode> {
+    let missing_needs: Vec<String> = resolved_needs
+        .iter()
+        .filter(|n| n.value.is_none())
+        .map(|n| n.name.clone())
+        .collect();
+    if missing_needs.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "error: {} needs {} but the vault isn't set up yet",
+        kata.id,
+        missing_needs.join(", ")
+    );
+    for name in &missing_needs {
+        eprintln!("  = kadou vault set {name}");
+    }
+    Err(ExitCode::from(2))
+}
+
 /// Every check a pending record must clear before it may be approved (§6.4 item 5): not
 /// already approved, not expired, the kata unchanged since the request (sha256, and the
 /// folder's git HEAD when the request pinned one).
@@ -1258,42 +1340,22 @@ pub fn run_grant_approve(pending_id: String, confirm_flag: Option<String>) -> Ex
         Vault::default()
     });
     let resolved_needs = kadou_core::resolve_needs(&kata, &vault);
-    let missing_needs: Vec<String> = resolved_needs
-        .iter()
-        .filter(|n| n.value.is_none())
-        .map(|n| n.name.clone())
-        .collect();
-    if !missing_needs.is_empty() {
-        eprintln!(
-            "error: {} needs {} but the vault isn't set up yet",
-            kata.id,
-            missing_needs.join(", ")
-        );
-        for name in &missing_needs {
-            eprintln!("  = kadou vault set {name}");
-        }
-        return ExitCode::from(2);
+    if let Err(code) = missing_needs_error(&kata, &resolved_needs) {
+        return code;
     }
 
     // Approval runs in the CLI's own full environment (§6.4 item 5 "Approval runs in the
     // human CLI's environment (full parent env, not the MCP server's allowlisted one)").
     let config = load_config(&paths);
-    let initiator = current_initiator();
-    let req = RunOneRequest {
-        kata: &kata,
-        folder: &record.folder,
-        resolved_args: &resolved_args,
-        resolved_needs: &resolved_needs,
-        kata_dir_root: &paths.kata_dir(),
-        interface: "cli",
-        initiator: &initiator,
-        mcp_client: None,
-        base_env: Vec::new(),
-        env_clear: false,
-        config_exec_timeout: config.exec.timeout,
-    };
-
-    match run_one_blocking(&paths.state_dir, &req) {
+    match run_one_cli(
+        &paths,
+        &config,
+        &kata,
+        &record.folder,
+        &resolved_args,
+        &resolved_needs,
+        None,
+    ) {
         Ok(report) => {
             record_grant_outcome(&store, &mut record, &report);
             print_run_report_and_exit_code(
