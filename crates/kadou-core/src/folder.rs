@@ -530,4 +530,65 @@ mod tests {
             .collect();
         assert_eq!(folders, vec!["starter", "team"]);
     }
+
+    #[test]
+    fn remove_folder_refuses_starter() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(kata_dir.path().join("starter")).unwrap();
+
+        let err = super::remove_folder(kata_dir.path(), "starter", false).unwrap_err();
+        assert!(
+            matches!(err, super::FolderError::ReservedRemove(_)),
+            "{err:?}"
+        );
+        assert!(kata_dir.path().join("starter").is_dir());
+    }
+
+    #[test]
+    fn remove_folder_refuses_a_dirty_checkout_without_force() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let url = bare_fixture_url(fixture_root.path());
+        let target = super::get_folder(kata_dir.path(), &url, Some("team"), None, None).unwrap();
+        std::fs::write(target.join("uncommitted.txt"), "x").unwrap();
+
+        let err = super::remove_folder(kata_dir.path(), "team", false).unwrap_err();
+        assert!(matches!(err, super::FolderError::Dirty(_)), "{err:?}");
+        assert!(kata_dir.path().join("team").is_dir());
+
+        super::remove_folder(kata_dir.path(), "team", true).unwrap();
+        assert!(!kata_dir.path().join("team").exists());
+    }
+
+    #[test]
+    fn remove_folder_removes_a_clean_folder() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let url = bare_fixture_url(fixture_root.path());
+        super::get_folder(kata_dir.path(), &url, Some("team"), None, None).unwrap();
+
+        super::remove_folder(kata_dir.path(), "team", false).unwrap();
+        assert!(!kata_dir.path().join("team").exists());
+    }
+
+    #[test]
+    fn remove_folder_fails_cleanly_for_an_unknown_folder() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let err = super::remove_folder(kata_dir.path(), "nope", false).unwrap_err();
+        assert!(matches!(err, super::FolderError::NoSuchFolder(_)), "{err:?}");
+    }
+
+    #[test]
+    fn remove_folder_also_removes_its_hidden_root_checkout() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let bare = bare_monorepo_fixture(fixture_root.path());
+        let url = format!("file://{}", bare.display());
+        super::get_folder(kata_dir.path(), &url, Some("ops"), None, Some("ops/scripts")).unwrap();
+        assert!(kata_dir.path().join(".checkouts/ops").is_dir());
+
+        super::remove_folder(kata_dir.path(), "ops", false).unwrap();
+        assert!(!kata_dir.path().join("ops").exists());
+        assert!(!kata_dir.path().join(".checkouts/ops").exists());
+    }
 }
