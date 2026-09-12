@@ -586,4 +586,108 @@ mod tests {
         assert!(prep.diff.contains("-echo hi"));
         assert!(prep.diff.contains("+echo HI"));
     }
+
+    #[test]
+    fn accept_of_an_unknown_draft_is_a_clean_error() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+
+        let err =
+            prepare_accept(state_dir.path(), kata_dir.path(), "sesami/nope", None).unwrap_err();
+        assert!(matches!(err, AcceptError::DraftNotFound(_)), "{err:?}");
+    }
+
+    #[test]
+    fn accept_of_a_mined_draft_without_into_is_refused() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(state_dir.path().join("mined")).unwrap();
+        std::fs::write(state_dir.path().join("mined/k8s-pod-logs.sh"), HELLO).unwrap();
+
+        let err = prepare_accept(
+            state_dir.path(),
+            kata_dir.path(),
+            "mined/k8s-pod-logs",
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, AcceptError::IntoRequired(_)), "{err:?}");
+    }
+
+    #[test]
+    fn accept_of_a_mined_draft_with_into_copies_into_that_folder() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(kata_dir.path().join("ops")).unwrap();
+        std::fs::create_dir_all(state_dir.path().join("mined")).unwrap();
+        std::fs::write(state_dir.path().join("mined/k8s-pod-logs.sh"), HELLO).unwrap();
+
+        let prep = prepare_accept(
+            state_dir.path(),
+            kata_dir.path(),
+            "mined/k8s-pod-logs",
+            Some("ops"),
+        )
+        .unwrap();
+        assert_eq!(prep.new_id, "ops/k8s-pod-logs");
+    }
+
+    #[test]
+    fn accept_refuses_a_missing_target_folder() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        propose(state_dir.path(), kata_dir.path(), "ops/hello-team", HELLO).unwrap();
+
+        let err =
+            prepare_accept(state_dir.path(), kata_dir.path(), "ops/hello-team", None).unwrap_err();
+        assert!(matches!(err, AcceptError::NoSuchFolder(_)), "{err:?}");
+    }
+
+    #[test]
+    fn accept_refuses_a_git_backed_target_folder() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        let team_dir = kata_dir.path().join("team");
+        std::fs::create_dir_all(&team_dir).unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&team_dir)
+            .args(["init", "-q"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        propose(state_dir.path(), kata_dir.path(), "team/hello-team", HELLO).unwrap();
+
+        let err =
+            prepare_accept(state_dir.path(), kata_dir.path(), "team/hello-team", None).unwrap_err();
+        assert!(
+            matches!(err, AcceptError::GitBackedTarget { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn accept_of_a_bad_header_draft_fails_with_check_style_diagnostics() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(kata_dir.path().join("ops")).unwrap();
+        std::fs::create_dir_all(state_dir.path().join("proposed/ops")).unwrap();
+        // Written directly (bypassing propose's own strict-load), the way a mined draft's
+        // pipeline could produce a malformed file: `kadou accept` must catch it too.
+        std::fs::write(
+            state_dir.path().join("proposed/ops/bad.sh"),
+            "#!/bin/sh\n# ---\n# risk:  mediun\n# ---\necho hi\n",
+        )
+        .unwrap();
+
+        let err = prepare_accept(state_dir.path(), kata_dir.path(), "ops/bad", None).unwrap_err();
+        let AcceptError::InvalidHeader(text) = err else {
+            panic!("expected InvalidHeader, got {err:?}");
+        };
+        assert!(text.contains("-->"), "expected a --> location line: {text}");
+        assert!(
+            text.contains("= risk is one of low, medium, high, critical"),
+            "{text}"
+        );
+    }
 }
