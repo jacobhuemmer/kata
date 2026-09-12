@@ -275,4 +275,27 @@ mod tests {
         super::pull(&dest).unwrap();
         assert!(dest.join("second.txt").is_file());
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn is_git_backed_is_true_for_a_symlink_into_a_checkout_subdirectory() {
+        // The `--root` shape (§9 slice 7): the folder kadou exposes is a symlink into a
+        // subdirectory of the real checkout, so no `.git` sits directly inside the symlink
+        // target -- only walking up via `--show-toplevel` finds it.
+        let root = tempfile::tempdir().unwrap();
+        let checkout = root.path().join("checkout");
+        init_repo_with_subdir(&checkout, "sub");
+
+        let exposed = root.path().join("exposed");
+        std::os::unix::fs::symlink(checkout.join("sub"), &exposed).unwrap();
+
+        assert!(super::is_git_backed(&exposed));
+    }
+
+    fn init_repo_with_subdir(dir: &Path, subdir: &str) {
+        std::fs::create_dir_all(dir.join(subdir)).unwrap();
+        init_repo(dir);
+        std::fs::write(dir.join(subdir).join("kata.sh"), "#!/bin/sh\necho hi\n").unwrap();
+        commit_all(dir, "init");
+    }
 }
