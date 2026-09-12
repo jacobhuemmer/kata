@@ -638,7 +638,8 @@ mod tests {
         );
         let mut s = spec(Some("#!/bin/sh"), file, dir.path().to_path_buf());
         s.timeout = Duration::from_secs(60); // never meant to fire; the test cancels instead
-        s.env.push(("READY".to_string(), ready.display().to_string()));
+        s.env
+            .push(("READY".to_string(), ready.display().to_string()));
 
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let handle = tokio::spawn(run(s, Some(cancel_rx)));

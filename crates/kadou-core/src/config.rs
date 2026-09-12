@@ -231,11 +231,9 @@ impl Config {
                 source,
             })?;
         edit(&mut doc);
-        write_atomic_0600(path, doc.to_string().as_bytes()).map_err(|source| {
-            ConfigError::Write {
-                path: path.to_path_buf(),
-                source,
-            }
+        write_atomic_0600(path, doc.to_string().as_bytes()).map_err(|source| ConfigError::Write {
+            path: path.to_path_buf(),
+            source,
         })
     }
 }

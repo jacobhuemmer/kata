@@ -119,7 +119,9 @@ pub fn propose(
         return Err(ProposeError::SourceTooLarge { len: source.len() });
     }
     if !valid_propose_id(input_id) {
-        return Err(ProposeError::InvalidId { id: input_id.to_string() });
+        return Err(ProposeError::InvalidId {
+            id: input_id.to_string(),
+        });
     }
 
     let (header, diagnostics) = kadou_core::parse_header(source);
@@ -274,7 +276,10 @@ mod tests {
             "a".repeat(schema::PROPOSE_SOURCE_MAX_BYTES)
         );
         let err = propose(state_dir.path(), kata_dir.path(), "sesami/big", &huge).unwrap_err();
-        assert!(matches!(err, ProposeError::SourceTooLarge { .. }), "{err:?}");
+        assert!(
+            matches!(err, ProposeError::SourceTooLarge { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]

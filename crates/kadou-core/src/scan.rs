@@ -150,7 +150,11 @@ fn scan_dir(dir: &Path, id_prefix: &str, out: &mut Vec<ScannedFile>) -> Result<(
         if file_candidates.contains_key(stem) {
             continue;
         }
-        out.push(validated_scan_file(id_prefix, stem, dir_path.join("kata.sh")));
+        out.push(validated_scan_file(
+            id_prefix,
+            stem,
+            dir_path.join("kata.sh"),
+        ));
     }
 
     for nd in namespace_dirs {
@@ -371,10 +375,7 @@ mod tests {
         assert!(files[0].error_count() > 0, "{:?}", files[0].diagnostics);
         let diag = &files[0].diagnostics[0];
         assert!(diag.message.contains("My_Kata"), "{diag:?}");
-        assert!(
-            diag.fix.as_deref().unwrap().contains("my-kata"),
-            "{diag:?}"
-        );
+        assert!(diag.fix.as_deref().unwrap().contains("my-kata"), "{diag:?}");
     }
 
     #[test]

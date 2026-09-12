@@ -761,7 +761,10 @@ mod tests {
     /// A header block of exactly `total` lines (the opener and closer both count, §4.3),
     /// padded with distinct `args:` entries so the fill lines are valid header content.
     fn header_with_total_lines(total: usize) -> String {
-        assert!(total >= 5, "need room for about, risk, args:, opener, closer");
+        assert!(
+            total >= 5,
+            "need room for about, risk, args:, opener, closer"
+        );
         let mut s = String::from("#!/bin/sh\n# ---\n# about: Test\n# risk:  low\n# args:\n");
         for n in 0..total - 5 {
             s.push_str(&format!("#   a{n}: text = v\n"));
