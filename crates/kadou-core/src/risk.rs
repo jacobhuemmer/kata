@@ -1,4 +1,5 @@
 use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,28 @@ impl fmt::Display for RiskLevel {
         f.write_str(self.as_str())
     }
 }
+
+/// The one place `low`/`medium`/`high`/`critical` text parses into a [`RiskLevel`] (C2,
+/// `docs/design/11-code-review.md`) — `kadou list --risk`, `kadou mcp serve --max-risk`, and
+/// `list_kata`'s `risk` argument all parse through this instead of each hand-rolling the same
+/// four-armed match.
+impl FromStr for RiskLevel {
+    type Err = UnknownRiskLevel;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "critical" => Ok(Self::Critical),
+            other => Err(UnknownRiskLevel(other.to_string())),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown risk level `{0}`")]
+pub struct UnknownRiskLevel(String);
 
 impl Default for RiskLevel {
     /// The lowest level, matching the default agent ceiling (§2 decision 5).
@@ -76,5 +99,14 @@ mod tests {
     #[test]
     fn default_is_low() {
         assert_eq!(RiskLevel::default(), RiskLevel::Low);
+    }
+
+    #[test]
+    fn from_str_parses_every_level_and_rejects_unknown_words() {
+        assert_eq!("low".parse(), Ok(RiskLevel::Low));
+        assert_eq!("medium".parse(), Ok(RiskLevel::Medium));
+        assert_eq!("high".parse(), Ok(RiskLevel::High));
+        assert_eq!("critical".parse(), Ok(RiskLevel::Critical));
+        assert!("mediun".parse::<RiskLevel>().is_err());
     }
 }

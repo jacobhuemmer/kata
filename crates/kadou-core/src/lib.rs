@@ -39,7 +39,7 @@ pub use last_args::{LastArgsError, LastArgsStore};
 pub use lookup::{LookupResult, find_kata, kata_from_scanned};
 pub use paths::{KadouPaths, PathsError, Resolved, discover, resolve};
 pub use resolve::{ResolveError, ResolvedNeed, ResolvedVar, resolve_args, resolve_needs};
-pub use risk::RiskLevel;
+pub use risk::{RiskLevel, UnknownRiskLevel};
 pub use scan::{ScanError, ScannedFile, scan_folder, scan_kata_dir};
 pub use vault::{
     GoImportSummary, GoVaultSource, Vault, VaultEntry, VaultError, VaultStore, decrypt_go_vault,
