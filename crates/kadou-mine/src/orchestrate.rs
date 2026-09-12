@@ -42,6 +42,10 @@ pub struct MineConfig {
     /// The run-wide scanned-bytes bound (`06` §3.5). Defaults to 2 GB; a test lowers it to
     /// prove the mid-transcript stop without needing a real multi-gigabyte fixture (B2).
     pub max_bytes_scanned: u64,
+    /// `--since <iso>` (`06` §3.2, §5.1 backfill trigger): a row whose `when` is strictly
+    /// before this cutoff is skipped before it is even counted, exactly as if it did not
+    /// exist for this run (D8, `docs/design/12-mvp-review.md` §3).
+    pub since: Option<String>,
 }
 
 impl MineConfig {
@@ -53,8 +57,26 @@ impl MineConfig {
             home_prefix: None,
             root_prefix: None,
             max_bytes_scanned: DEFAULT_MAX_BYTES_SCANNED,
+            since: None,
         }
     }
+}
+
+/// `true` when `row_when` should be considered at all under `--since` (`06` §3.2/§5.1): at or
+/// after the cutoff, or no cutoff was given. Fails open on an unparseable `row_when` or
+/// `since` -- rule 1's per-event `(path, bytes)` checkpoint is what actually bounds repeat
+/// work, so a malformed timestamp here must never silently drop real backlog.
+fn passes_since(row_when: &str, since: Option<&str>) -> bool {
+    let Some(since) = since else {
+        return true;
+    };
+    let (Some(row_time), Some(since_time)) = (
+        humantime::parse_rfc3339_weak(row_when).ok(),
+        humantime::parse_rfc3339_weak(since).ok(),
+    ) else {
+        return true;
+    };
+    row_time >= since_time
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -301,6 +323,9 @@ fn ingest_new_candidates(config: &MineConfig, home: &MineHome) -> IngestOutcome 
     };
 
     for row in &rows {
+        if !passes_since(&row.when, config.since.as_deref()) {
+            continue;
+        }
         if ingest::already_processed(&run.processed, &row.path, row.bytes) {
             continue;
         }
@@ -434,8 +459,14 @@ mod tests {
 
     #[test]
     fn passes_since_fails_open_on_an_unparseable_timestamp() {
-        assert!(passes_since("not-a-timestamp", Some("2026-01-01T00:00:00Z")));
-        assert!(passes_since("2026-01-01T00:00:00Z", Some("not-a-timestamp")));
+        assert!(passes_since(
+            "not-a-timestamp",
+            Some("2026-01-01T00:00:00Z")
+        ));
+        assert!(passes_since(
+            "2026-01-01T00:00:00Z",
+            Some("not-a-timestamp")
+        ));
     }
 
     #[test]

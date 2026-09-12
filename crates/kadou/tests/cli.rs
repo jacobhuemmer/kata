@@ -2096,7 +2096,7 @@ fn mine_run_rejects_watch_as_not_implemented() {
 }
 
 #[test]
-fn mine_run_since_warns_but_still_runs_the_full_backlog() {
+fn mine_run_since_before_every_fixture_row_runs_the_full_backlog() {
     let home = tempfile::tempdir().unwrap();
     kadou_in(home.path())
         .args([
@@ -2110,10 +2110,30 @@ fn mine_run_since_warns_but_still_runs_the_full_backlog() {
         ])
         .assert()
         .success()
-        .stderr(predicate::str::contains(
-            "--since is accepted but not yet a real filter",
-        ))
         .stdout(predicate::str::contains("queued: 1"));
+}
+
+#[test]
+fn mine_run_since_after_every_fixture_row_skips_the_whole_backlog() {
+    // D8 (`docs/design/12-mvp-review.md` §3): `--since` is a real per-row filter now, not a
+    // warned-about no-op -- every fixture row's `when` is in 2026-09, so a cutoff after that
+    // leaves nothing to ingest.
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .args([
+            "mine",
+            "run",
+            "--once",
+            "--since",
+            "2026-12-31T00:00:00Z",
+            "--index",
+            &mine_fixtures_index(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "events: 0 transcripts: 0 (missing 0) candidates: 0 clusters: 0 queued: 0",
+        ));
 }
 
 #[test]

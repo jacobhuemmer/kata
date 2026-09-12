@@ -2367,6 +2367,7 @@ fn load_redact_extra(config_dir: &Path) -> Vec<String> {
 fn mine_config(
     paths: &KadouPaths,
     index_override: Option<String>,
+    since: Option<String>,
 ) -> kadou_mine::orchestrate::MineConfig {
     let mut config = kadou_mine::orchestrate::MineConfig::new(
         default_sessions_index_path(index_override),
@@ -2374,12 +2375,15 @@ fn mine_config(
     );
     config.redact_extra = load_redact_extra(&paths.config_dir);
     config.home_prefix = std::env::var("HOME").ok();
+    config.since = since;
     config
 }
 
 /// `kadou mine run [--once] [--since ISO] [--index PATH]` (`06` §2-3, §5.1). `--watch` is
 /// explicitly optional in `06` §3.2 ("Optional: tail index.jsonl") and is not implemented this
-/// slice.
+/// slice. `--since` is a real per-row filter in [`kadou_mine::orchestrate::MineConfig::since`]
+/// (D8, `docs/design/12-mvp-review.md` §3): a row older than the cutoff is skipped before it
+/// is even counted.
 pub fn run_mine_run(
     _once: bool,
     watch: bool,
@@ -2392,17 +2396,8 @@ pub fn run_mine_run(
         );
         return ExitCode::from(2);
     }
-    if since.is_some() {
-        // `--since` (06 §5.1 backfill trigger) is accepted for CLI-shape parity but not yet
-        // wired to an ingest-layer filter this slice -- every unprocessed row is read
-        // regardless (the processed-record checkpoint is what actually bounds repeat work).
-        // See the handoff's interpretation calls.
-        eprintln!(
-            "warning: --since is accepted but not yet a real filter; running the full unprocessed backlog"
-        );
-    }
     let paths = resolve_paths();
-    let config = mine_config(&paths, index);
+    let config = mine_config(&paths, index, since);
     let summary = kadou_mine::orchestrate::run_once(&config);
     if summary.already_running {
         println!("already running");
