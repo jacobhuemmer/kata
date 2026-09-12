@@ -144,7 +144,7 @@ pub fn render_preview(preview: &Preview, styled: bool) -> String {
         " file   {}   sha {}\n",
         preview.file, preview.sha_short
     ));
-    out.push_str(" ↑↓ move   ↵ run   tab show   e edit   esc cancel\n");
+    out.push_str(" ↑↓ move   ↵ run   tab show   ^e edit   esc cancel\n");
     out
 }
 
@@ -154,16 +154,20 @@ pub fn render_preview(preview: &Preview, styled: bool) -> String {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerKey {
-    /// A printable character. `'e'` is the reserved edit hotkey (§9 slice 8 interpretation
-    /// call, in the handoff: the key table lists both "printable characters filter" and a
-    /// bare `e` action, so a literal `e` cannot be typed into the query in this
-    /// implementation).
+    /// A printable character, always appended to the query -- never intercepted as a hotkey
+    /// (see [`Self::Edit`]'s doc comment for why).
     Char(char),
     Backspace,
     Up,
     Down,
     Enter,
     Tab,
+    /// Open the highlighted kata in `$EDITOR` (§9 slice 8 interpretation call, in the
+    /// handoff: §7.3's key table lists bare `e` for this, but manual pty testing showed that
+    /// binding breaks typing any query containing the letter `e` -- extremely common in real
+    /// ids/about text -- since a `Char('e')` hotkey would have to preempt the character before
+    /// it reaches the query. Bound to `Ctrl+e` here instead; bare `e` types normally).
+    Edit,
     Escape,
 }
 
@@ -192,7 +196,7 @@ pub struct PickerState {
 /// backspacing always resets it to the top match, the same way fzf and friends behave.
 pub fn apply_key(state: &mut PickerState, key: PickerKey, match_count: usize) -> PickerAction {
     match key {
-        PickerKey::Char('e') => {
+        PickerKey::Edit => {
             if match_count == 0 {
                 PickerAction::Continue
             } else {
@@ -350,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_shows_the_full_kata_and_e_opens_the_editor() {
+    fn tab_shows_the_full_kata_and_ctrl_e_opens_the_editor() {
         let mut state = PickerState {
             query: String::new(),
             selected: 0,
@@ -360,9 +364,21 @@ mod tests {
             PickerAction::ShowFull(0)
         );
         assert_eq!(
-            apply_key(&mut state, PickerKey::Char('e'), 1),
+            apply_key(&mut state, PickerKey::Edit, 1),
             PickerAction::EditAndReturn(0)
         );
+    }
+
+    #[test]
+    fn a_literal_e_types_into_the_query_instead_of_opening_the_editor() {
+        // The regression this pins: §7.3's key table lists bare `e` for edit, but that binding
+        // makes it impossible to type any query containing the letter `e` -- confirmed by
+        // driving the real picker over a pty. `Char('e')` must behave exactly like every other
+        // printable character.
+        let mut state = PickerState::default();
+        let action = apply_key(&mut state, PickerKey::Char('e'), 5);
+        assert_eq!(action, PickerAction::Continue);
+        assert_eq!(state.query, "e");
     }
 
     #[test]

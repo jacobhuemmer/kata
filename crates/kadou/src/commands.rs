@@ -1286,6 +1286,11 @@ fn map_key(key: crossterm::event::KeyEvent) -> Option<ui::picker::PickerKey> {
         KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Some(ui::picker::PickerKey::Down)
         }
+        // Bound to Ctrl+e, not bare `e` -- see `ui::picker::PickerKey::Edit`'s doc comment for
+        // why bare `e` must stay a normal filter character.
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(ui::picker::PickerKey::Edit)
+        }
         KeyCode::Up => Some(ui::picker::PickerKey::Up),
         KeyCode::Down => Some(ui::picker::PickerKey::Down),
         KeyCode::Enter => Some(ui::picker::PickerKey::Enter),
