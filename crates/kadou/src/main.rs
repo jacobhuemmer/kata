@@ -189,16 +189,30 @@ enum MineAction {
         watch: bool,
         #[arg(long, value_name = "ISO")]
         since: Option<String>,
+        /// Overrides `~/Documents/Sessions/index.jsonl` (or `AGENT_SESSION_LEDGER_DIR`) --
+        /// mainly for pointing at a fixture directory (`06` §2.1).
+        #[arg(long, value_name = "PATH")]
+        index: Option<String>,
     },
     Status,
     List,
     Show {
         fingerprint: String,
     },
-    Review,
+    /// Lists queued drafts and how to act on each; `--dump <fingerprint>` prints one draft's
+    /// full (already-redacted) source (`06` §2.9, §4.5). Approve/reject/skip are the
+    /// dedicated subcommands below, not sub-actions of `review` itself.
+    Review {
+        #[arg(long, value_name = "FP")]
+        dump: Option<String>,
+        #[arg(long)]
+        redacted: bool,
+    },
     Approve {
         fingerprint: String,
-        #[arg(long, value_name = "F")]
+        /// The name the draft gets under `mined/`; defaults to the slug `kadou mine run`
+        /// derived from the automation's first step.
+        #[arg(long, value_name = "NAME")]
         into: Option<String>,
     },
     Reject {
@@ -206,7 +220,12 @@ enum MineAction {
         #[arg(long)]
         reason: String,
     },
-    InstallSchedule,
+    InstallSchedule {
+        /// Also runs `launchctl load` on macOS (never done by the writer itself, and never in
+        /// tests).
+        #[arg(long)]
+        load: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -278,7 +297,7 @@ fn main() -> std::process::ExitCode {
         Some(Command::History { limit, json }) => commands::run_history(limit, json),
         Some(Command::Completion { shell }) => commands::run_completion(&shell),
         Some(cmd @ Command::Trust { .. }) => stub("trust", 5, Some(&cmd)),
-        Some(cmd @ Command::Mine(_)) => stub("mine", 9, Some(&cmd)),
+        Some(Command::Mine(cmd)) => dispatch_mine(cmd.action),
     }
 }
 
@@ -300,6 +319,27 @@ fn dispatch_grant(action: GrantAction) -> std::process::ExitCode {
         } => commands::run_grant_approve(pending_id, confirm),
         GrantAction::Deny { pending_id } => commands::run_grant_deny(pending_id),
         GrantAction::Allow { id, any_version } => commands::run_grant_allow(id, any_version),
+    }
+}
+
+fn dispatch_mine(action: MineAction) -> std::process::ExitCode {
+    match action {
+        MineAction::Run {
+            once,
+            watch,
+            since,
+            index,
+        } => commands::run_mine_run(once, watch, since, index),
+        MineAction::Status => commands::run_mine_status(),
+        MineAction::List => commands::run_mine_list(),
+        MineAction::Show { fingerprint } => commands::run_mine_show(fingerprint),
+        MineAction::Review { dump, redacted } => commands::run_mine_review(dump, redacted),
+        MineAction::Approve { fingerprint, into } => commands::run_mine_approve(fingerprint, into),
+        MineAction::Reject {
+            fingerprint,
+            reason,
+        } => commands::run_mine_reject(fingerprint, reason),
+        MineAction::InstallSchedule { load } => commands::run_mine_install_schedule(load),
     }
 }
 

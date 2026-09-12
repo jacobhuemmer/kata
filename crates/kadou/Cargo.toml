@@ -16,6 +16,7 @@ inquire.workspace = true
 kadou-core = { path = "../kadou-core", version = "0.1.0" }
 kadou-exec = { path = "../kadou-exec", version = "0.1.0" }
 kadou-mcp = { path = "../kadou-mcp", version = "0.1.0" }
+kadou-mine = { path = "../kadou-mine", version = "0.1.0" }
 nucleo-matcher.workspace = true
 rust-embed.workspace = true
 serde_json.workspace = true
