@@ -32,6 +32,12 @@ pub struct StepWithParams {
 /// as-is in the script body for a human reviewer to fill in.
 const GENERIC_PARAM_NAMES: [&str; 6] = ["ID", "TS", "EMAIL", "HOST", "IP", "VAL"];
 
+/// Per-environment identifiers a human should supply fresh, not a value worth hardcoding as a
+/// default -- `06` §6.4's own worked example declares these `required: true` with no default
+/// at all, unlike `app`/`tail` which do get one. A side effect: the captured example value
+/// (an environment/context name) never gets written into the draft at all.
+const REQUIRED_NO_DEFAULT_NAMES: [&str; 2] = ["CONTEXT", "NAMESPACE"];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProposeError {
     /// Redaction could not be proven safe -- fail closed, drop the candidate (`06` §4.1).
@@ -115,6 +121,14 @@ fn declared_params(steps: &[StepWithParams]) -> BTreeMap<String, String> {
 }
 
 fn arg_for(name: &str, example_value: &str) -> Arg {
+    if REQUIRED_NO_DEFAULT_NAMES.contains(&name) {
+        return Arg {
+            name: name.to_ascii_lowercase(),
+            ty: ArgType::Text,
+            default: None,
+            help: None,
+        };
+    }
     let (ty, default) = match example_value.parse::<i64>() {
         Ok(n) => (ArgType::Int, ArgDefault::Int(n)),
         Err(_) => (ArgType::Text, ArgDefault::Text(example_value.to_string())),
@@ -164,13 +178,23 @@ fn replace_placeholder(text: &str, name: &str, replacement: &str) -> String {
     out
 }
 
-fn build_body(steps: &[StepWithParams], declared_names: &[String]) -> String {
+/// One declared param's env-assignment line: `${NAME:?msg}` when it has no header default
+/// (`REQUIRED_NO_DEFAULT_NAMES`), `${NAME:-value}` otherwise -- shell's own required-vs-
+/// defaulted syntax, matching whatever `arg_for` declared in the header.
+fn env_line_for(name: &str, redacted_value: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    if REQUIRED_NO_DEFAULT_NAMES.contains(&name) {
+        format!("{name}=\"${{{name}:?{lower} is required}}\"\n")
+    } else {
+        format!("{name}=\"${{{name}:-{redacted_value}}}\"\n")
+    }
+}
+
+fn build_body(steps: &[StepWithParams], declared: &BTreeMap<String, String>) -> String {
+    let declared_names: Vec<String> = declared.keys().cloned().collect();
     let mut env_lines = String::new();
-    for name in declared_names {
-        env_lines.push_str(&format!(
-            "{name}=\"${{{name}:?{lower} is required}}\"\n",
-            lower = name.to_ascii_lowercase()
-        ));
+    for (name, value) in declared {
+        env_lines.push_str(&env_line_for(name, value));
     }
 
     let mut main_body = String::new();
@@ -178,7 +202,7 @@ fn build_body(steps: &[StepWithParams], declared_names: &[String]) -> String {
     for (i, step) in steps.iter().enumerate() {
         main_body.push_str(&format!("  echo \"==> Step {}/{}\"\n", i + 1, total));
         main_body.push_str("  ");
-        main_body.push_str(&quote_declared_params(&step.template, declared_names));
+        main_body.push_str(&quote_declared_params(&step.template, &declared_names));
         main_body.push('\n');
     }
 
@@ -196,7 +220,10 @@ pub fn build_proposal(
     redact_extra: &[String],
 ) -> Result<Proposal, ProposeError> {
     let declared = declared_params(steps);
-    let declared_names: Vec<String> = declared.keys().cloned().collect();
+    let mut redacted_declared = BTreeMap::new();
+    for (name, value) in &declared {
+        redacted_declared.insert(name.clone(), redact_or_drop(value, redact_extra)?);
+    }
 
     let about_raw = format!(
         "Mined automation: {}",
@@ -208,13 +235,12 @@ pub fn build_proposal(
     let about = redact_or_drop(&about_raw, redact_extra)?;
     let about = about.chars().take(120).collect::<String>();
 
-    let mut args = Vec::new();
-    for (name, value) in &declared {
-        let redacted_value = redact_or_drop(value, redact_extra)?;
-        args.push(arg_for(name, &redacted_value));
-    }
+    let args: Vec<Arg> = redacted_declared
+        .iter()
+        .map(|(name, value)| arg_for(name, value))
+        .collect();
 
-    let body_raw = build_body(steps, &declared_names);
+    let body_raw = build_body(steps, &redacted_declared);
     let body = redact_or_drop(&body_raw, redact_extra)?;
 
     let kata_source = kadou_core::render_header(
