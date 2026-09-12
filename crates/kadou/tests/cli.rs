@@ -2216,7 +2216,8 @@ fn mine_review_lists_the_queue_and_the_next_commands() {
         .stdout(predicate::str::contains("risk=medium"))
         .stdout(predicate::str::contains("kadou mine show"))
         .stdout(predicate::str::contains("kadou mine approve"))
-        .stdout(predicate::str::contains("kadou mine reject"));
+        .stdout(predicate::str::contains("kadou mine reject"))
+        .stdout(predicate::str::contains("kadou mine skip"));
 }
 
 #[test]
@@ -2310,6 +2311,59 @@ fn mine_reject_on_an_unknown_fingerprint_is_a_clean_error() {
     let home = tempfile::tempdir().unwrap();
     kadou_in(home.path())
         .args(["mine", "reject", "deadbeef", "--reason", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no queued draft for fingerprint"));
+}
+
+#[test]
+fn mine_skip_leaves_the_draft_queued_and_a_later_run_does_not_re_propose_it() {
+    // D11 (`docs/design/12-mvp-review.md` §3): skip is never terminal -- the draft stays
+    // queued (06 §2.9 "skip: leave queued"), and a re-run over the same input queues nothing
+    // new because idempotency rule 3 already covers "already in queue/ in any state".
+    let home = tempfile::tempdir().unwrap();
+    mine_run_once(home.path());
+    let fingerprint = queued_fingerprint(home.path());
+    kadou_in(home.path())
+        .args(["mine", "skip", &fingerprint])
+        .assert()
+        .success()
+        .stdout(format!("skipped {fingerprint}\n"));
+
+    kadou_in(home.path())
+        .args(["mine", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&fingerprint));
+
+    kadou_in(home.path())
+        .args(["mine", "run", "--once", "--index", &mine_fixtures_index()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("queued: 0"));
+}
+
+#[test]
+fn mine_skip_can_be_followed_by_approve() {
+    let home = tempfile::tempdir().unwrap();
+    mine_run_once(home.path());
+    let fingerprint = queued_fingerprint(home.path());
+    kadou_in(home.path())
+        .args(["mine", "skip", &fingerprint])
+        .assert()
+        .success();
+
+    kadou_in(home.path())
+        .args(["mine", "approve", &fingerprint])
+        .assert()
+        .success();
+}
+
+#[test]
+fn mine_skip_on_an_unknown_fingerprint_is_a_clean_error() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .args(["mine", "skip", "deadbeef"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("no queued draft for fingerprint"));

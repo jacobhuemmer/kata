@@ -248,6 +248,29 @@ pub fn approve(home: &MineHome, fingerprint: &str, name: &str) -> Result<PathBuf
     Ok(target)
 }
 
+/// Records `skipped` and leaves the draft exactly as queued (`06` §2.9 "skip: leave queued";
+/// D11, `docs/design/12-mvp-review.md` §3). Unlike `approve`/`reject`, this is never terminal:
+/// it does not check or record any prior decision, so a fingerprint can be skipped any number
+/// of times and still be approved or rejected later.
+pub fn skip(home: &MineHome, fingerprint: &str) -> Result<(), ApproveError> {
+    if read_queue_entry(home, fingerprint).is_none() {
+        return Err(ApproveError::NotFound(fingerprint.to_string()));
+    }
+    append_audit(
+        home,
+        &AuditRow {
+            when: now_rfc3339(),
+            action: "skipped".to_string(),
+            fingerprint: fingerprint.to_string(),
+            actor: "user".to_string(),
+            reason: None,
+            catalog_id: None,
+            script_sha256: None,
+        },
+    )?;
+    Ok(())
+}
+
 /// Records `rejected` with a reason; the fingerprint is banned from re-queueing until
 /// `--force` is used by a future run (`06` §2.9, §3.4 rule 3).
 pub fn reject(home: &MineHome, fingerprint: &str, reason: &str) -> Result<(), ApproveError> {

@@ -2505,8 +2505,11 @@ pub fn run_mine_review(dump: Option<String>, _redacted: bool) -> ExitCode {
     }
     println!();
     println!("kadou mine show <fingerprint>              -- see the full redacted draft");
-    println!("kadou mine approve <fingerprint>           -- copy into mined/");
+    println!(
+        "kadou mine approve <fingerprint>           -- copy into mined/ (edit the file first, then approve)"
+    );
     println!("kadou mine reject <fingerprint> --reason …  -- ban this fingerprint");
+    println!("kadou mine skip <fingerprint>              -- leave it queued, come back later");
     ExitCode::SUCCESS
 }
 
@@ -2553,6 +2556,24 @@ pub fn run_mine_reject(fingerprint: String, reason: String) -> ExitCode {
     match kadou_mine::store::reject(&home, &fingerprint, &reason) {
         Ok(()) => {
             println!("rejected {fingerprint}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `kadou mine skip <fingerprint>` (`06` §2.9 "skip: leave queued"; D11, `docs/design/
+/// 12-mvp-review.md` §3): records the decision without changing the draft's queued state, and
+/// -- unlike reject -- never bans a later approval.
+pub fn run_mine_skip(fingerprint: String) -> ExitCode {
+    let paths = resolve_paths();
+    let home = kadou_mine::store::MineHome::new(&paths.state_dir);
+    match kadou_mine::store::skip(&home, &fingerprint) {
+        Ok(()) => {
+            println!("skipped {fingerprint}");
             ExitCode::SUCCESS
         }
         Err(err) => {

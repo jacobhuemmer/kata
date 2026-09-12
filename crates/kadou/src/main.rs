@@ -220,6 +220,12 @@ enum MineAction {
         #[arg(long)]
         reason: String,
     },
+    /// Records `skipped` and leaves the draft queued (`06` §2.9 "skip: leave queued") --
+    /// unlike approve/reject, never terminal: a skipped fingerprint can still be approved or
+    /// rejected later.
+    Skip {
+        fingerprint: String,
+    },
     InstallSchedule {
         /// Also runs `launchctl load` on macOS (never done by the writer itself, and never in
         /// tests).
@@ -339,6 +345,7 @@ fn dispatch_mine(action: MineAction) -> std::process::ExitCode {
             fingerprint,
             reason,
         } => commands::run_mine_reject(fingerprint, reason),
+        MineAction::Skip { fingerprint } => commands::run_mine_skip(fingerprint),
         MineAction::InstallSchedule { load } => commands::run_mine_install_schedule(load),
     }
 }

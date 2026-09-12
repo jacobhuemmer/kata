@@ -424,9 +424,19 @@ Heuristic parameter types: flags with closed value sets observed ≥ 3 times bec
 
 ### 2.9 Human review queue
 
-States: `queued` → `approved` | `edited` | `rejected` | `skipped`. `edited` is approved-with-diff.
+States: `queued` → `approved` | `rejected`, plus `skipped` (never terminal -- a skipped
+fingerprint can still be approved or rejected later). There is no separate `edited` state
+(amended from the original design; D11, `docs/design/12-mvp-review.md` §3): `docs/design/
+09-tui-decision.md` rules out a full-screen TUI in v1, and a walking approve/edit-in-`$EDITOR`
+review loop needs one to do well. The cheaper, `09`-compatible shape kadou ships instead: edit
+the queued `kata.sh`/`meta.json` files yourself with any editor, then run `kadou mine approve`
+-- "edited" is not a state the audit log needs, because the file on disk *is* the edit, and
+`approve` records exactly the same `approved` action either way.
 
-CLI (see §5): `dops mine review` walks the queue. Actions: approve, open editor, reject (reason required), skip. TUI optional later; CLI is enough for v1.
+CLI (see §5): `kadou mine review` lists the queue and prints the next commands
+(`show`/`approve`/`reject`/`skip`) rather than walking it interactively -- also a consequence of
+`09`'s no-TUI rule. `kadou mine skip <fingerprint>` records `skipped` and leaves the draft
+queued for a later pass; `kadou mine reject <fingerprint> --reason …` bans it.
 
 Approve copies the (possibly edited) pair into a **staging catalog** the operator already added or that `dops mine install-catalog` adds as inactive:
 
@@ -616,20 +626,21 @@ Miner never assigns `low` or `critical` automatically. `critical` is a human cho
 ### 4.5 Review-gate UX
 
 ```
-dops mine review
+kadou mine review
 ```
 
-Shows, per proposal: fingerprint, score, freq, unique sessions, agents, first/last seen, redacted template, draft yaml, draft script. Does **not** show source session bodies or cwd.
+Lists every queued proposal: fingerprint, score, freq, unique sessions, agents, first/last seen, redacted template, draft yaml, draft script -- and the next commands to run against a fingerprint (see below). Does **not** show source session bodies or cwd, and does **not** walk the queue interactively (`docs/design/09-tui-decision.md` rules out a full-screen TUI in v1; D11, `docs/design/12-mvp-review.md` §3).
 
-Keys / flags:
+Subcommands (each is its own `kadou mine <verb>`, not a key pressed inside `review`):
 
 | Action | Effect |
 |--------|--------|
-| `approve` | copy to staging catalog; audit `approved` |
-| `edit` | `$EDITOR` on yaml+sh; then approve |
-| `reject <reason>` | audit `rejected`; fingerprint banned |
-| `skip` | leave queued |
-| `dump --redacted` | print yaml+sh to stdout (already redacted) |
+| `approve <fp> [--into name]` | copy (the possibly hand-edited) `kata.sh` to `mined/`; audit `approved` |
+| `reject <fp> --reason …` | audit `rejected`; fingerprint banned from re-queueing |
+| `skip <fp>` | audit `skipped`; leave queued, never terminal |
+| `review --dump <fp> [--redacted]` | print yaml+sh to stdout (already redacted) |
+
+There is no separate `edit` action: edit the queued draft's files yourself with any editor, then run `approve` -- the file on disk already carries the edit, so the audit log only ever needs to say `approved`.
 
 MCP review tools require the same confirmation fields as high-risk runbooks (`_confirm_id`). Agents can list and read redacted drafts; they cannot approve without the confirm param, and even then the design default is **approve is human-only** (`dops mine review --allow-agent-approve` off).
 
@@ -640,7 +651,7 @@ MCP review tools require the same confirmation fields as high-risk runbooks (`_c
 ```json
 {
   "when": "ISO-8601",
-  "action": "queued | approved | edited | rejected | skipped | dropped_redaction",
+  "action": "queued | approved | rejected | skipped | dropped_redaction",
   "fingerprint": "hex",
   "actor": "user | schedule | mcp",
   "reason": "string?",
