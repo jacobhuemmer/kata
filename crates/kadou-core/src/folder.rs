@@ -250,7 +250,11 @@ pub fn remove_folder(kata_dir: &Path, folder: &str, force: bool) -> Result<(), F
     if !target.is_dir() {
         return Err(FolderError::NoSuchFolder(folder.to_string()));
     }
-    if git::has_local_changes(&target) && !force {
+    // A folder is only ever "dirty" when it's git-backed at all -- gating on is_git_backed
+    // here (the same --show-toplevel helper accept and the pending-record HEAD pin use)
+    // makes that explicit, rather than relying on has_local_changes' git-status failure
+    // happening to also read as "not dirty" for a plain folder.
+    if git::is_git_backed(&target) && git::has_local_changes(&target) && !force {
         return Err(FolderError::Dirty(folder.to_string()));
     }
 
