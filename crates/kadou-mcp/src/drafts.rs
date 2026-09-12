@@ -359,4 +359,82 @@ mod tests {
         assert_eq!(drafts.len(), 1);
         assert_eq!(drafts[0].header.as_ref().unwrap().about, "Different");
     }
+
+    // -----------------------------------------------------------------------
+    // kadou accept (§6.7, §9 slice 7)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn accept_prepares_a_diff_against_dev_null_for_a_new_kata_in_its_own_folder() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(kata_dir.path().join("ops")).unwrap();
+        propose(state_dir.path(), kata_dir.path(), "ops/hello-team", HELLO).unwrap();
+
+        let prep = prepare_accept(state_dir.path(), kata_dir.path(), "ops/hello-team", None)
+            .unwrap();
+
+        assert_eq!(prep.new_id, "ops/hello-team");
+        assert_eq!(prep.target_path, kata_dir.path().join("ops/hello-team.sh"));
+        assert!(prep.diff.contains("/dev/null"));
+        assert!(!prep.target_path.exists(), "apply hasn't run yet");
+    }
+
+    #[test]
+    fn apply_accept_writes_the_kata_and_removes_the_draft() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(kata_dir.path().join("ops")).unwrap();
+        propose(state_dir.path(), kata_dir.path(), "ops/hello-team", HELLO).unwrap();
+        let prep = prepare_accept(state_dir.path(), kata_dir.path(), "ops/hello-team", None)
+            .unwrap();
+
+        apply_accept(&prep).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&prep.target_path).unwrap(),
+            HELLO
+        );
+        assert!(
+            !prep.draft_path.exists(),
+            "the draft must be gone after accept"
+        );
+    }
+
+    #[test]
+    fn accept_into_a_different_folder_uses_only_the_drafts_own_name() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(kata_dir.path().join("sesami")).unwrap();
+        std::fs::create_dir_all(kata_dir.path().join("ops")).unwrap();
+        propose(state_dir.path(), kata_dir.path(), "sesami/argocd-sync", HELLO).unwrap();
+
+        let prep = prepare_accept(
+            state_dir.path(),
+            kata_dir.path(),
+            "sesami/argocd-sync",
+            Some("ops"),
+        )
+        .unwrap();
+
+        assert_eq!(prep.new_id, "ops/argocd-sync");
+        assert_eq!(prep.target_path, kata_dir.path().join("ops/argocd-sync.sh"));
+    }
+
+    #[test]
+    fn accept_diffs_against_the_existing_kata_at_the_target_id() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(kata_dir.path().join("ops")).unwrap();
+        std::fs::write(kata_dir.path().join("ops/hello-team.sh"), HELLO).unwrap();
+        let changed = "#!/bin/sh\n# ---\n# about: Say hello loudly\n# risk:  low\n# ---\necho HI\n";
+        propose(state_dir.path(), kata_dir.path(), "ops/hello-team", changed).unwrap();
+
+        let prep = prepare_accept(state_dir.path(), kata_dir.path(), "ops/hello-team", None)
+            .unwrap();
+
+        assert!(!prep.diff.contains("/dev/null"));
+        assert!(prep.diff.contains("-echo hi"));
+        assert!(prep.diff.contains("+echo HI"));
+    }
 }
