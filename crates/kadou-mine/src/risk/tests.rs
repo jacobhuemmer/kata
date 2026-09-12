@@ -17,6 +17,22 @@ fn mutating_verbs_default_to_high() {
 }
 
 #[test]
+fn git_mutating_verbs_default_to_high_via_the_catchall() {
+    // `git` only has an explicit rule for the read-only verbs below (log/status/diff ->
+    // Medium); a mutating verb like `push --force` matches no arm at all and falls through
+    // to `default_risk`'s `unwrap_or(RiskLevel::High)`, the same path an unrecognized tool
+    // takes. Pins that fall-through outcome, not a dedicated `git` rule -- there isn't one.
+    for template in [
+        "git push --force",
+        "git push --force-with-lease origin main",
+        "git reset --hard HEAD~1",
+        "git commit -am wip",
+    ] {
+        assert_eq!(default_risk(template), RiskLevel::High, "{template}");
+    }
+}
+
+#[test]
 fn read_only_verbs_default_to_medium_never_low() {
     for template in [
         "kubectl --context $CONTEXT -n $NAMESPACE get pods -l app=$APP",
