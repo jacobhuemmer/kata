@@ -129,6 +129,29 @@ fn a_catalog_conflict_heavily_penalizes_the_score() {
 }
 
 #[test]
+fn score_matches_a_hand_computed_golden_value() {
+    // now == last_seen exactly -> recency = exp(0) = 1.0; three members, one agent, three
+    // sessions -> freq=3 (freq_term = ln(4)), unique_sessions=3, unique_agents factor = 1.0;
+    // step_count 1 (< the 3-step bonus threshold) -> sequence_bonus = 1.0; no catalog
+    // conflict -> penalty = 1.0. score = ln(4) * 1 * 3 * 1 * 1 * 1 = 3 * ln(4).
+    let last_seen = "2026-09-09T00:00:00Z";
+    let now = humantime::parse_rfc3339(last_seen).unwrap();
+    let c = cluster(
+        vec![
+            member("codex", "s1", last_seen),
+            member("codex", "s2", last_seen),
+            member("codex", "s3", last_seen),
+        ],
+        1,
+        last_seen,
+    );
+
+    let expected = 3.0 * 4.0_f64.ln();
+    let actual = score(&c, now, false);
+    assert!((actual - expected).abs() < 1e-9, "{actual} vs {expected}");
+}
+
+#[test]
 fn score_is_finite_and_nonnegative() {
     let now = SystemTime::now();
     let c = cluster(
