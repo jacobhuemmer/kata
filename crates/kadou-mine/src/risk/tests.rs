@@ -49,6 +49,9 @@ fn never_defaults_to_low_or_critical_across_every_signal() {
         "totally unknown command",
     ] {
         let risk = default_risk(template);
-        assert!(risk == RiskLevel::Medium || risk == RiskLevel::High, "{template}: {risk}");
+        assert!(
+            risk == RiskLevel::Medium || risk == RiskLevel::High,
+            "{template}: {risk}"
+        );
     }
 }
