@@ -2348,6 +2348,16 @@ mod tests {
     fn elapsed_since_parses_rfc3339_and_saturates_on_garbage() {
         let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
         assert!(elapsed_since(&now) < Duration::from_secs(5));
+
+        let ten_seconds_ago =
+            humantime::format_rfc3339_seconds(SystemTime::now() - Duration::from_secs(10))
+                .to_string();
+        let elapsed = elapsed_since(&ten_seconds_ago);
+        assert!(
+            elapsed >= Duration::from_secs(9) && elapsed <= Duration::from_secs(15),
+            "expected roughly 10s, got {elapsed:?}"
+        );
+
         assert_eq!(elapsed_since("not a timestamp"), Duration::default());
     }
 
@@ -2411,6 +2421,76 @@ mod tests {
 
         let row = build_folder_row(&kata_dir, "broken", RiskLevel::Critical, &Vault::default());
         assert!(row.error_count > 0);
+    }
+
+    fn sample_kata(id: &str, risk: RiskLevel) -> Kata {
+        Kata {
+            id: id.to_string(),
+            path: PathBuf::from(format!("{id}.sh")),
+            about: "About".to_string(),
+            risk,
+            needs: Vec::new(),
+            args: Vec::new(),
+            alias: Vec::new(),
+            timeout: None,
+            notes: None,
+            shebang: None,
+        }
+    }
+
+    #[test]
+    fn run_frame_header_reports_needs_satisfaction_only_when_the_kata_has_any() {
+        let kata = sample_kata("ops/x", RiskLevel::Low);
+        let args = vec![kadou_core::ResolvedVar {
+            name: "branch".to_string(),
+            env_name: "BRANCH".to_string(),
+            value: "main".to_string(),
+        }];
+
+        let no_needs = run_frame_header(&kata, &args, &[], false);
+        assert!(!no_needs.contains("needs"));
+        assert!(no_needs.contains("branch=main"));
+
+        let satisfied = kadou_core::ResolvedNeed {
+            name: "token".to_string(),
+            env_name: "TOKEN".to_string(),
+            value: Some("x".to_string()),
+            secret: true,
+        };
+        let with_satisfied_need =
+            run_frame_header(&kata, &args, std::slice::from_ref(&satisfied), false);
+        assert!(with_satisfied_need.contains("needs  ✓ vault"));
+
+        let missing = kadou_core::ResolvedNeed {
+            name: "token".to_string(),
+            env_name: "TOKEN".to_string(),
+            value: None,
+            secret: false,
+        };
+        let with_missing_need = run_frame_header(&kata, &args, &[missing], false);
+        assert!(with_missing_need.contains("needs  ✗ missing"));
+    }
+
+    #[test]
+    fn build_pick_candidates_respects_the_human_ceiling() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_under(dir.path());
+        let kata_dir = paths.kata_dir();
+        std::fs::create_dir_all(kata_dir.join("ops")).unwrap();
+        std::fs::write(
+            kata_dir.join("ops/low.sh"),
+            "#!/bin/sh\n# ---\n# about: Low\n# risk:  low\n# ---\necho hi\n",
+        )
+        .unwrap();
+        std::fs::write(
+            kata_dir.join("ops/crit.sh"),
+            "#!/bin/sh\n# ---\n# about: Crit\n# risk:  critical\n# ---\necho hi\n",
+        )
+        .unwrap();
+
+        let candidates = build_pick_candidates(&paths, &Config::default());
+        assert_eq!(candidates.len(), 1, "default ceiling is medium");
+        assert_eq!(candidates[0].id, "ops/low");
     }
 
     #[test]
