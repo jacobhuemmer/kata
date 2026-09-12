@@ -53,7 +53,12 @@ fn different_templates_produce_different_fingerprints() {
 
 #[test]
 fn a_prefix_extension_merges_into_the_same_cluster() {
-    let base = candidate(&["kubectl -n $NAMESPACE get pods"], "codex", "s1", "2026-09-01T00:00:00Z");
+    let base = candidate(
+        &["kubectl -n $NAMESPACE get pods"],
+        "codex",
+        "s1",
+        "2026-09-01T00:00:00Z",
+    );
     let extended = candidate(
         &["kubectl -n $NAMESPACE get pods | tail -n $N"],
         "codex",
@@ -70,7 +75,12 @@ fn a_prefix_extension_merges_into_the_same_cluster() {
 #[test]
 fn unrelated_templates_stay_in_separate_clusters() {
     let a = candidate(&["git status"], "codex", "s1", "2026-09-01T00:00:00Z");
-    let b = candidate(&["helm upgrade release chart"], "grok", "s2", "2026-09-02T00:00:00Z");
+    let b = candidate(
+        &["helm upgrade release chart"],
+        "grok",
+        "s2",
+        "2026-09-02T00:00:00Z",
+    );
 
     let clusters = cluster_candidates(&[a, b]);
 
