@@ -372,6 +372,37 @@ mod tests {
     }
 
     #[test]
+    fn get_folder_refuses_an_uppercase_first_character_even_when_the_rest_is_lowercase() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let url = bare_fixture_url(fixture_root.path());
+
+        let err = super::get_folder(kata_dir.path(), &url, Some("Team"), None, None).unwrap_err();
+        assert!(matches!(err, super::FolderError::InvalidName(_)), "{err:?}");
+    }
+
+    #[test]
+    fn get_folder_refuses_an_underscore_after_a_valid_first_character() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let url = bare_fixture_url(fixture_root.path());
+
+        let err =
+            super::get_folder(kata_dir.path(), &url, Some("team_two"), None, None).unwrap_err();
+        assert!(matches!(err, super::FolderError::InvalidName(_)), "{err:?}");
+    }
+
+    #[test]
+    fn get_folder_accepts_hyphens_and_digits_in_the_folder_name() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let url = bare_fixture_url(fixture_root.path());
+
+        let target = super::get_folder(kata_dir.path(), &url, Some("team-2"), None, None).unwrap();
+        assert_eq!(target, kata_dir.path().join("team-2"));
+    }
+
+    #[test]
     fn get_folder_defaults_the_folder_name_from_the_url() {
         let kata_dir = tempfile::tempdir().unwrap();
         let fixture_root = tempfile::tempdir().unwrap();
