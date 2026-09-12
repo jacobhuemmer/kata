@@ -58,6 +58,19 @@ fn write_kata(kata_dir: &Path, rel: &str, content: &str) {
     std::fs::write(path, content).unwrap();
 }
 
+/// Polls `condition` until it is `true`, or panics with `what` after a generous (5 s) real-time
+/// deadline. Used instead of a fixed `sleep` so a test's pass/fail depends on *ordering*
+/// (something happened) rather than a millisecond budget a loaded machine can blow through
+/// (B5, `docs/design/12-mvp-review.md` §5 L4 — the same technique `kadou-exec`'s G1 fix
+/// applied via a readiness file).
+async fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !condition() {
+        assert!(std::time::Instant::now() < deadline, "{what}");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
 type Client = rmcp::service::RunningService<rmcp::RoleClient, ()>;
 
 async fn spawn_server(state: ServerState) -> Client {
@@ -482,11 +495,19 @@ async fn mcp_never_writes_the_vault() {
 
 #[tokio::test]
 async fn max_wait_returns_running_with_a_pollable_log_path() {
-    let home = setup_sesami(|c| c.mcp.max_wait = std::time::Duration::from_millis(150));
+    // B5/L4 (`docs/design/12-mvp-review.md` §2 P1/§5/§6): the kata used to be a bare `sleep
+    // 1`, racing `mcp.max_wait` against a real wall-clock sleep, then a fixed
+    // `tokio::time::sleep(2)` raced the child actually finishing -- both millisecond budgets
+    // a loaded machine can blow through (§0 reproduced one failure in four full workspace
+    // runs). The kata now blocks on a `go` file this test only creates *after* asserting
+    // `status: "running"`, so `mcp.max_wait` firing first is guaranteed by ordering, not
+    // timing; and the completion check polls for "done" instead of sleeping a fixed budget.
+    let home = setup_sesami(|c| c.mcp.max_wait = std::time::Duration::from_millis(50));
+    let kata_dir = home.paths.kata_dir().join("team");
     write_kata(
         &home.paths.kata_dir(),
         "team/slow.sh",
-        "#!/bin/sh\n# ---\n# about: Slow\n# risk:  low\n# ---\nsleep 1\necho done\n",
+        "#!/bin/sh\n# ---\n# about: Slow\n# risk:  low\n# ---\nwhile [ ! -f \"$KADOU_DIR/go\" ]; do sleep 0.02; done\necho done\n",
     );
 
     let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
@@ -498,25 +519,29 @@ async fn max_wait_returns_running_with_a_pollable_log_path() {
     let log_path = PathBuf::from(value["log_path"].as_str().unwrap());
     assert!(log_path.is_file(), "log_path must already be a real file");
 
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    let log = std::fs::read_to_string(&log_path).unwrap();
-    assert!(
-        log.contains("done"),
-        "background run should finish and update the log: {log}"
-    );
+    // The child is still blocked on `go` -- unblock it, then wait for it to actually finish.
+    std::fs::write(kata_dir.join("go"), b"").unwrap();
+    wait_for("background run should finish and update the log", || {
+        std::fs::read_to_string(&log_path).is_ok_and(|log| log.contains("done"))
+    })
+    .await;
 }
 
 #[tokio::test]
 async fn max_wait_returns_running_with_a_log_that_already_has_partial_output() {
     // R2/I-7: a status: running log must already hold the output a kata has produced so far —
-    // not stay empty until the background run finishes. The kata echoes a line and then
-    // sleeps far longer than both `mcp.max_wait` and this test's own poll deadline, so a log
-    // update observed before either of those elapses proves it happened mid-run.
-    let home = setup_sesami(|c| c.mcp.max_wait = std::time::Duration::from_millis(100));
+    // not stay empty until the background run finishes.
+    //
+    // B5/L4: the kata used to sleep 5 (a real wall-clock budget) between its first echo and
+    // its second; this test now holds the kata on a `go` file after its first line, so
+    // "the run must not have finished yet" is true by construction rather than by racing a
+    // sleep duration against however long the machine takes to schedule the process.
+    let home = setup_sesami(|c| c.mcp.max_wait = std::time::Duration::from_millis(50));
+    let kata_dir = home.paths.kata_dir().join("team");
     write_kata(
         &home.paths.kata_dir(),
         "team/slow.sh",
-        "#!/bin/sh\n# ---\n# about: Slow\n# risk:  low\n# ---\necho first-line\nsleep 5\necho done\n",
+        "#!/bin/sh\n# ---\n# about: Slow\n# risk:  low\n# ---\necho first-line\nwhile [ ! -f \"$KADOU_DIR/go\" ]; do sleep 0.02; done\necho done\n",
     );
 
     let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
@@ -527,22 +552,22 @@ async fn max_wait_returns_running_with_a_log_that_already_has_partial_output() {
     assert_eq!(value["status"], "running");
     let log_path = PathBuf::from(value["log_path"].as_str().unwrap());
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    loop {
-        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-        if log.contains("first-line") {
-            assert!(
-                !log.contains("done"),
-                "the run must not have finished yet: {log}"
-            );
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "log never gained the first line while the run was still in flight"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
+    wait_for("log never gained the first line while the run was still in flight", || {
+        std::fs::read_to_string(&log_path).is_ok_and(|log| log.contains("first-line"))
+    })
+    .await;
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    assert!(
+        !log.contains("done"),
+        "the run must not have finished yet: {log}"
+    );
+
+    // Unblock the child so it doesn't linger past this test.
+    std::fs::write(kata_dir.join("go"), b"").unwrap();
+    wait_for("background run should finish after go", || {
+        std::fs::read_to_string(&log_path).is_ok_and(|log| log.contains("done"))
+    })
+    .await;
 }
 
 #[tokio::test]
