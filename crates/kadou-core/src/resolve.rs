@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn need_with_header_default_ignores_a_vault_entry_and_stays_plain() {
+    fn a_vault_entry_overrides_a_header_default_and_carries_its_own_secret_bit() {
         let k = kata(
             vec![],
             vec![Need {
@@ -342,12 +342,15 @@ mod tests {
             }],
         );
         let mut vault = Vault::default();
-        // Even a secret-flagged vault entry can't override a header default: a default in
-        // a git-tracked file is by definition not a secret (§4.4).
+        // §4.4: "Resolution: vault entry, else default, else missing." A vault entry always
+        // wins over a header default, and it carries its own secret bit.
         vault.set("jenkins_url", "https://vault.example.com", true);
         let resolved = resolve_needs(&k, &vault);
-        assert_eq!(resolved[0].value.as_deref(), Some("https://ci.example.com"));
-        assert!(!resolved[0].secret);
+        assert_eq!(
+            resolved[0].value.as_deref(),
+            Some("https://vault.example.com")
+        );
+        assert!(resolved[0].secret);
     }
 
     #[test]
