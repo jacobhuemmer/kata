@@ -404,6 +404,25 @@ fn list_on_a_fresh_home_shows_the_five_starter_kata() {
 }
 
 #[test]
+fn first_run_starter_kata_use_target_dir_not_path_as_the_arg_name() {
+    // §7.7: "Arg names use target_dir, not path" -- path.to_ascii_uppercase() is PATH, which
+    // clobbers the shell's own $PATH. Pins the three starter kata that take a directory arg.
+    let home = tempfile::tempdir().unwrap();
+    for id in [
+        "starter/disk-usage",
+        "starter/git-status",
+        "starter/list-path",
+    ] {
+        kadou_in(home.path())
+            .args(["show", id])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("  target_dir = "))
+            .stdout(predicate::str::contains("env     TARGET_DIR"));
+    }
+}
+
+#[test]
 fn import_then_list_still_shows_the_starter_kata() {
     // Reproduces the slice-5 defect (D6): importing a team folder first used to
     // permanently prevent the starter kata from ever materializing, since `kata_dir`
