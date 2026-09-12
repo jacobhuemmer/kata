@@ -22,7 +22,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufReadExt as _, AsyncRead};
+use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncWriteExt as _};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 
@@ -233,9 +233,28 @@ pub async fn run(
     let out_task = tokio::spawn(pump_lines(stdout, tx.clone()));
     let err_task = tokio::spawn(pump_lines(stderr, tx.clone()));
     drop(tx);
+    let redact = spec.redact.clone();
+    let log_sink = spec.log_sink.clone();
     let collector = tokio::spawn(async move {
+        let mut log_file = match &log_sink {
+            Some(path) => tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .await
+                .ok(),
+            None => None,
+        };
         let mut lines = Vec::new();
         while let Some(line) = rx.recv().await {
+            let line = match &redact {
+                Some(f) => f(&line),
+                None => line,
+            };
+            if let Some(file) = &mut log_file {
+                let _ = file.write_all(line.as_bytes()).await;
+                let _ = file.write_all(b"\n").await;
+                let _ = file.flush().await;
+            }
             lines.push(line);
         }
         lines
