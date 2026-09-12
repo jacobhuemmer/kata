@@ -140,7 +140,7 @@ pub fn parse_header(source: &str) -> (Option<ParsedHeader>, Vec<Diagnostic>) {
     // not contain a tab, and the whole block must fit in MAX_HEADER_LINES.
     let mut close_idx = None;
     let mut i = open_idx + 1;
-    while i < lines.len() && i <= open_idx + MAX_HEADER_LINES {
+    while i < lines.len() && i <= open_idx + MAX_HEADER_LINES - 1 {
         let line = lines[i];
         if line.trim_end() == "# ---" {
             close_idx = Some(i);
