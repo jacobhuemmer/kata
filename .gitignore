@@ -1,3 +1,5 @@
 target/
 _worktrees/
 .DS_Store
+mutants.out/
+mutants.out.old/

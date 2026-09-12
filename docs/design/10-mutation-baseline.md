@@ -237,3 +237,117 @@ existing duplex test (2 misses, cheap but small); the 18
 `#[cfg(feature = "keyring")]`/`#[cfg(not(unix))]` dead-code artifacts (need a separate
 `--features keyring` run, not a new test, per the caveat above); `server.rs::serve_stdio`
 (thin `rmcp` transport wiring, hard to test without a real stdio subprocess, low value).
+
+## 2026-09-12 re-measurement (slice B refactor)
+
+Measured on `sd/dops/refactor-b` after the slice B refactor (R2/R6/R7/R11/R12/R13, the lint
+rollout, and the mutation-baseline ranked test additions #1-2 and #4-10 above), with the same
+`cargo-mutants` v27.1.0 and `.cargo/mutants.toml`. This section is additive — it does not
+replace the 2026-09-11 baseline above, which stays as the historical record of where the
+project started.
+
+```
+cargo mutants --workspace -j 4
+```
+
+Ran on the same 18-core Apple Silicon Mac at `-j 4`. **925 mutants tested in ~18 minutes**:
+662 caught, 117 missed, 144 unviable, 2 timeouts (`header.rs::find_closer`,
+`tools.rs::gate` — both ordinary "mutant makes the code loop/hang" timeouts, not test
+infrastructure problems). No sharding needed.
+
+### Known blocker resolved: `kadou` is now measured
+
+R15 (refactor A, already landed on `main` before this slice started) moved `crates/kadou`'s
+`assert_cmd`-based subprocess tests out of `src/main.rs`'s own unit-test module and into
+`crates/kadou/tests/cli.rs`, where `CARGO_BIN_EXE_kadou` is actually set. `cargo test
+--workspace` passes cleanly now, so `.cargo/mutants.toml` no longer needs to exclude
+`crates/kadou/**` — only `crates/kadou-mine/**` (still an empty stub) and `kadou`'s own
+`fn main` (never exercised by `cargo test`, only by the built binary) are excluded. `kadou` is
+mutation-tested here for the first time: 92 viable mutants, 75 caught, 17 missed.
+
+### Per-crate counts
+
+| Crate | Total | Caught | Missed | Timeout | Unviable | Caught ratio (of viable) |
+|---|---|---|---|---|---|---|
+| kadou-core | 431 | 371 | 59 | 1 | — | 371/431 = **86.1%** |
+| kadou-exec | 33 | 27 | 6 | 0 | — | 27/33 = **81.8%** |
+| kadou-mcp | 225 | 189 | 35 | 1 | — | 189/225 = **84.0%** |
+| kadou | 92 | 75 | 17 | 0 | — | 75/92 = **81.5%** |
+| **Total** | **781** | **662** | **117** | **2** | **144** | 662/781 = **84.8%** |
+
+(`unviable` isn't split per crate above the same way the 2026-09-11 table did — the remainder
+of each crate's total mutant count that isn't caught/missed/timeout is unviable; the workspace
+row's 144 is the sum. Same "caught / (caught + missed + timeout)" definition as before.)
+
+Every measured crate improved over the 2026-09-11 baseline, and `kadou` is now measured at
+all: kadou-core 80.2%→86.1%, kadou-exec 79.5%→81.8%, kadou-mcp 57.3%→84.0% (the ranked test
+additions #1-4 above specifically targeted `kadou-mcp/tools.rs`'s `truncate_output`/
+`last_non_empty_line`/`list_kata`/`describe_kata` clusters, which were most of its old gap).
+
+### CI ratchet (`.github/workflows/ci.yml`, job `mutants`)
+
+Floors are this re-measurement's caught ratio, rounded down to the nearest 5%:
+
+| Crate | Old floor (2026-09-11) | New floor (2026-09-12) |
+|---|---|---|
+| kadou-core | 80% | 85% |
+| kadou-exec | 75% | 80% |
+| kadou-mcp | 55% | 80% |
+| kadou | (unmeasured) | 80% |
+
+### Remaining misses, by crate
+
+**`kadou` (17 missed, all `commands.rs`)** — thin CLI plumbing that's exercised through
+integration tests for its happy paths but not every branch: `list_rows`/
+`list_rows_for_folder`'s boundary comparisons and risk-equality checks, `run_show`'s
+secret-need masking guard, `grant_status_label`'s expiry guard, `validate_pending_record`'s
+mismatch check, and three whole-function mutants on `materialize_starter_for_bare_invocation`/
+`auto_import_go_vault`/`check_all` (side-effecting or filesystem-touching paths that are
+awkward to assert on without a heavier integration fixture). None of these touch a safety
+invariant; they're `--verbose`/edge-case output-shape gaps, same character as the 2026-09-11
+`kadou-mcp` list/describe gaps.
+
+**`kadou-core` (59 missed)** — 17 of the 59 are the same `#[cfg(feature = "keyring")]`
+dead-code artifact as the 2026-09-11 baseline (`vault.rs`, keyring off by default; excluding
+them gives a true ratio of 371/414 = 89.6%, but the floor above uses the as-measured 86.1%,
+same policy as before). Of the 42 real misses: `header.rs` still has the largest cluster (15,
+mostly `parse_keys`'s column-arithmetic and a few compound-condition guards in
+`is_valid_id_segment`/`parse_type`/`coerce_default`/`render_arg_line` — narrower than the
+2026-09-11 baseline's 25 after the boundary-value tests added there, but the exact-arithmetic
+column math was never targeted); `history.rs` (5, unchanged from before — timestamp/initiator
+field values and the exact `logs_dir` path still aren't asserted); `redact.rs` (5, the
+`percent_encode` URL-encoding path noted as low-priority before, plus a new `<=` boundary at
+`redact_all`'s `MIN_SECRET_LEN` check introduced by R2's move into this crate); `config.rs`
+(5) and `scan.rs` (4, one new: `classify_entries`'s dotfile-skip check, from the R7 split of
+`scan_dir`); `import.rs`, `runner.rs`, `vault.rs`'s non-keyring accessors (5, unchanged —
+`Vault::remove`/`is_empty`/`len` still have no direct unit test), `resolve.rs`, and
+`fsutil.rs` (1-3 each).
+
+**`kadou-mcp` (35 missed)** — down from 71 after ranked additions #1-4 landed
+(`truncate_output`/`last_non_empty_line`/`list_kata`/`parse_risk` are now well covered).
+Remaining: `tools.rs` (17, mostly the R7 split's new seams — `draft_rows`'s dedup guard,
+`read_source_capped`'s byte-counter arithmetic, `json_args_to_strings`'s `Number`/`Bool`
+match arms — plus `truncate_output`'s exact-boundary `>` vs `>=` at the cap itself, one step
+narrower than the gap the ranked test closed); `pending.rs` (7, new surface from R11 —
+`short_pending_id`'s whole-function mutants and `args_hash`'s length-prefix arithmetic,
+`is_expired`'s boundary, and `delete`'s not-found guard); `notify.rs` (5, unchanged — the
+grant-notification text and its `bool` return aren't asserted); `drafts.rs` (3) and
+`server.rs` (2, `serve_stdio`/`get_info`, unchanged, still low-value per the note above).
+
+**`kadou-exec` (6 missed)** — 5 of 6 are the `#[cfg(not(unix))]` dead-code artifact
+(`exit_code_of`'s non-Unix fallback, `terminate`'s non-Unix fallback) confirmed by direct
+inspection to be a different code path than the `#[cfg(unix)]` branch the new self-signaling
+test (`a_kata_that_signals_itself_reports_the_negative_signal_as_its_exit_code`) exercises —
+same kind of artifact as `terminate`'s 2026-09-11 miss, just doubled since `exit_code_of`
+itself is now also `#[cfg]`-split. The one real miss is the manual `Debug for RunSpec` impl
+(added because `RunSpec.redact`'s closure field isn't `Debug`) — its formatted output is never
+asserted; low value, `Debug` output isn't part of any contract.
+
+### What this pass did not attempt
+
+Lint rollout phases 2/3 (workspace-wide `pedantic`/`nursery` groups at `warn`, per
+`docs/design/11-code-review.md` §6) were out of this pass's time budget after the mutation
+top-10 and CI floor work — phase 1 (the `deny` set: `unwrap_used`, `expect_used`,
+`too_many_lines`, `cognitive_complexity`, `redundant_clone`, `cast_possible_truncation`,
+`cast_possible_wrap`, `cast_sign_loss`) is in place and enforced in CI, but `pedantic`/
+`nursery` at `warn` were not added. Left for a follow-up slice.

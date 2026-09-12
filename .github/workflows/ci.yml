@@ -73,14 +73,15 @@ jobs:
   # Mutation testing ratchet (docs/design/10-mutation-baseline.md has the measured baseline
   # and the exact commands). macOS only, like `test`/`msrv` above, since kadou-exec's process
   # tests are platform-sensitive and this exercises the same binaries. `.cargo/mutants.toml`
-  # excludes the `kadou` bin crate (its unit tests can't run at all right now — see the doc's
-  # "Known blocker" section) and the empty `kadou-mine` stub, so this only covers kadou-core,
-  # kadou-exec, and kadou-mcp.
+  # excludes only the empty `kadou-mine` stub and `kadou`'s own `fn main` (never exercised by
+  # `cargo test`, only by the built binary `tests/cli.rs` drives) — every other function in
+  # every crate, `kadou` included, is covered now that R15 moved the CLI's subprocess tests
+  # into a real integration test target.
   #
   # This job has never actually run under Actions — the repo isn't hosted on GitHub yet (see
   # the note at the top of this file) — so its real CI wall-clock time is unverified. The
-  # local baseline run took ~14 minutes at `-j 4` on an 18-core machine; if the first real
-  # run on a GitHub-hosted macOS runner blows past ~40 minutes, shard with `cargo mutants
+  # local 2026-09-12 re-measurement took ~18 minutes at `-j 4` for 925 mutants; if the first
+  # real run on a GitHub-hosted macOS runner blows past ~40 minutes, shard with `cargo mutants
   # --shard i/N` across a matrix rather than raising this timeout.
   mutants:
     name: mutants
@@ -109,9 +110,14 @@ jobs:
             awk -v pct="$pct" -v min="$min" 'BEGIN { exit !(pct + 0 >= min) }' ||
               { echo "::error::$crate caught ratio ${pct}% is below the ${min}% floor"; exit 1; }
           }
-          # Floors are the 2026-09-11 baseline (docs/design/10-mutation-baseline.md), rounded
-          # down to the nearest 5%. Raise a floor only after re-measuring a real improvement;
-          # never lower one just to make a red build pass.
-          check kadou-core 80
-          check kadou-exec 75
-          check kadou-mcp 55
+          # Floors are the 2026-09-12 re-measurement (docs/design/10-mutation-baseline.md's
+          # dated second section), rounded down to the nearest 5%. Raise a floor only after
+          # re-measuring a real improvement; never lower one just to make a red build pass.
+          # `kadou` is measured for the first time here -- `.cargo/mutants.toml` used to
+          # exclude the whole crate (its CLI subprocess tests couldn't run at all, see the
+          # doc's "Known blocker"); R15 moved them to a real integration test target, so the
+          # bin crate is now mutation-tested like everything else.
+          check kadou-core 85
+          check kadou-exec 80
+          check kadou-mcp 80
+          check kadou 80
