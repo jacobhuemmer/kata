@@ -130,6 +130,34 @@ fn approve_copies_the_draft_into_the_mined_namespace_and_audits_it() {
 }
 
 #[test]
+fn approve_refuses_a_name_that_escapes_the_mined_directory() {
+    // B4/D16 (`docs/design/12-mvp-review.md` §3, §6): `--into <name>` joined `name` straight
+    // onto `mined_dir` with no segment check, so `kadou mine approve <fp> --into
+    // ../../../.config/kadou/kata/sesami/pwn` wrote an executable kata straight into the
+    // library, bypassing `kadou accept`'s diff-and-confirm review gate entirely.
+    let dir = tempfile::tempdir().unwrap();
+    let home = MineHome::new(dir.path());
+    write_queue_entry(&home, "fp1", KATA, "{}").unwrap();
+
+    let err = approve(&home, "fp1", "../../../etc/pwn").unwrap_err();
+    assert!(matches!(err, ApproveError::InvalidName(_)), "{err}");
+
+    // No file landed anywhere -- not under mined/ (which was never even created) and not at
+    // the escaped path the traversal aimed for.
+    assert!(!dir.path().join("mined").exists());
+    assert!(
+        !dir.path()
+            .parent()
+            .and_then(Path::parent)
+            .is_some_and(|p| p.join("etc/pwn.sh").exists())
+    );
+    assert!(
+        read_audit(&home).is_empty(),
+        "no approval should be recorded for a rejected name"
+    );
+}
+
+#[test]
 fn approving_an_unknown_fingerprint_is_a_clean_error() {
     let dir = tempfile::tempdir().unwrap();
     let home = MineHome::new(dir.path());
