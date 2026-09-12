@@ -219,4 +219,70 @@ mod tests {
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "main");
     }
+
+    /// A local bare fixture whose kata sit under a subdirectory, not the repo root -- the
+    /// shape `--root` exists for.
+    fn bare_monorepo_fixture(root: &Path) -> std::path::PathBuf {
+        let bare = root.join("origin.git");
+        std::fs::create_dir_all(&bare).unwrap();
+        run(&bare, &["init", "-q", "--bare", "-b", "main"]);
+
+        let seed = root.join("seed");
+        std::fs::create_dir_all(seed.join("ops/scripts")).unwrap();
+        run(&seed, &["init", "-q", "-b", "main"]);
+        run(&seed, &["config", "user.email", "test@example.com"]);
+        run(&seed, &["config", "user.name", "test"]);
+        std::fs::write(seed.join("README.md"), "unrelated\n").unwrap();
+        std::fs::write(
+            seed.join("ops/scripts/hello.sh"),
+            "#!/bin/sh\n# ---\n# about: Say hello\n# risk:  low\n# ---\necho hi\n",
+        )
+        .unwrap();
+        run(&seed, &["add", "-A"]);
+        run(&seed, &["commit", "-q", "-m", "init"]);
+        run(&seed, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        run(&seed, &["push", "-q", "origin", "main"]);
+        bare
+    }
+
+    #[test]
+    fn get_folder_root_with_dotdot_is_refused_before_any_clone() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let url = bare_fixture_url(fixture_root.path());
+
+        let err = super::get_folder(kata_dir.path(), &url, Some("team"), None, Some("../etc"))
+            .unwrap_err();
+        assert!(matches!(err, super::FolderError::RootEscapes(_)), "{err:?}");
+        assert!(!kata_dir.path().join("team").exists());
+    }
+
+    #[test]
+    fn get_folder_root_selects_a_subdirectory_via_a_symlink() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let bare = bare_monorepo_fixture(fixture_root.path());
+        let url = format!("file://{}", bare.display());
+
+        let target =
+            super::get_folder(kata_dir.path(), &url, Some("ops"), None, Some("ops/scripts"))
+                .unwrap();
+
+        assert!(target.join("hello.sh").is_file());
+        assert!(super::git::is_git_backed(&target));
+        let files = kadou_core_scan_folder_for_test(kata_dir.path(), "ops");
+        assert_eq!(files, vec!["ops/hello".to_string()]);
+    }
+
+    #[test]
+    fn get_folder_root_pointing_outside_the_checkout_is_refused() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let url = bare_fixture_url(fixture_root.path());
+
+        let err = super::get_folder(kata_dir.path(), &url, Some("team"), None, Some("no/such/sub"))
+            .unwrap_err();
+        assert!(matches!(err, super::FolderError::RootNotFound(_)), "{err:?}");
+        assert!(!kata_dir.path().join("team").exists());
+    }
 }
