@@ -61,6 +61,8 @@ mod tests {
         write_atomic_0600(&path, b"hello").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"hello");
         assert_eq!(mode(&path), 0o600);
+        // §6.6: history/pending/proposed/last directories are 0700, not the process umask.
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
     }
 
     #[test]
