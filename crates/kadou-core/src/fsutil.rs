@@ -32,13 +32,38 @@ pub fn write_atomic_0600(path: &Path, contents: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// Creates `dir` (and its parents) if missing, then sets mode `0700` on `dir` itself.
+/// Creates `dir` (and its parents) if missing, then sets mode `0700` on `dir` itself *and*
+/// every intermediate `create_dir_all` created along the way (§6.6 "History and pending
+/// directories 0700" means every directory on that path -- `create_dir_all` makes
+/// intermediates the caller never names directly, e.g. `history/` and `history/logs/` on the
+/// way to `history/logs/<date>`). `dir` is always chmodded, whether or not it already
+/// existed -- the original, still-relied-on contract (`VaultStore`'s data directory is
+/// sometimes `dir` itself with no subdirectory to create). Only a pre-existing *ancestor* of
+/// `dir` -- not `dir` itself -- is left untouched: this call owns `dir` and whatever it had to
+/// create to reach it, nothing further up.
 pub fn ensure_dir_0700(dir: &Path) -> io::Result<()> {
+    let mut existing_ancestor = dir.parent();
+    while let Some(candidate) = existing_ancestor {
+        if candidate.exists() {
+            break;
+        }
+        existing_ancestor = candidate.parent();
+    }
+    let existing_ancestor = existing_ancestor.map(Path::to_path_buf);
+
     std::fs::create_dir_all(dir)?;
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+        let mut created = Some(dir);
+        while let Some(current) = created {
+            if Some(current) == existing_ancestor.as_deref() {
+                break;
+            }
+            std::fs::set_permissions(current, std::fs::Permissions::from_mode(0o700))?;
+            created = current.parent();
+        }
     }
     Ok(())
 }
