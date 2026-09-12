@@ -90,4 +90,20 @@ mod tests {
         );
         assert_eq!(out, "a=**** b=****");
     }
+
+    #[test]
+    fn redacts_a_basic_auth_header_built_from_two_needs() {
+        // §6.6's fourth encoding: base64("user:value"). jenkins_user is plain (not itself a
+        // secret, so it isn't in `secrets`) but a kata doing
+        // `curl -u "$JENKINS_USER:$JENKINS_TOKEN"` with `curl -v` echoes exactly this pairing
+        // (I-18) -- needs no "username" concept, just the cross product of resolved need
+        // values.
+        let user = "ci-user".to_string();
+        let token = "hunter2-token".to_string();
+        let basic = base64::engine::general_purpose::STANDARD
+            .encode(format!("{user}:{token}").as_bytes());
+        let text = format!("Authorization: Basic {basic}");
+        let out = redact_all(&text, &[token.clone()], &[user, token]);
+        assert_eq!(out, "Authorization: Basic ****");
+    }
 }
