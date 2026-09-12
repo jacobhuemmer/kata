@@ -84,7 +84,10 @@ pub fn clone(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<(), GitErr
     args.push(url);
     args.push(&dest_str);
 
-    let output = Command::new("git").args(&args).output().map_err(GitError::Spawn)?;
+    let output = Command::new("git")
+        .args(&args)
+        .output()
+        .map_err(GitError::Spawn)?;
     if !output.status.success() {
         return Err(GitError::Command {
             args: args.join(" "),
@@ -132,7 +135,11 @@ mod tests {
             .args(args)
             .output()
             .expect("git must be on PATH for this test");
-        assert!(output.status.success(), "git {args:?} failed in {}", dir.display());
+        assert!(
+            output.status.success(),
+            "git {args:?} failed in {}",
+            dir.display()
+        );
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 

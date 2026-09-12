@@ -18,6 +18,10 @@ pub enum FolderError {
     InvalidName(String),
     #[error("{} already exists; kadou get refuses to overwrite an existing folder", .0.display())]
     AlreadyExists(PathBuf),
+    #[error("--root `{0}` escapes the checkout")]
+    RootEscapes(String),
+    #[error("--root `{0}` is not a directory in the checkout")]
+    RootNotFound(String),
     #[error(transparent)]
     Git(#[from] GitError),
     #[error("failed to {action} {path}: {source}")]
@@ -66,9 +70,78 @@ fn io_err(action: &'static str, path: &Path, source: std::io::Error) -> FolderEr
     }
 }
 
+/// The `..`-free, non-absolute half of the `--root` escape check, done before any clone is
+/// attempted (§9 slice 7's test list: "`--root` with `..` is refused"). [`resolve_root`] is
+/// the post-clone half, which also catches an in-repo symlink pointing outside the checkout.
+fn validate_root_syntax(root: &str) -> Result<(), FolderError> {
+    let path = Path::new(root);
+    let escapes = path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir));
+    if escapes {
+        return Err(FolderError::RootEscapes(root.to_string()));
+    }
+    Ok(())
+}
+
+/// Confirms `checkout_dir.join(root)` is a directory that stays inside `checkout_dir` even
+/// after symlinks resolve, then returns it (§9 slice 7 "cannot escape the checkout").
+fn resolve_root(checkout_dir: &Path, root: &str) -> Result<PathBuf, FolderError> {
+    let canonical_root = checkout_dir
+        .canonicalize()
+        .map_err(|source| io_err("read", checkout_dir, source))?;
+    let candidate = checkout_dir.join(root);
+    let canonical_candidate = candidate
+        .canonicalize()
+        .map_err(|_| FolderError::RootNotFound(root.to_string()))?;
+    if !canonical_candidate.starts_with(&canonical_root) {
+        return Err(FolderError::RootEscapes(root.to_string()));
+    }
+    Ok(candidate)
+}
+
+fn hidden_checkout_dir(kata_dir: &Path, folder: &str) -> PathBuf {
+    kata_dir.join(".checkouts").join(folder)
+}
+
+#[cfg(unix)]
+fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(original, link)
+}
+
+/// Clones into a hidden checkout under `kata_dir/.checkouts/<folder>` (never scanned: the
+/// folder scanner skips dot-prefixed names) and symlinks `target` to `root`'s resolved
+/// subdirectory of it. Cleans up the hidden checkout on any failure so a bad `--root` never
+/// leaves a half-installed folder behind.
+fn get_folder_with_root(
+    kata_dir: &Path,
+    folder: &str,
+    url: &str,
+    git_ref: Option<&str>,
+    root: &str,
+    target: &Path,
+) -> Result<(), FolderError> {
+    let checkout_dir = hidden_checkout_dir(kata_dir, folder);
+    if let Some(parent) = checkout_dir.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| io_err("create", parent, source))?;
+    }
+    git::clone(url, &checkout_dir, git_ref)?;
+
+    let outcome = resolve_root(&checkout_dir, root).and_then(|subdir| {
+        symlink_dir(&subdir, target).map_err(|source| io_err("symlink", target, source))
+    });
+    if outcome.is_err() {
+        let _ = std::fs::remove_dir_all(&checkout_dir);
+    }
+    outcome
+}
+
 /// `kadou get <url> [--as <folder>] [--ref <git_ref>] [--root <sub>]` (§7.1, §6.7, §4.1).
-/// Clones straight into `kata_dir/<folder>` when `root` is absent; `root` support (a symlink
-/// into a subdirectory of a hidden checkout) lands alongside its own tests later this slice.
+/// Without `root`, clones straight into `kata_dir/<folder>`. With `root`, clones into a
+/// hidden checkout and exposes only the named subdirectory through a symlink at `target` —
+/// git commands against `target` still find the real checkout by walking up through the
+/// symlink target (`git::is_git_backed`).
 pub fn get_folder(
     kata_dir: &Path,
     url: &str,
@@ -80,7 +153,9 @@ pub fn get_folder(
         .map(str::to_string)
         .unwrap_or_else(|| folder_name_from_url(url));
     validate_folder_name(&folder)?;
-    let _ = root;
+    if let Some(root) = root {
+        validate_root_syntax(root)?;
+    }
 
     let target = kata_dir.join(&folder);
     if target.exists() {
@@ -88,7 +163,10 @@ pub fn get_folder(
     }
     std::fs::create_dir_all(kata_dir).map_err(|source| io_err("create", kata_dir, source))?;
 
-    git::clone(url, &target, git_ref)?;
+    match root {
+        None => git::clone(url, &target, git_ref)?,
+        Some(root) => get_folder_with_root(kata_dir, &folder, url, git_ref, root, &target)?,
+    }
     Ok(target)
 }
 
@@ -165,7 +243,10 @@ mod tests {
         let url = bare_fixture_url(fixture_root.path());
 
         let err = super::get_folder(kata_dir.path(), &url, Some("mined"), None, None).unwrap_err();
-        assert!(matches!(err, super::FolderError::ReservedName(_)), "{err:?}");
+        assert!(
+            matches!(err, super::FolderError::ReservedName(_)),
+            "{err:?}"
+        );
         assert!(!kata_dir.path().join("mined").exists());
     }
 
@@ -177,7 +258,10 @@ mod tests {
         let url = bare_fixture_url(fixture_root.path());
 
         let err = super::get_folder(kata_dir.path(), &url, Some("team"), None, None).unwrap_err();
-        assert!(matches!(err, super::FolderError::AlreadyExists(_)), "{err:?}");
+        assert!(
+            matches!(err, super::FolderError::AlreadyExists(_)),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -264,9 +348,14 @@ mod tests {
         let bare = bare_monorepo_fixture(fixture_root.path());
         let url = format!("file://{}", bare.display());
 
-        let target =
-            super::get_folder(kata_dir.path(), &url, Some("ops"), None, Some("ops/scripts"))
-                .unwrap();
+        let target = super::get_folder(
+            kata_dir.path(),
+            &url,
+            Some("ops"),
+            None,
+            Some("ops/scripts"),
+        )
+        .unwrap();
 
         assert!(target.join("hello.sh").is_file());
         assert!(super::git::is_git_backed(&target));
@@ -280,9 +369,18 @@ mod tests {
         let fixture_root = tempfile::tempdir().unwrap();
         let url = bare_fixture_url(fixture_root.path());
 
-        let err = super::get_folder(kata_dir.path(), &url, Some("team"), None, Some("no/such/sub"))
-            .unwrap_err();
-        assert!(matches!(err, super::FolderError::RootNotFound(_)), "{err:?}");
+        let err = super::get_folder(
+            kata_dir.path(),
+            &url,
+            Some("team"),
+            None,
+            Some("no/such/sub"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, super::FolderError::RootNotFound(_)),
+            "{err:?}"
+        );
         assert!(!kata_dir.path().join("team").exists());
     }
 }
