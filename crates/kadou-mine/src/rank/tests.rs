@@ -35,7 +35,7 @@ fn worked_example_passes_cutoff_on_three_unique_sessions() {
         2,
         "2026-09-09T00:00:00Z",
     );
-    assert!(passes_cutoff(&c));
+    assert!(passes_cutoff(&c, MIN_SCORE + 1.0));
 }
 
 #[test]
@@ -53,7 +53,7 @@ fn a_single_session_never_passes_cutoff_regardless_of_frequency() {
         1,
         "2026-09-09T00:00:00Z",
     );
-    assert!(!passes_cutoff(&c));
+    assert!(!passes_cutoff(&c, MIN_SCORE + 1.0));
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn two_sessions_pass_with_enough_frequency() {
         members.push(member("codex", session, "2026-09-01T00:00:00Z"));
     }
     let c = cluster(members, 1, "2026-09-01T00:00:00Z");
-    assert!(passes_cutoff(&c));
+    assert!(passes_cutoff(&c, MIN_SCORE + 1.0));
 }
 
 #[test]
@@ -77,7 +77,26 @@ fn two_sessions_with_low_frequency_do_not_pass() {
         1,
         "2026-09-02T00:00:00Z",
     );
-    assert!(!passes_cutoff(&c));
+    assert!(!passes_cutoff(&c, MIN_SCORE + 1.0));
+}
+
+#[test]
+fn a_score_at_or_below_the_floor_never_passes_even_with_enough_sessions() {
+    // D5 (`docs/design/12-mvp-review.md` §3): 06 §2.6's cutoff is session/freq "and score
+    // above a floor" -- passes_cutoff must reject a cluster that clears the session bar but
+    // whose score has been driven at or below MIN_SCORE (e.g. by a heavy catalog_penalty).
+    let c = cluster(
+        vec![
+            member("codex", "s1", "2026-09-01T00:00:00Z"),
+            member("codex", "s2", "2026-09-01T00:00:00Z"),
+            member("codex", "s3", "2026-09-01T00:00:00Z"),
+        ],
+        1,
+        "2026-09-01T00:00:00Z",
+    );
+    assert!(!passes_cutoff(&c, MIN_SCORE));
+    assert!(!passes_cutoff(&c, MIN_SCORE - 0.001));
+    assert!(passes_cutoff(&c, MIN_SCORE + 0.001));
 }
 
 #[test]
