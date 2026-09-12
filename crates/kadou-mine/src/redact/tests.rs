@@ -48,7 +48,7 @@ fn r4_slack_bot_token_is_redacted() {
 
 #[test]
 fn r4_jwt_is_redacted() {
-    let out = redact("Authorization: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig");
+    let out = redact("saved session eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig to disk");
     assert!(!out.text.contains("eyJhbGciOiJIUzI1NiJ9"), "{}", out.text);
     assert!(out.rules_hit.contains(&RuleId::KnownTokens));
 }
@@ -100,20 +100,28 @@ fn r8_ipv4_becomes_ip() {
 
 #[test]
 fn r9_redact_extra_terms_are_replaced() {
-    let out = redact_all(
-        "deploying to acmecorp now",
-        &["acmecorp".to_string()],
-    );
+    let out = redact_all("deploying to acmecorp now", &["acmecorp".to_string()]);
     assert!(!out.text.contains("acmecorp"), "{}", out.text);
     assert!(out.text.contains("$CUSTOMER"), "{}", out.text);
     assert!(out.rules_hit.contains(&RuleId::Customer));
 }
 
 #[test]
-fn r10_kubeconfig_token_value_is_redacted() {
-    let out = redact("token: k8s-secret-token-value");
-    assert_eq!(out.text, "token: [REDACTED]");
+fn r10_kubeconfig_field_value_is_redacted() {
+    // `certificate-authority-data` / `client-key-data` never collide with R3's key-name
+    // alternation, so this exercises R10 unambiguously; `token:` (also an R3 keyword) is
+    // covered separately below and may legitimately be caught by either rule.
+    let out = redact("certificate-authority-data: LS0tLQ==verylongbase64value");
+    assert!(!out.text.contains("LS0tLQ"), "{}", out.text);
+    assert!(out.text.contains("[REDACTED]"), "{}", out.text);
     assert!(out.rules_hit.contains(&RuleId::Kubeconfig));
+}
+
+#[test]
+fn kubeconfig_style_token_value_is_redacted_by_some_rule() {
+    let out = redact("token: k8s-secret-token-value");
+    assert!(!out.text.contains("k8s-secret-token-value"), "{}", out.text);
+    assert!(out.text.contains("[REDACTED]"), "{}", out.text);
 }
 
 #[test]
@@ -132,7 +140,9 @@ fn r12_home_path_becomes_home_token() {
 
 #[test]
 fn r13_chat_turn_lines_are_dropped() {
-    let out = redact("kubectl get pods\nHuman: do the thing\n### Turn 3 (Human)\nAssistant: ok\nkubectl get pods");
+    let out = redact(
+        "kubectl get pods\nHuman: do the thing\n### Turn 3 (Human)\nAssistant: ok\nkubectl get pods",
+    );
     assert!(!out.text.contains("Human:"), "{}", out.text);
     assert!(!out.text.contains("Assistant:"), "{}", out.text);
     assert!(!out.text.contains("### Turn"), "{}", out.text);
@@ -165,6 +175,8 @@ fn ordinary_short_tokens_do_not_trigger_the_high_entropy_check() {
 #[test]
 fn no_ghp_substring_survives_redaction() {
     let token = format!("ghp_{}", "A".repeat(36));
-    let out = redact(&format!("git remote set-url origin https://{token}@github.com/x/y.git"));
+    let out = redact(&format!(
+        "git remote set-url origin https://{token}@github.com/x/y.git"
+    ));
     assert!(!out.text.contains("ghp_"), "{}", out.text);
 }
