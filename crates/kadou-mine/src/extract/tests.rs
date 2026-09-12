@@ -76,7 +76,10 @@ fn a_sequence_containing_an_apparent_secret_is_dropped_entirely() {
     let token = format!("ghp_{}", "A".repeat(36));
     let events = vec![
         event("git remote -v", "2026-09-01T00:00:00Z"),
-        event(&format!("git push https://{token}@github.com/x/y.git"), "2026-09-01T00:00:30Z"),
+        event(
+            &format!("git push https://{token}@github.com/x/y.git"),
+            "2026-09-01T00:00:30Z",
+        ),
     ];
     assert!(extract_sequences(&events).is_empty());
 }
@@ -84,7 +87,10 @@ fn a_sequence_containing_an_apparent_secret_is_dropped_entirely() {
 #[test]
 fn an_ordinary_kubectl_sequence_is_never_flagged_as_a_secret() {
     let events = vec![
-        event("kubectl --context eks-dev -n payments get pods -l app=api", "2026-09-01T00:00:00Z"),
+        event(
+            "kubectl --context eks-dev -n payments get pods -l app=api",
+            "2026-09-01T00:00:00Z",
+        ),
         event(
             "kubectl --context eks-dev -n payments logs deploy/api --tail=200",
             "2026-09-01T00:01:00Z",
