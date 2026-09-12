@@ -130,6 +130,37 @@ fn a_second_run_against_unchanged_input_queues_nothing_new() {
 }
 
 #[test]
+fn a_low_byte_bound_stops_reading_mid_transcript_and_the_next_run_resumes() {
+    // 06 §2.1/§3.5: the miner must stream a transcript and stop mid-file once the run's
+    // scanned-bytes bound is hit, rather than slurping the whole file first (D2/D7, B2). A
+    // bound this low (well under the fixture's first transcript line) proves the stop happens
+    // before even one line is fully read, without needing a real multi-gigabyte transcript.
+    let state_dir = tempfile::tempdir().unwrap();
+    let mut bounded_config = MineConfig::new(
+        fixtures_dir().join("index.jsonl"),
+        state_dir.path().to_path_buf(),
+    );
+    bounded_config.max_bytes_scanned = 100;
+
+    let first = run_once(&bounded_config);
+    assert!(!first.already_running);
+    assert!(first.bounded_stop, "{first:?}");
+    assert_eq!(first.transcripts_seen, 1, "{first:?}");
+    assert_eq!(first.candidates_emitted, 0, "{first:?}");
+    assert_eq!(first.queued, 0, "{first:?}");
+
+    // The bounded row was never checkpointed as processed, so a second run under the normal
+    // (unbounded) config re-reads it from the start and resumes exactly where the first left
+    // off -- reaching the same end state a single unbounded run would.
+    let unbounded_config = MineConfig::new(
+        fixtures_dir().join("index.jsonl"),
+        state_dir.path().to_path_buf(),
+    );
+    let second = run_once(&unbounded_config);
+    assert_summary_matches_the_worked_example(&second);
+}
+
+#[test]
 fn missing_claude_transcript_is_recorded_as_a_skip_not_a_failure() {
     let state_dir = tempfile::tempdir().unwrap();
     let config = MineConfig::new(
