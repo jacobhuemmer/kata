@@ -237,7 +237,9 @@ fn main() -> std::process::ExitCode {
             verbose,
         }) => commands::run_check(folder_or_path, verbose),
         Some(Command::Import { dir, as_folder }) => commands::run_import(dir, as_folder),
-        Some(Command::Run(args)) => commands::run_run(args.id, args.kv, args.dry_run, args.confirm),
+        Some(Command::Run(args)) => {
+            commands::run_run(args.id, args.kv, args.dry_run, args.confirm, args.ask)
+        }
         Some(Command::Show { id }) => commands::run_show(id),
         Some(Command::Vault(cmd)) => match cmd.action {
             VaultAction::Set { name, plain } => commands::run_vault_set(name, plain),

@@ -480,7 +480,14 @@ pub fn run_run(
     kv: Vec<String>,
     dry_run: bool,
     confirm_flag: Option<String>,
+    ask: bool,
 ) -> ExitCode {
+    if ask {
+        eprintln!("error: 'run --ask' is not yet implemented (slice 8)");
+        eprintln!("  = kadou run <id> [k=v...] [--dry-run]");
+        return ExitCode::from(2);
+    }
+
     let Some(id) = id else {
         eprintln!("error: 'run' with no id is not yet implemented (slice 8)");
         eprintln!("  = kadou run <id>, or kadou list");
