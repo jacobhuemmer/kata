@@ -19,3 +19,4 @@ pub mod propose;
 pub mod rank;
 pub mod redact;
 pub mod risk;
+pub mod store;
