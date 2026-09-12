@@ -230,7 +230,7 @@ Detection is by presence of `kata.sh`; nothing declares it (§4.3 has the full m
 
 ### 4.3 Header spec
 
-**YAML-in-comment, closed grammar, parsed by kadou's own ~200-line parser (not a general YAML library).** It looks like YAML so eyes and models parse it for free; it is small enough that a purpose-built parser is safer than a general one (`08` §3.1).
+**YAML-in-comment, closed grammar, parsed by kadou's own purpose-built parser (not a general YAML library) — small enough to audit in one sitting, not literally ~200 lines.** It looks like YAML so eyes and models parse it for free; a purpose-built parser is safer than a general one for this closed a grammar (`08` §3.1). The grammar itself — six keys, six value forms, the diagnostics that are "the bespoke parser's user interface" (§8.2) — earns real code; restate the old ~200-line figure as design intent, not a line-count contract the implementation must meet.
 
 **Placement and framing:**
 
@@ -461,7 +461,7 @@ All tool results are a **single JSON text content block**, **compact** (not pret
 }
 ```
 
-`truncated` is true when `offset+len < total`. Hidden (above-ceiling, or untrusted project-local) kata are absent, not listed as denied. Draft entries set `draft: true` and never appear unless `include_drafts` or `folder` names `mined`/`proposed`. `aliases: []` and `draft: false` are **omitted**, not printed, on entries that don't need them.
+`truncated` is true when `offset+len < total`. Hidden (above-ceiling, or untrusted project-local) kata are absent, not listed as denied. Draft entries set `draft: true` and never appear unless `include_drafts` or `folder` names `mined`/`proposed`. `draft: false` is **omitted**, not printed, on entries that don't need it. `aliases` is never printed on a `list_kata` row at all — this is the per-connect-cost-sensitive payload (§1.3); an alias is already searchable via `query` and visible in `describe_kata`.
 
 #### `describe_kata` result
 
@@ -694,6 +694,8 @@ Starter kata contain only `low` (`03` §10 rule 6).
 
 **[tui]** There is no TUI face; the TTY prompt *is* the interactive confirm, and `--confirm <id>` is the non-interactive form for both — one protocol, two faces instead of three. `kadou run <id> --ask` prompts for every arg even when all required args are supplied, walking the whole form (§7.2).
 
+`dry_run` (MCP) / `--dry-run` (CLI) resolves names only and is not subject to the confirm protocol, the grant gate, or the human ceiling above: it never spawns and never resolves a secret value, so none of those checks apply (§6.1).
+
 The model cannot mint a grant. There is no confirm field in any tool schema (`03` §10 rule 2). Approving a pending high **or** critical record still requires `--confirm <id>` at approval time (§6.4).
 
 CLI without `--confirm` on high/critical, non-TTY, prints the summary and exits 2 with the exact `--confirm` line to copy:
@@ -710,7 +712,7 @@ error: sesami/ses-deploy is critical and needs confirmation
 2. **TTL:** the record expires after **24 hours**. `kadou grant list` shows expired records as expired; `kadou grant approve` on an expired record fails.
 3. **Dedupe:** a second `run_kata` call with the same `(id, args_hash)` while a pending record is outstanding returns the existing `pending_id` rather than creating a duplicate.
 4. **[tui]** The agent's own result carries `approve`; the server posts a desktop notification (§7 below); `kadou`'s `needs you` block shows it; `kadou grant list` and `kadou grant show <pending_id>` print the record and a **kata diff since request** (in case a `git pull` landed a different script than what was requested).
-5. `kadou grant approve <pending_id>` **one-shot executes** that pending record (still subject to the CLI confirm for high or critical), **refusing** if the current on-disk `sha256` / folder git HEAD no longer matches the pinned value. Approval **runs in the human CLI's environment** (full parent env, not the MCP server's allowlisted one). On success the pending record gains `history_id`, `status`, and `log_path`, all readable via `pending_path` without a fifth MCP tool. `kadou grant allow <id>` appends to `[agent].allow` (config edit, human-owned), pinned to the current sha256 unless `--any-version`.
+5. `kadou grant approve <pending_id>` **one-shot executes** that pending record (still subject to the CLI confirm for high or critical), **refusing** if the current on-disk `sha256` / folder git HEAD no longer matches the pinned value. Approval **runs in the human CLI's environment** (full parent env, not the MCP server's allowlisted one). On success the pending record gains `history_id`, `status`, and `log_path`, all readable via `pending_path` without a fifth MCP tool. `kadou grant allow <id>` appends to `[agent].allow` (config edit, human-owned), pinned to the current sha256 unless `--any-version`. The pin is encoded in the entry itself, `"<id>@sha256:<64 hex>"`; a bare `"<id>"` (no `@`) means any version. `@` cannot appear in a valid id, so the two forms are unambiguous.
 6. `kadou grant deny <pending_id>` deletes the record.
 7. MCP has no approve tool.
 
@@ -731,7 +733,7 @@ Raising `[agent].max_risk` or `[agent].allow` is a **config file edit** or `kado
       "jenkins_token": { "value": "…", "secret": true }
     }
     ```
-    Go import maps `global.*` entries directly to this flat map (secret bit from the source YAML's `secret: true` flags); it reports and drops `catalog.*` runbook-scope values, or writes them as non-secret last-used args (§6.6, decision D5) — needs are one flat namespace, so there is no scope tree left to import into.
+    Go import maps `global.*` entries directly to this flat map, marking **every** imported value `secret: true` — the Go decrypted plaintext is a plain `{name: value}` map with no per-value secret marker of its own, so there is no bit to read off the vault; a human downgrades a specific name afterward with `kadou vault set --plain <name>` (this is the fail-safe default, not a per-value YAML lookup — re-parsing `runbook.yaml` during what is otherwise a vault-only, read-only import is out of scope). It reports and drops `catalog.*` runbook-scope values, or writes them as non-secret last-used args (§6.6, decision D5) — needs are one flat namespace, so there is no scope tree left to import into.
 - Values of `jenkins_token` are never written into this document, logs at info level, MCP schemas, `args`/`source` echoes, or history parameter maps. History stores `****`.
 - Default identity: age X25519 at `~/.local/share/kadou/keys/identity.txt` `0600`. This default protects only against copying the vault file without the keys directory — the same threat model as Go.
 - Optional `[vault] keyring = true`: the identity is age scrypt-encrypted, and the **passphrase** — not the identity file itself — lives in the OS keyring via `keyring-core` + `apple-native-keyring-store`, service `kadou`, account `vault-identity`.
@@ -952,7 +954,8 @@ max_risk = "medium"           # human ceiling for every folder
 
 [agent]
 max_risk = "low"
-allow    = []                 # ids the agent may run above low, e.g. "sesami/ses-deploy"
+allow    = []                 # ids the agent may run above low: bare "sesami/ses-deploy" for any
+                               # version, or "sesami/ses-deploy@sha256:<64 hex>" pinned (§6.4 item 5)
 
 [folder.sesami]                # optional per-folder policy; nothing to "register"
 max_risk = "critical"
@@ -1335,3 +1338,15 @@ D1–D7 from `09` §0, and every row of `09` §6.1 (→ `03-principles.md`) and 
 | `09` §6.2 §12 | §12 (elicitation note folded into §10) |
 | `09` §6.2 §13 | §13 (this document's own revision log) |
 | `09` §6.3 (`08` itself, not edited — superseded lines listed for the record) | Not applicable to this document; `08` stays a dated review per `09` §6.3 |
+
+### Third revision — Doc-side drift from the slices-1–6 code review (`11-code-review.md` §4)
+
+Refactor slice A (`docs/design/11-code-review.md`, code review of `89a30c4`) resolved five spec-drift rows where the review judged the **code**'s behavior correct and the **doc**'s wording wrong. No behavior changed for these five; the code side of the same review (I-1, I-2, I-6, I-10, I-11, I-12, I-13, I-15, I-19, I-21, I-23, G6, I-18) is fixed in the crates themselves, per that slice's commits.
+
+| ID | Topic | Change |
+|---|---|---|
+| I-4 | Allow-pin encoding | §6.4 item 5 states the `"<id>@sha256:<64 hex>"` / bare-id encoding explicitly; §7.6's `[agent] allow` example shows both forms |
+| I-14 | Go vault import secret bits | §6.5 now says every imported value is marked `secret: true` because the Go plaintext carries no per-value marker, not "secret bit from the source YAML's `secret: true` flags" (that sentence described `kadou import`'s catalog conversion, not the Go vault decrypt path) |
+| I-16 | `dry_run` and the gates | §6.3 adds one sentence: `dry_run`/`--dry-run` is not subject to the confirm protocol, the grant gate, or the human ceiling — it never spawns and never resolves a secret value |
+| I-17 | `list_kata` aliases | §5.5 drops the claim that `aliases: []` is omitted-when-empty on a `list_kata` row — `aliases` is never printed there at all, by design (the per-connect-cost-sensitive payload); only `draft: false` is the omitted-when-unneeded field |
+| I-22 | Parser size budget | §4.3 restates "kadou's own ~200-line parser" as a design intent (small enough to audit in one sitting), not a line-count the 910-line, well-tested `header.rs` was always going to blow through |
