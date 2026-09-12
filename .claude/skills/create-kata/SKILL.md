@@ -99,6 +99,20 @@ main "$@"
 Follow `shell-scripts` for the body: POSIX `sh`, `set -eu`, quote
 everything, `main()` at the bottom.
 
+## Token budget
+
+A kata must cost fewer tokens than the one-off commands it replaces.
+This is the same gate as `session-mining` — run that skill's **Token
+budget** procedure (isolated `KADOU_HOME`, `kadou --plain run` vs the
+concatenated one-off stdout+stderr, UTF-8 bytes / 4). Include the kadou
+frame / MCP envelope. Report counts only.
+
+**PASS only when kata bytes < one-off bytes.** A thin wrapper around
+one `kubectl`/`git`/`helm` invocation fails (the run frame is ~80–90
+tokens on top of the same stdout). Collapse steps, filter, and cap
+until it passes. Do not land the file, `propose_kata`, or call the
+work done on FAIL.
+
 ## Workflow
 
 1. Pick the folder and name: `<folder>/<name>` (or `./name` for a
@@ -112,7 +126,9 @@ everything, `main()` at the bottom.
    schema look right
 6. `kadou run <folder>/<name> --dry-run` to confirm the env var names
    match what the script reads
-7. If proposing from an agent session instead of writing the file
+7. Token budget: measure against the one-off sequence this kata
+   replaces (`session-mining` Token budget). Must print `PASS`.
+8. If proposing from an agent session instead of writing the file
    directly, use the `propose_kata` MCP tool (`id`, `source`) — it never
    registers or runs the kata; a human runs `kadou accept <id>` to
    promote it into a real folder (§6.7)
