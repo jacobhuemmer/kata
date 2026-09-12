@@ -210,6 +210,63 @@ async fn run_starter_hello_succeeds_with_an_mcp_interface_history_record() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
+async fn pending_and_history_directories_are_0700() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    // A run's history directories.
+    let home = setup_sesami(|_| {});
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+    let (value, is_error) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({"id": "starter/hello"}),
+    )
+    .await;
+    assert!(!is_error, "{value}");
+
+    let records_dir = home.paths.state_dir.join("history/records");
+    assert_eq!(mode(&records_dir), 0o700);
+    let logs_root = home.paths.state_dir.join("history/logs");
+    let date_dir = std::fs::read_dir(&logs_root)
+        .unwrap()
+        .next()
+        .expect("one date dir")
+        .unwrap()
+        .path();
+    assert_eq!(mode(&date_dir), 0o700);
+
+    // A pending-grant's pending directory.
+    let home = setup_sesami(|c| {
+        c.folder.insert(
+            "sesami".to_string(),
+            kadou_core::FolderConfig {
+                max_risk: Some(RiskLevel::Critical),
+                agent_max_risk: None,
+            },
+        );
+        c.agent.max_risk = RiskLevel::Critical;
+    });
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+    let (value, is_error) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({"id": "sesami/ses-deploy", "args": {"version": "1", "oke_cluster": "uat"}}),
+    )
+    .await;
+    assert!(!is_error, "{value}");
+    assert_eq!(value["status"], "pending_grant");
+    let pending_dir = home.paths.state_dir.join("pending");
+    assert_eq!(mode(&pending_dir), 0o700);
+}
+
+#[tokio::test]
 async fn run_above_ceiling_is_iserror_no_such_kata() {
     let home = setup_sesami(|_| {});
     let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
