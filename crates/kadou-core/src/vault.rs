@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use age::secrecy::ExposeSecret as _;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::fsutil;
 
@@ -23,9 +24,14 @@ const AGE_TAG: &str = "age1";
 /// One vault entry: the resolved value plus whether it is secret-shaped (`docs/design/05-prd.md`
 /// §6.5). A need with a header default never reaches the vault at all (§4.4); everything
 /// stored here is either a plain non-secret value (`--plain`) or a secret one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `ZeroizeOnDrop` (R13/E1, PRD §3.1 "wipe decrypted vault buffers"): `secret` doesn't need
+/// wiping, so it's marked `#[zeroize(skip)]` — only `value`, the actual secret material, is
+/// overwritten when an entry (or the `Vault` map holding it) is dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct VaultEntry {
     pub value: String,
+    #[zeroize(skip)]
     pub secret: bool,
 }
 
@@ -155,12 +161,13 @@ fn encode_envelope(ciphertext: &[u8]) -> Result<String, VaultError> {
 
 /// Decrypts `ciphertext` with any of `identities`, reporting decrypt failures against
 /// `path` (used for both kadou's own vault and a Go-imported one, §9 slice 4 "wrong key
-/// gives a clean error").
+/// gives a clean error"). The returned buffer wipes itself on drop (R13/E1) — the decrypted
+/// plaintext is the vault's own secret material, in memory only as long as it takes to parse.
 fn decrypt_with<'a>(
     ciphertext: &[u8],
     identities: impl Iterator<Item = &'a dyn age::Identity>,
     path: &Path,
-) -> Result<Vec<u8>, VaultError> {
+) -> Result<zeroize::Zeroizing<Vec<u8>>, VaultError> {
     let decryptor =
         age::Decryptor::new_buffered(ciphertext).map_err(|source| VaultError::Decrypt {
             path: path.to_path_buf(),
@@ -172,7 +179,7 @@ fn decrypt_with<'a>(
             path: path.to_path_buf(),
             source,
         })?;
-    let mut plaintext = Vec::new();
+    let mut plaintext = zeroize::Zeroizing::new(Vec::new());
     reader
         .read_to_end(&mut plaintext)
         .map_err(|source| VaultError::Read {
@@ -382,7 +389,11 @@ impl VaultStore {
         })?;
         let identity = self.ensure_identity()?;
         let recipient = identity.to_public();
-        let plaintext = serde_json::to_vec(&vault.entries).map_err(VaultError::Serialize)?;
+        // The serialized plaintext holds every secret value in the vault; wipe it on drop
+        // (R13/E1) the same way the decrypt path already does.
+        let plaintext: zeroize::Zeroizing<Vec<u8>> = zeroize::Zeroizing::new(
+            serde_json::to_vec(&vault.entries).map_err(VaultError::Serialize)?,
+        );
         let ciphertext = age::encrypt(&recipient, &plaintext).map_err(VaultError::Encrypt)?;
         let text = encode_envelope(&ciphertext)?;
         let path = self.vault_file();
@@ -651,6 +662,17 @@ pub mod keyring_backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R13/E1: the decrypted plaintext (a secret value, in memory) must be wiped on drop.
+    /// Hard to observe the actual memory wipe from safe Rust, so this pins the type-level
+    /// contract instead — if `VaultEntry` ever stops deriving `ZeroizeOnDrop`, this fails to
+    /// compile rather than silently losing the guarantee.
+    fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+
+    #[test]
+    fn vault_entry_zeroizes_its_value_on_drop() {
+        assert_zeroize_on_drop::<VaultEntry>();
+    }
 
     #[test]
     fn round_trips_a_vault_through_the_real_envelope_and_a_fresh_identity() {
