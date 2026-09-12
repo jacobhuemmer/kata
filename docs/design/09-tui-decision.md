@@ -18,7 +18,7 @@ These close `08` §8. The PRD revision cites this table, not the review's questi
 | D3 | Project-local trust | **`kadou trust` pins the folder path** (direnv `allow` without the hash). `kadou trust --forget` removes it. Agents never see an untrusted `./kata`. | `[trust] paths` in `kadou.toml`; `08` §4.2 rules verbatim. |
 | D4 | Sesami repository after conversion | **Kata at the repository root** (`cc4-aaa.sh`, `scripts/`, `device-log-metrics/`). `kadou get` needs no `--root`. | The `--root` symlink survives only for foreign layouts; Sesami does not use it. |
 | D5 | Last-used args | **Interactive prefill only; CLI with args on the command line and MCP use header defaults.** Go's runbook-scope saving is dropped. | With no TUI, the interactive surface is the prompt (§3.4 below). A last-used value fills a prompt; it never changes what a non-interactive run or an agent run does. |
-| D6 | Starter on disk | **`kata/starter/` is materialized on first run** if `kata/` does not exist; deletable; `kadou get starter` restores it. | `08` §2.2 rule as written. |
+| D6 | Starter on disk | **`kata/starter/` is materialized on first run** if `kata/starter/` does not exist; deletable; `kadou get starter` restores it. | `08` §2.2 rule as written. |
 
 **D7 (this document, pending Mason):** no full-screen TUI in v1. The human surface is a styled CLI with one built-in picker and inline prompts. Section 5 scores it; section 6 lists the edits.
 

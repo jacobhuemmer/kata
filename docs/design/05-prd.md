@@ -913,7 +913,7 @@ These are fixed, not configurable — there is no `[keys]` override map (`09` §
 ### 7.4 First-run experience
 
 1. Missing config → write defaults (empty TOML is valid; missing keys mean defaults).
-2. `kata/starter/` is materialized from the embed **only if `kata/` does not exist**. If deleted, it stays deleted; `kadou get starter` restores it.
+2. `kata/starter/` is materialized from the embed **only if `kata/starter/` does not exist**. If deleted, it stays deleted; `kadou get starter` restores it.
 3. `kadou` prints the starter frame and the next command (§7.2). Not an empty panel.
 4. `kadou mcp serve` speaks stdio immediately.
 5. No questionnaire. No "add a folder" dead end.
