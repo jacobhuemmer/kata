@@ -416,6 +416,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn passes_since_keeps_a_row_at_or_after_the_cutoff_and_drops_an_older_one() {
+        assert!(passes_since(
+            "2026-09-10T00:00:00Z",
+            Some("2026-01-01T00:00:00Z")
+        ));
+        assert!(passes_since(
+            "2026-01-01T00:00:00Z",
+            Some("2026-01-01T00:00:00Z")
+        ));
+        assert!(!passes_since(
+            "2020-01-01T00:00:00Z",
+            Some("2026-01-01T00:00:00Z")
+        ));
+        assert!(passes_since("2020-01-01T00:00:00Z", None));
+    }
+
+    #[test]
+    fn passes_since_fails_open_on_an_unparseable_timestamp() {
+        assert!(passes_since("not-a-timestamp", Some("2026-01-01T00:00:00Z")));
+        assert!(passes_since("2026-01-01T00:00:00Z", Some("not-a-timestamp")));
+    }
+
+    #[test]
+    fn since_filters_out_a_row_older_than_the_cutoff() {
+        let sessions_dir = tempfile::tempdir().unwrap();
+        let events_dir = sessions_dir.path().join("events");
+        std::fs::create_dir_all(&events_dir).unwrap();
+
+        let write_event = |session: &str, when: &str| {
+            std::fs::write(
+                sessions_dir.path().join(format!("{session}.jsonl")),
+                format!(
+                    r#"{{"type":"assistant","timestamp":"{when}","tool_calls":[{{"name":"run_terminal_command","arguments":{{"command":"kubectl get pods"}}}}]}}"#
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                events_dir.join(format!("{session}.md")),
+                format!(
+                    "# Agent session archive\n\n- **When:** {when}\n- **Transcript:** `{session}.jsonl`\n"
+                ),
+            )
+            .unwrap();
+        };
+        write_event("old", "2020-01-01T00:00:00Z");
+        write_event("new", "2026-09-10T00:00:00Z");
+
+        let index_path = sessions_dir.path().join("index.jsonl");
+        std::fs::write(
+            &index_path,
+            format!(
+                "{}\n{}\n",
+                serde_json::json!({"when":"2020-01-01T00:00:00Z","agent":"grok","event":"session_end","sessionId":"old","path":"events/old.md","bytes":1}),
+                serde_json::json!({"when":"2026-09-10T00:00:00Z","agent":"grok","event":"session_end","sessionId":"new","path":"events/new.md","bytes":1}),
+            ),
+        )
+        .unwrap();
+
+        let state_dir = tempfile::tempdir().unwrap();
+        let mut config = MineConfig::new(index_path, state_dir.path().to_path_buf());
+        config.since = Some("2026-01-01T00:00:00Z".to_string());
+        let home = MineHome::new(&config.state_dir);
+
+        let outcome = ingest_new_candidates(&config, &home);
+
+        assert_eq!(outcome.events_seen, 1);
+        assert_eq!(outcome.transcripts_seen, 1);
+        assert_eq!(outcome.candidates_emitted, 1);
+    }
+
+    #[test]
     fn a_redaction_failure_is_recorded_as_one_r14_high_entropy_jsonl_line() {
         let state_dir = tempfile::tempdir().unwrap();
         let home = MineHome::new(state_dir.path());
