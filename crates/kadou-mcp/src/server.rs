@@ -53,7 +53,9 @@ impl ServerHandler for KadouMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        Ok(ListToolsResult::with_all_items(schema::build_tools()))
+        let tools =
+            schema::build_tools().map_err(|err| McpError::internal_error(err.to_string(), None))?;
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
@@ -99,7 +101,8 @@ impl ServerHandler for KadouMcpServer {
             }
         };
 
-        let text = serde_json::to_string(&value).expect("domain result values always serialize");
+        let text = serde_json::to_string(&value)
+            .map_err(|err| McpError::internal_error(err.to_string(), None))?;
         let mut result = if is_error {
             CallToolResult::error(vec![ContentBlock::text(text)])
         } else {

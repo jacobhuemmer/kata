@@ -22,7 +22,13 @@ pub struct RunGuard {
 
 impl Drop for RunGuard {
     fn drop(&mut self) {
-        self.running_ids.lock().unwrap().remove(&self.id);
+        // A poisoned mutex (a prior panic while holding the lock) still leaves usable data
+        // behind; recovering it here is strictly safer than panicking a second time inside
+        // `Drop`, which would abort the process (R6, A2).
+        self.running_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.id);
     }
 }
 
@@ -38,7 +44,10 @@ impl Concurrency {
     /// server is at its concurrency limit.
     pub fn try_start(&self, id: &str) -> Result<RunGuard, ()> {
         {
-            let mut set = self.running_ids.lock().expect("running_ids mutex poisoned");
+            let mut set = self
+                .running_ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if set.contains(id) {
                 return Err(());
             }
@@ -53,7 +62,7 @@ impl Concurrency {
             Err(_) => {
                 self.running_ids
                     .lock()
-                    .expect("running_ids mutex poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(id);
                 Err(())
             }

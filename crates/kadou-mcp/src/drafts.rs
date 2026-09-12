@@ -155,7 +155,15 @@ pub fn propose(
         })?;
 
     let target = proposed_root.join(format!("{input_id}.sh"));
-    let target_parent = target.parent().expect("target always has a parent");
+    // `target` is always `proposed_root` joined with a non-empty relative path, so it always
+    // has a parent in practice; failing closed here instead of an `expect` keeps this fn
+    // panic-free even if that construction ever changes (R6).
+    let Some(target_parent) = target.parent() else {
+        return Err(ProposeError::Write {
+            path: target.clone(),
+            source: std::io::Error::other("target path has no parent directory"),
+        });
+    };
     kadou_core::fsutil::ensure_dir_0700(target_parent).map_err(|source| ProposeError::Write {
         path: target_parent.to_path_buf(),
         source,

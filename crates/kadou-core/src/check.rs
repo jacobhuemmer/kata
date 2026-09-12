@@ -64,7 +64,13 @@ pub fn check_folder(
     let files = scan::scan_folder(kata_dir, folder)?;
     let wrapped = vec![(folder.to_string(), files)];
     let extra = cross_kata_diagnostics(&wrapped);
-    let mut files = wrapped.into_iter().next().expect("just built").1;
+    // `wrapped` is the one-element vec built just above; `unwrap_or_default` (an empty file
+    // list) rather than `expect` keeps this fn panic-free even if that ever changes (R6).
+    let mut files = wrapped
+        .into_iter()
+        .next()
+        .map(|(_, f)| f)
+        .unwrap_or_default();
     files.extend(extra.into_iter().map(|(_, d)| d));
     add_missing_vault_warnings(&mut files, vault);
     Ok(FolderReport {

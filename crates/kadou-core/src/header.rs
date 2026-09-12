@@ -402,12 +402,20 @@ pub fn parse_header(source: &str) -> (Option<ParsedHeader>, Vec<Diagnostic>) {
         return (None, diags);
     }
 
+    // `about`/`risk` being `None` always pushed an error diagnostic above, so the check just
+    // above means both are `Some` here — but failing closed (no header) rather than an
+    // `expect` keeps this fn panic-free even if that invariant is ever weakened by mistake
+    // (R6).
+    let (Some(about), Some(risk)) = (about, risk) else {
+        return (None, diags);
+    };
+
     let notes = extract_notes(&lines, close_idx);
 
     (
         Some(ParsedHeader {
-            about: about.expect("checked above"),
-            risk: risk.expect("checked above"),
+            about,
+            risk,
             needs,
             args,
             alias,

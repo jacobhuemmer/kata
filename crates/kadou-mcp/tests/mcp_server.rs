@@ -127,7 +127,7 @@ async fn tools_list_wire_bytes_match_the_checked_in_schema() {
 
     assert_eq!(
         wire_bytes,
-        kadou_mcp::schema::tools_list_bytes(),
+        kadou_mcp::schema::tools_list_bytes().unwrap(),
         "the tools/list payload a real client receives over the wire must equal the \
          byte-checked schema in docs/design/tools-list.json"
     );

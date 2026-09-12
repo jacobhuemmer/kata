@@ -25,6 +25,8 @@ pub enum LastArgsError {
         #[source]
         source: std::io::Error,
     },
+    #[error("failed to serialize last-used args: {0}")]
+    Serialize(#[source] serde_json::Error),
 }
 
 /// `~/.local/state/kadou/last/` (§6.6).
@@ -64,7 +66,7 @@ impl LastArgsStore {
         args: &BTreeMap<String, String>,
     ) -> Result<(), LastArgsError> {
         let path = self.path(kata_id);
-        let text = serde_json::to_string(args).expect("BTreeMap<String, String> always serializes");
+        let text = serde_json::to_string(args).map_err(LastArgsError::Serialize)?;
         fsutil::write_atomic_0600(&path, text.as_bytes())
             .map_err(|source| LastArgsError::Write { path, source })
     }

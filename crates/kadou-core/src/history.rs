@@ -45,6 +45,8 @@ pub enum HistoryError {
         #[source]
         source: std::io::Error,
     },
+    #[error("failed to serialize a history record: {0}")]
+    Serialize(#[source] serde_json::Error),
 }
 
 fn now_rfc3339() -> String {
@@ -133,7 +135,7 @@ impl HistoryStore {
 
     fn write_record(&self, record: &HistoryRecord) -> Result<(), HistoryError> {
         let path = self.record_path(&record.history_id);
-        let text = serde_json::to_string(record).expect("HistoryRecord always serializes");
+        let text = serde_json::to_string(record).map_err(HistoryError::Serialize)?;
         fsutil::write_atomic_0600(&path, text.as_bytes())
             .map_err(|source| HistoryError::Write { path, source })
     }

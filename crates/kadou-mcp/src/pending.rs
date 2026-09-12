@@ -11,13 +11,11 @@
 //! directly for `grant approve`/`grant list`/`grant show`/`grant deny`.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use kadou_core::fsutil;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 /// TTL for a pending grant (§6.4 "the record expires after 24 hours").
@@ -69,18 +67,19 @@ impl PendingRecord {
 }
 
 /// A deterministic `sha256:<hex>` of the args map (sorted by `BTreeMap`'s own iteration
-/// order), used for the `(id, args_hash)` dedupe rule (§6.4 item 3).
+/// order), used for the `(id, args_hash)` dedupe rule (§6.4 item 3). Hashes a length-prefixed
+/// encoding rather than round-tripping through `serde_json` — this is an opaque dedupe key,
+/// not a wire format, and a length prefix on every field means no separator character could
+/// ever make two different maps collide (R6: no serialization failure to handle at all).
 pub fn args_hash(args: &BTreeMap<String, String>) -> String {
-    let bytes = serde_json::to_vec(args).expect("a BTreeMap<String, String> always serializes");
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity("sha256:".len() + digest.len() * 2);
-    hex.push_str("sha256:");
-    for byte in digest.as_slice() {
-        let _ = write!(hex, "{byte:02x}");
+    let mut bytes = Vec::new();
+    for (key, value) in args {
+        bytes.extend_from_slice(&key.len().to_le_bytes());
+        bytes.extend_from_slice(key.as_bytes());
+        bytes.extend_from_slice(&value.len().to_le_bytes());
+        bytes.extend_from_slice(value.as_bytes());
     }
-    hex
+    kadou_core::sha256_hex_prefixed(&bytes)
 }
 
 pub struct PendingStore {
@@ -139,7 +138,7 @@ impl PendingStore {
     }
 
     pub fn save(&self, record: &PendingRecord) -> std::io::Result<()> {
-        let text = serde_json::to_string(record).expect("PendingRecord always serializes");
+        let text = serde_json::to_string(record).map_err(std::io::Error::other)?;
         fsutil::write_atomic_0600(&self.path(&record.pending_id), text.as_bytes())
     }
 

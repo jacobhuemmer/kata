@@ -27,7 +27,7 @@ pub use config::{
     AgentConfig, Config, ConfigError, EMPTY_TEMPLATE, ExecConfig, FolderConfig, McpConfig,
     NotifyConfig, TrustConfig, VaultConfig,
 };
-pub use digest::file_sha256;
+pub use digest::{file_sha256, sha256_hex_prefixed};
 pub use header::{
     Diagnostic, ParsedHeader, Severity, looks_like_kata_candidate, parse_header, render_header,
 };

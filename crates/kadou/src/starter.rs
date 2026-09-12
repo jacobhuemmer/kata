@@ -29,7 +29,14 @@ pub fn materialize_if_needed(kata_dir: &Path) -> std::io::Result<()> {
     }
     for name in StarterKata::iter() {
         let dest = starter_dir.join(name.as_ref());
-        let file = StarterKata::get(&name).expect("embedded file listed by iter() must exist");
+        let Some(file) = StarterKata::get(&name) else {
+            // `iter()` just yielded this exact name, so `get()` cannot really miss it — but
+            // failing this one file closed rather than panicking the whole command is still
+            // strictly safer (R6).
+            return Err(std::io::Error::other(format!(
+                "embedded starter file `{name}` listed by iter() but missing from get()"
+            )));
+        };
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }

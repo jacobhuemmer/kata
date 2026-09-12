@@ -92,44 +92,54 @@ pub fn tools_list_value() -> Value {
     })
 }
 
+/// [`tools_list_value`] is a `json!` literal in this file, not user or file input — every
+/// `SchemaError` here names a shape defect that could only come from editing that literal
+/// incorrectly, and both [`tools_list_bytes_matches_the_checked_in_fixture_byte_for_byte`] and
+/// the wire-level byte gate in `tests/mcp_server.rs` would fail immediately if it ever did
+/// (R6: a typed `Result` instead of `expect`, so a mistake here is still a clean error, not a
+/// panic, on whichever path notices first).
+#[derive(Debug, thiserror::Error)]
+#[error("malformed tools_list_value: {0}")]
+pub struct SchemaError(String);
+
 /// Compact (non-pretty) UTF-8 bytes of [`tools_list_value`] — what `kadou mcp schema --bytes`
 /// prints and what the byte-identity tests compare against `docs/design/tools-list.json`.
-pub fn tools_list_bytes() -> Vec<u8> {
-    serde_json::to_vec(&tools_list_value()).expect("the static tool schema always serializes")
+pub fn tools_list_bytes() -> Result<Vec<u8>, SchemaError> {
+    serde_json::to_vec(&tools_list_value()).map_err(|e| SchemaError(e.to_string()))
 }
 
 /// The four tools as real [`Tool`] values, built from [`tools_list_value`] so the served
 /// `tools/list` response can never drift from the checked-in schema (§5.1: "exactly these
 /// four tools, in this order").
-pub fn build_tools() -> Vec<Tool> {
+pub fn build_tools() -> Result<Vec<Tool>, SchemaError> {
     let value = tools_list_value();
     value["tools"]
         .as_array()
-        .expect("tools_list_value always has a tools array")
+        .ok_or_else(|| SchemaError("no top-level \"tools\" array".to_string()))?
         .iter()
         .map(tool_from_value)
         .collect()
 }
 
-fn tool_from_value(entry: &Value) -> Tool {
+fn tool_from_value(entry: &Value) -> Result<Tool, SchemaError> {
     let name = entry["name"]
         .as_str()
-        .expect("every tool entry has a name")
+        .ok_or_else(|| SchemaError("a tool entry has no \"name\" string".to_string()))?
         .to_string();
     let description = entry["description"]
         .as_str()
-        .expect("every tool entry has a description")
+        .ok_or_else(|| SchemaError(format!("tool `{name}` has no \"description\" string")))?
         .to_string();
     let input_schema = entry["inputSchema"]
         .as_object()
-        .expect("every tool entry has an inputSchema object")
+        .ok_or_else(|| SchemaError(format!("tool `{name}` has no \"inputSchema\" object")))?
         .clone();
 
     let mut tool = Tool::new(name, description, Arc::new(input_schema));
     if let Some(annotations) = entry.get("annotations") {
         tool = tool.with_annotations(annotations_from_value(annotations));
     }
-    tool
+    Ok(tool)
 }
 
 fn annotations_from_value(value: &Value) -> ToolAnnotations {
@@ -163,7 +173,7 @@ mod tests {
             expected.pop();
         }
         assert_eq!(
-            String::from_utf8(tools_list_bytes()).unwrap(),
+            String::from_utf8(tools_list_bytes().unwrap()).unwrap(),
             String::from_utf8(expected).unwrap()
         );
     }
@@ -171,15 +181,15 @@ mod tests {
     #[test]
     fn tools_list_is_at_most_2800_bytes() {
         assert!(
-            tools_list_bytes().len() <= 2800,
+            tools_list_bytes().unwrap().len() <= 2800,
             "tools/list grew past the 2800-byte CI gate (§1.3, §9 slice 5): {} bytes",
-            tools_list_bytes().len()
+            tools_list_bytes().unwrap().len()
         );
     }
 
     #[test]
     fn build_tools_has_the_four_tools_in_order() {
-        let tools = build_tools();
+        let tools = build_tools().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
         assert_eq!(
             names,

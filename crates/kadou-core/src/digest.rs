@@ -8,11 +8,11 @@ use std::fmt::Write as _;
 
 use sha2::{Digest as _, Sha256};
 
-/// `sha256:<hex>` of `path`'s contents, matching the `describe_kata` field spelling (§5.5).
-pub fn file_sha256(path: &Path) -> io::Result<String> {
-    let bytes = std::fs::read(path)?;
+/// `sha256:<hex>` of `bytes` — the one place this formatting loop lives (C5,
+/// `docs/design/11-code-review.md`: previously duplicated verbatim in `kadou-mcp/pending.rs`).
+pub fn sha256_hex_prefixed(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(&bytes);
+    hasher.update(bytes);
     let digest = hasher.finalize();
 
     let mut hex = String::with_capacity("sha256:".len() + digest.len() * 2);
@@ -20,7 +20,13 @@ pub fn file_sha256(path: &Path) -> io::Result<String> {
     for byte in digest.as_slice() {
         let _ = write!(hex, "{byte:02x}");
     }
-    Ok(hex)
+    hex
+}
+
+/// `sha256:<hex>` of `path`'s contents, matching the `describe_kata` field spelling (§5.5).
+pub fn file_sha256(path: &Path) -> io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    Ok(sha256_hex_prefixed(&bytes))
 }
 
 #[cfg(test)]

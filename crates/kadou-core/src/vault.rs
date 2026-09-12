@@ -96,6 +96,8 @@ pub enum VaultError {
     },
     #[error("failed to encrypt the vault: {0}")]
     Encrypt(#[source] age::EncryptError),
+    #[error("failed to serialize the vault: {0}")]
+    Serialize(#[source] serde_json::Error),
     #[error("{path} is not a valid age identity: {message}")]
     BadIdentity { path: PathBuf, message: String },
     #[cfg(feature = "keyring")]
@@ -139,7 +141,7 @@ fn parse_envelope(text: &str, path: &Path) -> Result<Vec<u8>, VaultError> {
 }
 
 /// Renders `ciphertext` as the Go-compatible envelope JSON text (§6.5).
-fn encode_envelope(ciphertext: &[u8]) -> String {
+fn encode_envelope(ciphertext: &[u8]) -> Result<String, VaultError> {
     let data = format!(
         "{AGE_TAG}{}",
         base64::engine::general_purpose::STANDARD_NO_PAD.encode(ciphertext)
@@ -148,7 +150,7 @@ fn encode_envelope(ciphertext: &[u8]) -> String {
         version: ENVELOPE_VERSION,
         data,
     };
-    serde_json::to_string(&envelope).expect("Envelope always serializes")
+    serde_json::to_string(&envelope).map_err(VaultError::Serialize)
 }
 
 /// Decrypts `ciphertext` with any of `identities`, reporting decrypt failures against
@@ -332,7 +334,7 @@ impl VaultStore {
     #[cfg(feature = "keyring")]
     fn write_identity_via_keyring(&self, path: &Path, line: &str) -> Result<(), VaultError> {
         let ciphertext = keyring_backend::wrap_identity(line)?;
-        let text = encode_envelope(&ciphertext);
+        let text = encode_envelope(&ciphertext)?;
         fsutil::write_atomic_0600(path, text.as_bytes()).map_err(|source| VaultError::Write {
             path: path.to_path_buf(),
             source,
@@ -380,9 +382,9 @@ impl VaultStore {
         })?;
         let identity = self.ensure_identity()?;
         let recipient = identity.to_public();
-        let plaintext = serde_json::to_vec(&vault.entries).expect("Vault entries always serialize");
+        let plaintext = serde_json::to_vec(&vault.entries).map_err(VaultError::Serialize)?;
         let ciphertext = age::encrypt(&recipient, &plaintext).map_err(VaultError::Encrypt)?;
-        let text = encode_envelope(&ciphertext);
+        let text = encode_envelope(&ciphertext)?;
         let path = self.vault_file();
         fsutil::write_atomic_0600(&path, text.as_bytes())
             .map_err(|source| VaultError::Write { path, source })
@@ -430,9 +432,10 @@ impl VaultStore {
 
         let mut vault = self.load()?;
         for (name, secret) in imported.names() {
-            if vault.get(name).is_none() {
-                let value = imported.get(name).expect("just iterated").value.clone();
-                vault.set(name, value, secret);
+            if vault.get(name).is_none()
+                && let Some(entry) = imported.get(name)
+            {
+                vault.set(name, entry.value.clone(), secret);
             }
         }
         self.save(&vault)?;
@@ -755,7 +758,7 @@ mod tests {
         let payload = serde_json::json!({ "global": global_map, "catalog": catalog });
         let plaintext = serde_json::to_vec(&payload).unwrap();
         let ciphertext = age::encrypt(&recipient, &plaintext).unwrap();
-        let vault_json = encode_envelope(&ciphertext).into_bytes();
+        let vault_json = encode_envelope(&ciphertext).unwrap().into_bytes();
 
         let keys_txt = format!(
             "# created: synthetic-test-fixture\n{}\n",

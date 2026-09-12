@@ -848,7 +848,13 @@ pub fn run_mcp_serve(
 /// `kadou mcp schema [--bytes]` (§7.1): prints the served `tools/list` JSON, and — with
 /// `--bytes` — its byte size, the same number the CI byte gate checks (§1.3).
 pub fn run_mcp_schema(bytes: bool) -> ExitCode {
-    let json_bytes = kadou_mcp::schema::tools_list_bytes();
+    let json_bytes = match kadou_mcp::schema::tools_list_bytes() {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     println!("{}", String::from_utf8_lossy(&json_bytes));
     if bytes {
         println!("bytes: {}", json_bytes.len());
