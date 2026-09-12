@@ -193,6 +193,43 @@ fn reject_records_a_reason_and_bans_future_approval() {
 }
 
 #[test]
+fn skip_records_a_skipped_action_and_leaves_the_draft_queued() {
+    // D11 (`docs/design/12-mvp-review.md` §3): 06 §2.9's "skip: leave queued" -- unlike
+    // approve/reject, skip is never terminal and never removes the draft from the queue.
+    let dir = tempfile::tempdir().unwrap();
+    let home = MineHome::new(dir.path());
+    write_queue_entry(&home, "fp1", KATA, "{}").unwrap();
+
+    skip(&home, "fp1").unwrap();
+
+    let rows = read_audit(&home);
+    assert_eq!(rows[0].action, "skipped");
+    assert!(read_queue_entry(&home, "fp1").is_some());
+}
+
+#[test]
+fn skip_can_be_recorded_more_than_once_and_never_bans_a_later_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = MineHome::new(dir.path());
+    write_queue_entry(&home, "fp1", KATA, "{}").unwrap();
+
+    skip(&home, "fp1").unwrap();
+    skip(&home, "fp1").unwrap();
+
+    assert_eq!(read_audit(&home).len(), 2);
+    approve(&home, "fp1", "x").unwrap();
+}
+
+#[test]
+fn skipping_an_unknown_fingerprint_is_a_clean_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = MineHome::new(dir.path());
+
+    let err = skip(&home, "nope").unwrap_err();
+    assert!(matches!(err, ApproveError::NotFound(_)));
+}
+
+#[test]
 fn audit_rows_never_contain_command_text_fields() {
     // Structural guarantee: AuditRow has no field that could hold a command, so this is a
     // compile-time property as much as a runtime one -- this test just pins the JSON shape.
