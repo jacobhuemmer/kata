@@ -915,3 +915,57 @@ async fn dry_run_resolves_env_without_executing() {
     );
     assert_eq!(value["env_public"]["NAME"], "world");
 }
+
+#[tokio::test]
+async fn propose_kata_over_mcp_then_kadou_accept_lands_it_in_the_library() {
+    // §6.7/§9 slice 7: propose_kata never registers or runs the draft (covered above); this
+    // proves the other half of the loop -- kadou accept (kadou_mcp::prepare_accept/
+    // apply_accept, the same functions crates/kadou's `kadou accept` calls) picks up exactly
+    // what propose_kata wrote and lands it in the library, after which list_kata sees it.
+    let home = setup_sesami(|_| {});
+    std::fs::create_dir_all(home.paths.kata_dir().join("ops")).unwrap();
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let source = "#!/bin/sh\n# ---\n# about: Say hello to the team\n# risk:  low\n# ---\necho hi\n";
+    let (propose_value, propose_is_error) = call(
+        &client,
+        "propose_kata",
+        serde_json::json!({"id": "ops/hello-team", "source": source}),
+    )
+    .await;
+    assert!(!propose_is_error, "{propose_value}");
+    assert_eq!(propose_value["accept"], "kadou accept ops/hello-team");
+
+    let prep = kadou_mcp::prepare_accept(
+        &home.paths.state_dir,
+        &home.paths.kata_dir(),
+        "ops/hello-team",
+        None,
+    )
+    .expect("the draft propose_kata wrote must be accept-able");
+    assert!(prep.diff.contains("/dev/null"));
+    kadou_mcp::apply_accept(&prep).expect("apply_accept writes the kata and removes the draft");
+
+    assert_eq!(
+        std::fs::read_to_string(home.paths.kata_dir().join("ops/hello-team.sh")).unwrap(),
+        source
+    );
+    assert!(
+        !home
+            .paths
+            .state_dir
+            .join("proposed/ops/hello-team.sh")
+            .exists()
+    );
+
+    let (list_value, list_is_error) = call(&client, "list_kata", serde_json::json!({})).await;
+    assert!(!list_is_error, "{list_value}");
+    let ids: Vec<&str> = list_value["kata"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"ops/hello-team"), "{ids:?}");
+}
