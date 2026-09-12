@@ -210,3 +210,28 @@ fn approve_then_accept_is_the_only_path_to_executable() {
 
     assert_never_written(state_dir.path());
 }
+
+#[test]
+fn a_held_lock_makes_run_once_report_already_running_and_process_nothing() {
+    // 06 §3.4 rule 5: a concurrent run must exit immediately rather than double-process the
+    // same input. A fresh lock file at MineHome::lock_path() is indistinguishable from one a
+    // live run just wrote.
+    let state_dir = tempfile::tempdir().unwrap();
+    let config = MineConfig::new(
+        fixtures_dir().join("index.jsonl"),
+        state_dir.path().to_path_buf(),
+    );
+    let home = MineHome::new(state_dir.path());
+    std::fs::create_dir_all(home.lock_path().parent().unwrap()).unwrap();
+    std::fs::write(home.lock_path(), b"").unwrap();
+
+    let summary = run_once(&config);
+    assert!(summary.already_running, "{summary:?}");
+    assert_eq!(
+        summary,
+        kadou_mine::orchestrate::RunSummary {
+            already_running: true,
+            ..Default::default()
+        }
+    );
+}
