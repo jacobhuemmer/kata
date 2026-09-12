@@ -64,6 +64,14 @@ pub fn head(dir: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// `true` when `dir`'s working tree has any uncommitted change — staged, unstaged, or
+/// untracked (`git status --porcelain` is non-empty). `false`, not an error, for a directory
+/// that isn't git-backed at all: `kadou remove` only needs "would `git status` complain",
+/// which is trivially no for a plain folder.
+pub fn has_local_changes(dir: &Path) -> bool {
+    run(dir, &["status", "--porcelain"]).is_ok_and(|text| !text.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
