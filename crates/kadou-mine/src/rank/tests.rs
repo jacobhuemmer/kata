@@ -42,7 +42,13 @@ fn worked_example_passes_cutoff_on_three_unique_sessions() {
 fn a_single_session_never_passes_cutoff_regardless_of_frequency() {
     let c = cluster(
         (0..20)
-            .map(|i| member("codex", "s1", &format!("2026-09-{:02}T00:00:00Z", (i % 28) + 1)))
+            .map(|i| {
+                member(
+                    "codex",
+                    "s1",
+                    &format!("2026-09-{:02}T00:00:00Z", (i % 28) + 1),
+                )
+            })
             .collect(),
         1,
         "2026-09-09T00:00:00Z",
@@ -125,7 +131,11 @@ fn a_catalog_conflict_heavily_penalizes_the_score() {
 #[test]
 fn score_is_finite_and_nonnegative() {
     let now = SystemTime::now();
-    let c = cluster(vec![member("codex", "s1", "2026-09-01T00:00:00Z")], 1, "2026-09-01T00:00:00Z");
+    let c = cluster(
+        vec![member("codex", "s1", "2026-09-01T00:00:00Z")],
+        1,
+        "2026-09-01T00:00:00Z",
+    );
     let s = score(&c, now, false);
     assert!(s.is_finite());
     assert!(s >= 0.0);
