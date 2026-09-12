@@ -35,6 +35,12 @@ exclude_re = [
   # these two lines produce the identical Ok(())/error outcome.
   '^crates/kadou/src/commands\.rs:1242:',
   '^crates/kadou/src/commands\.rs:943:',
+  # 12-mvp-review Later-10: `send_with`'s existing tests only assert the missing-binary path
+  # is a no-op (an empty PATH override so `Command::spawn` fails silently); nothing on that
+  # path ever inspects the AppleScript/notify-send arguments `send_with` builds, so a mutant
+  # in its script/quoting logic can never be caught by any test, the same "unreachable by
+  # cargo test" reasoning as the picker exclusions above.
+  '^crates/kadou-mcp/src/notify\.rs:.*send_with',
 ]
 
 # kadou-exec spawns real child processes and asserts on SIGTERM/SIGKILL timing (KILL_GRACE =
