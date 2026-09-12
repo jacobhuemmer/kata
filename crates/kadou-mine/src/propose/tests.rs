@@ -14,7 +14,10 @@ fn member(agent: &str, session: &str, when: &str) -> Member {
 }
 
 fn params(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    pairs
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 fn worked_example_cluster() -> (Cluster, Vec<StepWithParams>) {
@@ -33,11 +36,20 @@ fn worked_example_cluster() -> (Cluster, Vec<StepWithParams>) {
     let steps = vec![
         StepWithParams {
             template: "kubectl --context $CONTEXT -n $NAMESPACE get pods -l app=$APP".to_string(),
-            params: params(&[("CONTEXT", "eks-dev"), ("NAMESPACE", "payments"), ("APP", "api")]),
+            params: params(&[
+                ("CONTEXT", "eks-dev"),
+                ("NAMESPACE", "payments"),
+                ("APP", "api"),
+            ]),
         },
         StepWithParams {
-            template: "kubectl --context $CONTEXT -n $NAMESPACE logs deploy/$APP --tail=$N".to_string(),
-            params: params(&[("CONTEXT", "eks-dev"), ("NAMESPACE", "payments"), ("N", "200")]),
+            template: "kubectl --context $CONTEXT -n $NAMESPACE logs deploy/$APP --tail=$N"
+                .to_string(),
+            params: params(&[
+                ("CONTEXT", "eks-dev"),
+                ("NAMESPACE", "payments"),
+                ("N", "200"),
+            ]),
         },
     ];
     (cluster, steps)
