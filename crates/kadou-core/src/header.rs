@@ -199,6 +199,14 @@ pub fn parse_header(source: &str) -> (Option<ParsedHeader>, Vec<Diagnostic>) {
                     // Column of `rest` in the raw line: 1 (for '#') + 1 (space) + 2 (indent).
                     let col_offset = 5;
                     match parse_arg_line(rest, line_no, col_offset) {
+                        Ok(arg) if args.iter().any(|a: &Arg| a.name == arg.name) => {
+                            diags.push(Diagnostic::error(
+                                line_no,
+                                col_offset,
+                                arg.name.len(),
+                                format!("duplicate arg `{}`", arg.name),
+                            ));
+                        }
                         Ok(arg) => args.push(arg),
                         Err(diag) => diags.push(diag),
                     }
@@ -315,6 +323,18 @@ pub fn parse_header(source: &str) -> (Option<ParsedHeader>, Vec<Diagnostic>) {
             }
             "alias" => {
                 for token in value.split_whitespace() {
+                    if !is_valid_id_segment(token) {
+                        diags.push(
+                            Diagnostic::error(
+                                line_no,
+                                key_col,
+                                token.len(),
+                                format!("invalid alias `{token}`"),
+                            )
+                            .with_fix("aliases match ^[a-z0-9][a-z0-9-]*$, the same shape as a folder/name segment"),
+                        );
+                        continue;
+                    }
                     alias.push(token.to_string());
                 }
             }
@@ -406,6 +426,8 @@ fn strip_comment_prefix(line: &str) -> &str {
     rest.strip_prefix(' ').unwrap_or(rest)
 }
 
+/// An arg/need name: `^[a-z][a-z0-9_]*$` (it becomes an env var), plus rejection of names that
+/// would shadow a shell/env variable.
 fn validate_name(name: &str) -> Result<(), &'static str> {
     let mut chars = name.chars();
     let ok = matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
@@ -422,6 +444,18 @@ fn validate_name(name: &str) -> Result<(), &'static str> {
         return Err("this name is reserved because it would shadow a shell/env variable");
     }
     Ok(())
+}
+
+/// The id-segment grammar (PRD §4.2: `^[a-z0-9][a-z0-9-]*$`), shared by aliases (which are not
+/// env vars and use the same kebab-case shape as a folder/name segment, e.g. `quick-deploy`)
+/// and by [`crate::scan`]'s id-segment check (I-11).
+pub(crate) fn is_valid_id_segment(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 fn parse_arg_line(content: &str, line_no: usize, col_offset: usize) -> Result<Arg, Diagnostic> {
