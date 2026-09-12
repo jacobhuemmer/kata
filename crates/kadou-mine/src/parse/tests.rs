@@ -19,6 +19,61 @@ fn claude_ignores_non_bash_tool_use_and_text_content() {
 }
 
 #[test]
+fn claude_bash_tool_use_is_the_shell_kind() {
+    let line = r#"{"type":"assistant","timestamp":"2026-09-01T00:00:00Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"kubectl get pods"}}]}}"#;
+    let events = parse_transcript(Agent::Claude, line);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, EventKind::Shell);
+}
+
+#[test]
+fn claude_extracts_a_written_sh_file_as_a_script_file_kind() {
+    // 06 §2.3 "Generated script file": a Write whose path ends .sh/.bash, body only.
+    let body = "#!/bin/sh\nkubectl get pods\nkubectl logs deploy/api\n";
+    let line = format!(
+        r#"{{"type":"assistant","timestamp":"2026-09-01T00:00:00Z","message":{{"content":[{{"type":"tool_use","name":"Write","input":{{"file_path":"scripts/pod-logs.sh","content":{}}}}}]}}}}"#,
+        serde_json::to_string(body).unwrap()
+    );
+    let events = parse_transcript(Agent::Claude, &line);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, EventKind::ScriptFile);
+    assert_eq!(events[0].command, body);
+}
+
+#[test]
+fn claude_ignores_a_written_file_that_is_not_a_shell_script() {
+    let line = r#"{"type":"assistant","timestamp":"2026-09-01T00:00:00Z","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"notes.md","content":"hello notes"}}]}}"#;
+    assert!(parse_transcript(Agent::Claude, line).is_empty());
+}
+
+#[test]
+fn claude_extracts_a_fenced_shell_script_from_assistant_text() {
+    // 06 §2.3 "Fenced script": assistant markdown fences tagged sh/bash/shell.
+    let text = "Here you go:\n```sh\nkubectl get pods\nkubectl describe pod x\nkubectl logs deploy/api\n```\ndone";
+    let line = format!(
+        r#"{{"type":"assistant","timestamp":"2026-09-01T00:00:00Z","message":{{"content":[{{"type":"text","text":{}}}]}}}}"#,
+        serde_json::to_string(text).unwrap()
+    );
+    let events = parse_transcript(Agent::Claude, &line);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, EventKind::ScriptFence);
+    assert_eq!(
+        events[0].command,
+        "kubectl get pods\nkubectl describe pod x\nkubectl logs deploy/api"
+    );
+}
+
+#[test]
+fn claude_ignores_a_fence_tagged_with_a_non_shell_language() {
+    let text = "```python\nprint('hi')\n```";
+    let line = format!(
+        r#"{{"type":"assistant","timestamp":"2026-09-01T00:00:00Z","message":{{"content":[{{"type":"text","text":{}}}]}}}}"#,
+        serde_json::to_string(text).unwrap()
+    );
+    assert!(parse_transcript(Agent::Claude, &line).is_empty());
+}
+
+#[test]
 fn codex_extracts_command_execution_items() {
     let line = r#"{"timestamp":"2026-09-04T00:00:00Z","ordinal":1,"type":"response_item","payload":{"type":"item_completed","item":{"type":"CommandExecution","command":"kubectl get pods","parsed_cmd":[{"cmd":"kubectl"}],"stdout":"should never be read"}}}"#;
     let events = parse_transcript(Agent::Codex, line);
