@@ -158,7 +158,7 @@ fn resolve_one_need(need: &Need, vault: &Vault) -> ResolvedNeed {
         name: need.name.clone(),
         env_name,
         value: None,
-        secret: false,
+        secret: true,
     }
 }
 
