@@ -39,9 +39,12 @@ pub enum FolderError {
     },
 }
 
-/// `^[a-z0-9][a-z0-9-]*$` — the same segment shape a folder name's own id segment must match
-/// (§4.2).
-fn is_valid_folder_name(name: &str) -> bool {
+/// `^[a-z0-9][a-z0-9-]*$` — one id segment (§4.2): a folder name, and every `/`-separated
+/// piece of a kata or draft id. Shared by every crate that has to validate a name before
+/// joining it onto a path — `kadou-mcp`'s `propose_kata` id check and `kadou-mine`'s `mine
+/// approve --into` guard both call this rather than keeping their own copy (12-mvp-review B4:
+/// `kadou-mine` cannot depend on `kadou-mcp`, so the shared copy lives here instead).
+pub fn valid_id_segment(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
         Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit() => {}
@@ -62,7 +65,7 @@ fn validate_folder_name(name: &str) -> Result<(), FolderError> {
     if RESERVED_FOLDER_NAMES.contains(&name) {
         return Err(FolderError::ReservedName(name.to_string()));
     }
-    if !is_valid_folder_name(name) {
+    if !valid_id_segment(name) {
         return Err(FolderError::InvalidName(name.to_string()));
     }
     Ok(())

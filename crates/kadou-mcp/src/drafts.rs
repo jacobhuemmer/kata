@@ -64,23 +64,15 @@ pub enum ProposeError {
 }
 
 /// `true` when every `/`-separated segment of `id` matches the PRD §4.2 segment rule
-/// (`^[a-z0-9][a-z0-9-]*$`) and there are at least two segments -- exactly
-/// [`schema::PROPOSE_ID_PATTERN`], checked by hand rather than a regex crate.
+/// (`^[a-z0-9][a-z0-9-]*$`, [`kadou_core::valid_id_segment`]) and there are at least two
+/// segments -- exactly [`schema::PROPOSE_ID_PATTERN`], checked by hand rather than a regex
+/// crate.
 fn valid_propose_id(id: &str) -> bool {
     if id.len() > schema::PROPOSE_ID_MAX_LEN {
         return false;
     }
     let segments: Vec<&str> = id.split('/').collect();
-    segments.len() >= 2 && segments.iter().all(|s| valid_id_segment(s))
-}
-
-fn valid_id_segment(segment: &str) -> bool {
-    let mut chars = segment.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit() => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    segments.len() >= 2 && segments.iter().all(|s| kadou_core::valid_id_segment(s))
 }
 
 #[derive(Debug)]
@@ -267,7 +259,7 @@ struct AcceptId {
 }
 
 fn parse_accept_id(id: &str) -> Option<AcceptId> {
-    if !id.split('/').all(valid_id_segment) {
+    if !id.split('/').all(kadou_core::valid_id_segment) {
         return None;
     }
     let (first, rest) = id.split_once('/')?;

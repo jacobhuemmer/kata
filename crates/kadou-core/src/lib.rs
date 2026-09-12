@@ -33,6 +33,7 @@ pub use config::{
     NotifyConfig, TrustConfig, VaultConfig,
 };
 pub use digest::{file_sha256, sha256_hex_prefixed};
+pub use folder::valid_id_segment;
 pub use header::{
     Diagnostic, ParsedHeader, Severity, looks_like_kata_candidate, parse_header, render_header,
 };

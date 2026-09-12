@@ -202,6 +202,8 @@ pub enum ApproveError {
     NotFound(String),
     #[error("fingerprint {0} was already {1}")]
     AlreadyDecided(String, String),
+    #[error("invalid --into name `{0}`; expected one id segment matching ^[a-z0-9][a-z0-9-]*$, not a path")]
+    InvalidName(String),
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -211,7 +213,17 @@ pub enum ApproveError {
 /// "Approve copies the draft into the inactive `mined` staging area"). Refuses a fingerprint
 /// that was already approved or rejected (idempotency rule 3) rather than silently
 /// overwriting a human decision.
+///
+/// `name` is checked against [`kadou_core::valid_id_segment`] *before* it is ever joined onto
+/// `mined_dir` (B4/D16, `docs/design/12-mvp-review.md` §3, §6): `--into` is human-typed input
+/// that used to reach `mined_dir().join(format!("{name}.sh"))` verbatim, so
+/// `--into ../../../.config/kadou/kata/sesami/pwn` wrote an executable kata straight into the
+/// library, skipping `kadou accept`'s diff-and-confirm review gate entirely.
 pub fn approve(home: &MineHome, fingerprint: &str, name: &str) -> Result<PathBuf, ApproveError> {
+    if !kadou_core::valid_id_segment(name) {
+        return Err(ApproveError::InvalidName(name.to_string()));
+    }
+
     let rows = read_audit(home);
     if let Some(action) = latest_action(&rows, fingerprint)
         && (action == "approved" || action == "rejected")
