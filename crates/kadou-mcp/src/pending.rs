@@ -468,6 +468,56 @@ mod tests {
     }
 
     #[test]
+    fn is_expired_treats_an_unparseable_expires_as_expired_fail_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PendingStore::new(dir.path());
+        let mut record = store
+            .create(
+                "sesami/ses-deploy",
+                "sesami",
+                kadou_core::RiskLevel::Critical,
+                BTreeMap::new(),
+                "mcp",
+                None,
+                "sha256:abc",
+                "src",
+                None,
+            )
+            .unwrap();
+        record.expires = "not-a-timestamp".to_string();
+        assert!(record.is_expired());
+    }
+
+    #[test]
+    fn is_expired_is_false_right_before_the_deadline_and_true_right_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PendingStore::new(dir.path());
+        let mut record = store
+            .create(
+                "sesami/ses-deploy",
+                "sesami",
+                kadou_core::RiskLevel::Critical,
+                BTreeMap::new(),
+                "mcp",
+                None,
+                "sha256:abc",
+                "src",
+                None,
+            )
+            .unwrap();
+
+        record.expires =
+            humantime::format_rfc3339_seconds(SystemTime::now() + Duration::from_secs(1))
+                .to_string();
+        assert!(!record.is_expired());
+
+        record.expires =
+            humantime::format_rfc3339_seconds(SystemTime::now() - Duration::from_secs(1))
+                .to_string();
+        assert!(record.is_expired());
+    }
+
+    #[test]
     fn deny_deletes_the_record() {
         let dir = tempfile::tempdir().unwrap();
         let store = PendingStore::new(dir.path());
