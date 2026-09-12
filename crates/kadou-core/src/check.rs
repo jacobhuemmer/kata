@@ -458,6 +458,47 @@ mod tests {
     }
 
     #[test]
+    fn multiple_conflicts_render_in_a_deterministic_sorted_order() {
+        // PRD §4.7 requires insta snapshots of this output; a HashMap-ordered rendering would
+        // flake across process runs once there is more than one conflict in a folder (G6).
+        // Five names, deliberately not inserted in sorted order, make a HashMap's
+        // (effectively random, but insertion-order-correlated) iteration order land on this
+        // exact sequence by chance vanishingly unlikely.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "kata/a/x.sh",
+            "#!/bin/sh\n# ---\n# about: A\n# risk:  low\n# needs: zulu=1 yankee=1 xray=1 whiskey=1 victor=1\n# ---\necho hi\n",
+        );
+        write(
+            dir.path(),
+            "kata/b/y.sh",
+            "#!/bin/sh\n# ---\n# about: B\n# risk:  low\n# needs: zulu=2 yankee=2 xray=2 whiskey=2 victor=2\n# ---\necho hi\n",
+        );
+        let report = check_all(&dir.path().join("kata"), &Vault::default()).unwrap();
+        let folder_a = report.folders.iter().find(|f| f.folder == "a").unwrap();
+        let text = render_report(folder_a, dir.path(), false);
+
+        let positions: Vec<(usize, &str)> = ["victor", "whiskey", "xray", "yankee", "zulu"]
+            .iter()
+            .map(|name| {
+                (
+                    text.find(&format!("need `{name}`")).unwrap_or_else(|| {
+                        panic!("expected a conflict diagnostic for `{name}`: {text}")
+                    }),
+                    *name,
+                )
+            })
+            .collect();
+        let mut sorted = positions.clone();
+        sorted.sort_by_key(|(pos, _)| *pos);
+        assert_eq!(
+            positions, sorted,
+            "conflict diagnostics must render in sorted-by-name order: {text}"
+        );
+    }
+
+    #[test]
     fn missing_need_warns_without_a_vault_entry_but_not_with_one() {
         let dir = tempfile::tempdir().unwrap();
         write(
