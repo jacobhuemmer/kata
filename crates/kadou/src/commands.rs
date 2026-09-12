@@ -660,11 +660,16 @@ pub fn run_show(id: Option<String>) -> ExitCode {
 
     let paths = resolve_paths();
     materialize_starter(&paths);
+    let config = load_config(&paths);
 
     let kata = match find_kata_or_report(&paths.kata_dir(), &id) {
         Ok(k) => k,
         Err(code) => return code,
     };
+
+    if let Err(code) = check_human_ceiling(&kata, &config) {
+        return code;
+    }
 
     let sha256 = match kadou_core::file_sha256(&kata.path) {
         Ok(digest) => digest,
