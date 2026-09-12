@@ -285,11 +285,7 @@ fn main() -> std::process::ExitCode {
             root,
         }) => commands::run_get(url, as_folder, git_ref, root),
         Some(Command::Update { folder }) => commands::run_update(folder),
-        Some(Command::Remove {
-            folder,
-            yes,
-            force,
-        }) => commands::run_remove(folder, yes, force),
+        Some(Command::Remove { folder, yes, force }) => commands::run_remove(folder, yes, force),
         Some(Command::Accept { id, into, yes }) => commands::run_accept(id, into, yes),
         Some(cmd @ Command::New { .. }) => stub("new", 8, Some(&cmd)),
         Some(cmd @ Command::Edit { .. }) => stub("edit", 8, Some(&cmd)),

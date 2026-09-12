@@ -1439,7 +1439,12 @@ fn update_pulls_a_new_commit_from_the_fixture_remote() {
     let other = fixture_root.path().join("other-checkout");
     run_git(
         fixture_root.path(),
-        &["clone", "-q", bare.to_str().unwrap(), other.to_str().unwrap()],
+        &[
+            "clone",
+            "-q",
+            bare.to_str().unwrap(),
+            other.to_str().unwrap(),
+        ],
     );
     run_git(&other, &["config", "user.email", "test@example.com"]);
     run_git(&other, &["config", "user.name", "test"]);
@@ -1482,8 +1487,7 @@ fn update_leaves_a_dirty_checkout_alone_with_a_sentence_saying_so() {
         .assert()
         .success();
     std::fs::write(
-        home.path()
-            .join(".config/kadou/kata/team/uncommitted.txt"),
+        home.path().join(".config/kadou/kata/team/uncommitted.txt"),
         "x",
     )
     .unwrap();
@@ -1508,11 +1512,7 @@ fn remove_refuses_starter() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("reserved"));
-    assert!(
-        home.path()
-            .join(".config/kadou/kata/starter")
-            .is_dir()
-    );
+    assert!(home.path().join(".config/kadou/kata/starter").is_dir());
 }
 
 #[test]
@@ -1525,8 +1525,7 @@ fn remove_refuses_a_dirty_checkout_without_force() {
         .assert()
         .success();
     std::fs::write(
-        home.path()
-            .join(".config/kadou/kata/team/uncommitted.txt"),
+        home.path().join(".config/kadou/kata/team/uncommitted.txt"),
         "x",
     )
     .unwrap();
@@ -1651,8 +1650,9 @@ fn accept_of_a_bad_header_draft_fails_with_check_style_diagnostics() {
         .assert()
         .code(2)
         .stderr(
-            predicate::str::contains("-->")
-                .and(predicate::str::contains("risk is one of low, medium, high, critical")),
+            predicate::str::contains("-->").and(predicate::str::contains(
+                "risk is one of low, medium, high, critical",
+            )),
         );
     assert!(!home.path().join(".config/kadou/kata/ops/bad.sh").exists());
 }

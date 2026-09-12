@@ -1400,3 +1400,171 @@ pub fn run_grant_approve(pending_id: String, confirm_flag: Option<String>) -> Ex
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// kadou get / update / remove / accept (§6.7, §7.1, §9 slice 7)
+// ---------------------------------------------------------------------------
+
+/// `kadou get <url> [--as F] [--ref R] [--root SUB]` (§7.1, §4.1, §4.2).
+pub fn run_get(
+    url: String,
+    as_folder: Option<String>,
+    git_ref: Option<String>,
+    root: Option<String>,
+) -> ExitCode {
+    let paths = resolve_paths();
+    match kadou_core::folder::get_folder(
+        &paths.kata_dir(),
+        &url,
+        as_folder.as_deref(),
+        git_ref.as_deref(),
+        root.as_deref(),
+    ) {
+        Ok(target) => {
+            println!("cloned {url} into {}", target.display());
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// One `kadou update` outcome, rendered to a human-facing line (§7.1, §9 slice 7).
+fn print_update_outcome(outcome: &kadou_core::folder::UpdateOutcome) -> bool {
+    use kadou_core::folder::UpdateOutcome;
+    match outcome {
+        UpdateOutcome::Pulled { folder } => {
+            println!("updated {folder}");
+            true
+        }
+        UpdateOutcome::NotGitBacked { folder } => {
+            println!("{folder} is not a git checkout; skipped");
+            true
+        }
+        UpdateOutcome::Dirty { folder } => {
+            println!("{folder} has local changes; left alone");
+            true
+        }
+        UpdateOutcome::Failed { folder, error } => {
+            eprintln!("error: {folder}: {error}");
+            false
+        }
+    }
+}
+
+/// `kadou update [<folder>]` (§7.1): every folder when none is named.
+pub fn run_update(folder: Option<String>) -> ExitCode {
+    let paths = resolve_paths();
+    let kata_dir = paths.kata_dir();
+    let outcomes = match folder {
+        Some(f) => vec![kadou_core::folder::update_folder(&kata_dir, &f)],
+        None => kadou_core::folder::update_all(&kata_dir),
+    };
+    // Every folder is reported, even after one fails (§7.1) -- collect first, then fold, so
+    // a `.all()`/`.any()` short-circuit can never skip printing a later folder's outcome.
+    let results: Vec<bool> = outcomes.iter().map(print_update_outcome).collect();
+    let ok = results.into_iter().all(|ok| ok);
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// `kadou remove <folder> [--yes] [--force]` (§7.1): a `y/N` prompt unless `--yes`, then
+/// `folder::remove_folder`'s own reserved-name/dirty-without-force refusals (checked again
+/// there regardless of what this prompt already confirmed).
+pub fn run_remove(folder: String, yes: bool, force: bool) -> ExitCode {
+    let paths = resolve_paths();
+
+    if !yes {
+        let confirmed = std::io::stdin().is_terminal()
+            && inquire::Confirm::new(&format!("remove {folder}?"))
+                .with_default(false)
+                .prompt()
+                .unwrap_or(false);
+        if !confirmed {
+            println!("cancelled");
+            return ExitCode::from(1);
+        }
+    }
+
+    match kadou_core::folder::remove_folder(&paths.kata_dir(), &folder, force) {
+        Ok(()) => {
+            println!("removed {folder}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Runs `kadou check`'s loader on the just-accepted kata and prints any diagnostics, the same
+/// cargo-shaped text `kadou check` itself would print (§6.7 "and running `kadou check` on the
+/// result").
+fn check_accepted_kata(paths: &KadouPaths, target_path: &Path, folder: &str) -> bool {
+    let checked = kadou_core::check_path(target_path);
+    let ok = checked.diagnostics.iter().all(|d| !d.is_error());
+    if !checked.diagnostics.is_empty() {
+        let report = kadou_core::FolderReport {
+            folder: folder.to_string(),
+            files: vec![checked],
+        };
+        print!(
+            "{}",
+            kadou_core::render_report(&report, &paths.config_dir, false)
+        );
+    }
+    ok
+}
+
+/// `kadou accept <id> [--into F] [--yes]` (§6.7): prints the diff, prompts `y/N` unless
+/// `--yes`, copies the draft into its target folder, removes the draft, then runs `kadou
+/// check` on the result.
+pub fn run_accept(id: String, into: Option<String>, yes: bool) -> ExitCode {
+    let paths = resolve_paths();
+
+    let prep = match kadou_mcp::prepare_accept(
+        &paths.state_dir,
+        &paths.kata_dir(),
+        &id,
+        into.as_deref(),
+    ) {
+        Ok(prep) => prep,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    print!("{}", prep.diff);
+
+    if !yes {
+        let confirmed = std::io::stdin().is_terminal()
+            && inquire::Confirm::new(&format!("accept into {}?", prep.new_id))
+                .with_default(false)
+                .prompt()
+                .unwrap_or(false);
+        if !confirmed {
+            println!("cancelled");
+            return ExitCode::from(1);
+        }
+    }
+
+    if let Err(err) = kadou_mcp::apply_accept(&prep) {
+        eprintln!("error: {err}");
+        return ExitCode::FAILURE;
+    }
+    println!("accepted {}", prep.new_id);
+
+    let folder = prep.new_id.split('/').next().unwrap_or(&prep.new_id);
+    if check_accepted_kata(&paths, &prep.target_path, folder) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
