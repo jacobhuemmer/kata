@@ -429,3 +429,69 @@ field-deletion mutants that no test asserts the *absence* of a field on non-erro
 ### CI floor
 
 Rounded down to the nearest 5%: `kadou-mine` **75%** (measured 79.2%).
+
+## 2026-09-12 re-measurement (`docs/design/12-mvp-review.md` §6 fix slice, all five crates)
+
+First full `--workspace` run since B6/Later-4 sharded the CI `mutants` job (`a08c652`) and
+Later-10 added the six named regression tests (git `push --force` -> High, `propose_kata`'s id/
+source caps, `is_expired`'s deadline boundary, one golden `rank::score`, the `already_running`
+lock case, `redaction-failures.jsonl`'s format) plus the four typed-arg wire cases the dead
+`sd/dops/fix-mvp` worker left uncommitted. Also the first run under `.cargo/mutants.toml`'s new
+`notify.rs:.*send_with` exclusion.
+
+```
+cargo mutants --workspace -j 4
+```
+
+**1604 mutants tested in 62 minutes: 1241 caught, 162 missed, 3 timeouts, 198 unviable.**
+
+| Crate | Caught/Viable | % | Floor | Status |
+|---|---|---|---|---|
+| `kadou-core` | 431/484 | 89.0% | 85% | pass |
+| `kadou-exec` | 29/33 | 87.9% | 80% | pass |
+| `kadou-mcp` | 191/217 | 88.0% | 80% | pass |
+| `kadou` | 277/301 | 92.0% | 90% | pass |
+| `kadou-mine` | 313/371 | 84.4% | 75% | pass |
+
+Every crate clears its CI floor with room to spare; no floor changes needed.
+
+The four typed-arg wire tests confirmed their own target directly: `json_args_to_strings`'s
+`Value::String`/`Value::Number`/`Value::Bool` match-arm deletions (`kadou-mcp/src/tools.rs:454-
+456`) are all now in `caught.txt`, verified with a targeted `cargo mutants -p kadou-mcp -f
+src/tools.rs` before this workspace run and confirmed again here.
+
+### Remaining misses, by crate (unchanged categories, not blocking)
+
+**`kadou-core` (52)** — concentrated in `vault.rs` (17) and `header.rs` (15), the two files
+`docs/design/12-mvp-review.md` §8 notes were "last read in full... at `89a30c4`" with only
+targeted diffs since; `config.rs` (5), `history.rs` (4), `scan.rs`/`runner.rs` (3 each),
+`import.rs` (2), `resolve.rs`/`fsutil.rs`/`check.rs` (1 each) — mostly error-path branches
+(`io::ErrorKind::NotFound` guards in `Config::load`/`Config::edit`) that the test suite's
+happy-path fixtures don't independently isolate.
+
+**`kadou-exec` (4)** — `lib.rs` only; unchanged from prior measurements.
+
+**`kadou-mcp` (25)** — `tools.rs` (11, mostly unrelated to the four newly-caught arms above),
+`pending.rs` (7, down from before Later-10's TTL-boundary/fail-safe tests closed two of the
+prior gaps), `notify.rs` (4 — `notify`, `spawn_scoped`, and `send` itself, *not* `send_with`,
+which the new exclusion narrows out on purpose), `server.rs` (2), `visibility.rs` (1).
+
+**`kadou` (24)** — all in `commands.rs`; a mix of the same TTY-gated/interactive branches
+`.cargo/mutants.toml` already excludes by line and a handful of ordinary error-formatting
+branches (`load_redact_extra`, `run_mine_install_schedule`'s exit-status guard) the CLI test
+suite's happy-path assertions don't isolate individually.
+
+**`kadou-mine` (57)** — `orchestrate.rs` (17, same lock/bound-constant category as the prior
+`kadou-mine` measurement above), `rank.rs` (10) and `risk.rs` (9) newly measured in detail by
+this pass's own additions (the golden-score and git-push-force tests each caught their own
+named mutant but left sibling arithmetic-operator swaps and match-guard flips in the same
+functions unpinned — e.g. `score`'s `*`/`/` swaps at line 49, `tool_risk`'s `has("apply")`/
+`has("push")`/`has("delete")` guard-flip pairs), `cluster.rs` (6), `store.rs`/`normalize.rs` (5
+each), `schedule.rs`/`redact.rs` (2 each), `propose.rs` (1, a `TIMEOUT` on `replace_placeholder`
+rather than a real miss).
+
+### CI floor
+
+Unchanged — all five floors already pass at their existing values (`kadou-core` 85%,
+`kadou-exec` 80%, `kadou-mcp` 80%, `kadou` 90%, `kadou-mine` 75%); no floor was raised or
+lowered by this measurement.
