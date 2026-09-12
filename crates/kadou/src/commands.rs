@@ -2331,3 +2331,176 @@ pub fn run_accept(id: String, into: Option<String>, yes: bool) -> ExitCode {
         ExitCode::FAILURE
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paths_under(dir: &Path) -> KadouPaths {
+        KadouPaths {
+            config_dir: dir.join(".config/kadou"),
+            data_dir: dir.join(".local/share/kadou"),
+            state_dir: dir.join(".local/state/kadou"),
+        }
+    }
+
+    #[test]
+    fn elapsed_since_parses_rfc3339_and_saturates_on_garbage() {
+        let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
+        assert!(elapsed_since(&now) < Duration::from_secs(5));
+        assert_eq!(elapsed_since("not a timestamp"), Duration::default());
+    }
+
+    #[test]
+    fn styled_for_stdout_is_false_off_a_tty_regardless_of_plain() {
+        // assert_cmd/cargo test never give a unit test a real TTY either, so both arguments
+        // must agree with `ui::style::use_color(false, _, _)`: always false.
+        assert!(!styled_for_stdout(false));
+        assert!(!styled_for_stdout(true));
+    }
+
+    #[test]
+    fn build_folder_row_filters_kata_above_the_ceiling_and_names_them_without_the_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let kata_dir = dir.path().join("kata");
+        std::fs::create_dir_all(kata_dir.join("ops")).unwrap();
+        std::fs::write(
+            kata_dir.join("ops/low.sh"),
+            "#!/bin/sh\n# ---\n# about: Low\n# risk:  low\n# ---\necho hi\n",
+        )
+        .unwrap();
+        std::fs::write(
+            kata_dir.join("ops/crit.sh"),
+            "#!/bin/sh\n# ---\n# about: Crit\n# risk:  critical\n# ---\necho hi\n",
+        )
+        .unwrap();
+
+        let row = build_folder_row(&kata_dir, "ops", RiskLevel::Medium, &Vault::default());
+        assert_eq!(row.kata.len(), 1);
+        assert_eq!(row.kata[0].name, "low");
+        assert!(!row.git_backed);
+        assert_eq!(row.error_count, 0);
+    }
+
+    #[test]
+    fn build_folder_row_at_the_ceiling_boundary_is_still_visible() {
+        // Pins the `>` (not `>=`) boundary: a kata exactly at the ceiling is visible (§6.2).
+        let dir = tempfile::tempdir().unwrap();
+        let kata_dir = dir.path().join("kata");
+        std::fs::create_dir_all(kata_dir.join("ops")).unwrap();
+        std::fs::write(
+            kata_dir.join("ops/at-ceiling.sh"),
+            "#!/bin/sh\n# ---\n# about: At ceiling\n# risk:  high\n# ---\necho hi\n",
+        )
+        .unwrap();
+
+        let row = build_folder_row(&kata_dir, "ops", RiskLevel::High, &Vault::default());
+        assert_eq!(row.kata.len(), 1);
+    }
+
+    #[test]
+    fn build_folder_row_reports_check_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let kata_dir = dir.path().join("kata");
+        std::fs::create_dir_all(kata_dir.join("broken")).unwrap();
+        std::fs::write(
+            kata_dir.join("broken/x.sh"),
+            "#!/bin/sh\n# ---\n# risk:  mediun\n# ---\necho hi\n",
+        )
+        .unwrap();
+
+        let row = build_folder_row(&kata_dir, "broken", RiskLevel::Critical, &Vault::default());
+        assert!(row.error_count > 0);
+    }
+
+    #[test]
+    fn build_grant_rows_includes_only_outstanding_records_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_under(dir.path());
+        let store = PendingStore::new(&paths.state_dir);
+
+        let first = store
+            .create(
+                "sesami/a",
+                "sesami",
+                RiskLevel::Critical,
+                BTreeMap::new(),
+                "mcp",
+                Some("claude-code"),
+                "sha256:aaa",
+                "source-a",
+                None,
+            )
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(1100));
+        let _second = store
+            .create(
+                "sesami/b",
+                "sesami",
+                RiskLevel::High,
+                BTreeMap::new(),
+                "mcp",
+                None,
+                "sha256:bbb",
+                "source-b",
+                None,
+            )
+            .unwrap();
+        // A third, already-approved record must not appear (`is_outstanding` is false once a
+        // history_id is set).
+        let mut approved = store
+            .create(
+                "sesami/c",
+                "sesami",
+                RiskLevel::High,
+                BTreeMap::new(),
+                "mcp",
+                None,
+                "sha256:ccc",
+                "source-c",
+                None,
+            )
+            .unwrap();
+        approved.history_id = Some("done".to_string());
+        store.save(&approved).unwrap();
+
+        let rows = build_grant_rows(&paths);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].kata_id, "sesami/a");
+        assert_eq!(rows[1].kata_id, "sesami/b");
+        assert_eq!(
+            rows[1].client, "agent",
+            "no mcp_client falls back to 'agent'"
+        );
+        assert_eq!(
+            rows[0].short_id,
+            pending::short_pending_id(&first.pending_id)
+        );
+    }
+
+    #[test]
+    fn build_draft_rows_maps_proposed_to_accept_and_mined_to_mine_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_under(dir.path());
+        std::fs::create_dir_all(paths.state_dir.join("proposed/ops")).unwrap();
+        std::fs::write(
+            paths.state_dir.join("proposed/ops/argocd-sync.sh"),
+            "#!/bin/sh\n# ---\n# about: Sync\n# risk:  low\n# ---\necho hi\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(paths.state_dir.join("mined")).unwrap();
+        std::fs::write(
+            paths.state_dir.join("mined/k8s-pod-logs.sh"),
+            "#!/bin/sh\n# ---\n# about: Logs\n# risk:  low\n# ---\necho hi\n",
+        )
+        .unwrap();
+
+        let mut rows = build_draft_rows(&paths);
+        rows.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "mined/k8s-pod-logs");
+        assert_eq!(rows[0].action, "kadou mine review");
+        assert_eq!(rows[1].id, "proposed/ops/argocd-sync");
+        assert_eq!(rows[1].action, "kadou accept ops/argocd-sync");
+    }
+}
