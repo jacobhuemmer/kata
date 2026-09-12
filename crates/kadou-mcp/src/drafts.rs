@@ -633,14 +633,25 @@ mod tests {
     }
 
     #[test]
-    fn accept_refuses_a_missing_target_folder() {
+    fn accept_creates_a_missing_target_folder() {
+        // §6.7 (carried over from slice 7): a nonexistent folder cannot be a git checkout, so
+        // it is user-owned -- accept creates it rather than refusing.
         let state_dir = tempfile::tempdir().unwrap();
         let kata_dir = tempfile::tempdir().unwrap();
         propose(state_dir.path(), kata_dir.path(), "ops/hello-team", HELLO).unwrap();
 
-        let err =
-            prepare_accept(state_dir.path(), kata_dir.path(), "ops/hello-team", None).unwrap_err();
-        assert!(matches!(err, AcceptError::NoSuchFolder(_)), "{err:?}");
+        let prep =
+            prepare_accept(state_dir.path(), kata_dir.path(), "ops/hello-team", None).unwrap();
+        assert!(!prep.target_folder_exists);
+        assert!(!kata_dir.path().join("ops").exists(), "not created yet");
+
+        apply_accept(&prep).unwrap();
+
+        assert!(kata_dir.path().join("ops").is_dir());
+        assert_eq!(
+            std::fs::read_to_string(kata_dir.path().join("ops/hello-team.sh")).unwrap(),
+            HELLO
+        );
     }
 
     #[test]

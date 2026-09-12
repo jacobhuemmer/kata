@@ -1614,6 +1614,33 @@ fn accept_prints_the_diff_and_copies_into_a_user_folder_then_removes_the_draft()
 }
 
 #[test]
+fn accept_creates_a_missing_target_folder() {
+    // §6.7 (carried over from slice 7): a nonexistent folder cannot be a git checkout, so it
+    // is user-owned; accept creates it and reports doing so.
+    let home = tempfile::tempdir().unwrap();
+    write_proposed_draft(
+        home.path(),
+        "ops",
+        "hello-team",
+        "#!/bin/sh\n# ---\n# about: Say hello\n# risk:  low\n# ---\necho hi\n",
+    );
+    assert!(!home.path().join(".config/kadou/kata/ops").exists());
+
+    kadou_in(home.path())
+        .args(["accept", "ops/hello-team", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created folder ops"))
+        .stdout(predicate::str::contains("accepted ops/hello-team"));
+
+    assert!(
+        home.path()
+            .join(".config/kadou/kata/ops/hello-team.sh")
+            .is_file()
+    );
+}
+
+#[test]
 fn accept_refuses_a_git_backed_target_folder() {
     let home = tempfile::tempdir().unwrap();
     let team_dir = home.path().join(".config/kadou/kata/team");
