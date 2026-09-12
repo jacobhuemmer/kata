@@ -14,3 +14,4 @@ pub mod cluster;
 pub mod normalize;
 pub mod rank;
 pub mod redact;
+pub mod risk;
