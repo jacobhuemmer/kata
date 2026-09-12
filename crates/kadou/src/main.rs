@@ -1515,6 +1515,44 @@ parameters:
     }
 
     #[test]
+    fn grant_allow_preserves_comments_and_does_not_write_unset_defaults() {
+        // PRD §3.1: "Comment-preserving kadou trust / kadou grant allow config edits" (toml_edit).
+        // A whole-config toml::to_string_pretty rewrite loses the comment and freezes every
+        // default explicitly into the file (A1/I-5) -- EMPTY_TEMPLATE's whole point is that a
+        // later default change is not frozen out by an old file.
+        let home = tempfile::tempdir().unwrap();
+        let (id, sha256) =
+            write_grant_kata(home.path(), "sesami", "ses-deploy", "critical", "echo hi\n");
+        let config_path = home.path().join(".config/kadou/kadou.toml");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            "# a human's own comment, must survive\nmax_risk = \"high\"\n",
+        )
+        .unwrap();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .args(["grant", "allow", &id])
+            .assert()
+            .success();
+
+        let text = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            text.contains("# a human's own comment, must survive"),
+            "comment lost: {text}"
+        );
+        assert!(
+            !text.contains("[mcp]"),
+            "an untouched table must not be materialized: {text}"
+        );
+
+        let config = kadou_core::Config::load(&config_path).unwrap();
+        assert_eq!(config.max_risk, kadou_core::RiskLevel::High);
+        assert_eq!(config.agent.allow, vec![format!("{id}@{sha256}")]);
+    }
+
+    #[test]
     fn grant_allow_is_idempotent_replacing_a_prior_entry_for_the_same_id() {
         let home = tempfile::tempdir().unwrap();
         let (id, _sha256) =
