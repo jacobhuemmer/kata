@@ -73,6 +73,14 @@ pub fn confirm_protocol(
     }
 }
 
+/// The plain `y/N` prompt `kadou remove` and `kadou accept` share (§7.1, §9 slice 7): never
+/// prompts off a TTY, otherwise returns whatever the caller's own prompt closure answers.
+/// Pulled out as its own pure function, the same way [`confirm_protocol`] is, so the
+/// TTY-short-circuit is unit-testable without a real pty or a subprocess.
+pub fn yes_no(is_tty: bool, prompt: impl FnOnce() -> bool) -> bool {
+    is_tty && prompt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,5 +185,18 @@ mod tests {
             || None,
         );
         assert_eq!(cancelled, ConfirmOutcome::Declined);
+    }
+
+    #[test]
+    fn yes_no_never_calls_the_prompt_off_a_tty() {
+        assert!(!super::yes_no(false, || panic!(
+            "must not prompt off a tty"
+        )));
+    }
+
+    #[test]
+    fn yes_no_returns_the_prompts_own_answer_on_a_tty() {
+        assert!(super::yes_no(true, || true));
+        assert!(!super::yes_no(true, || false));
     }
 }

@@ -1480,11 +1480,12 @@ pub fn run_remove(folder: String, yes: bool, force: bool) -> ExitCode {
     let paths = resolve_paths();
 
     if !yes {
-        let confirmed = std::io::stdin().is_terminal()
-            && inquire::Confirm::new(&format!("remove {folder}?"))
+        let confirmed = confirm::yes_no(std::io::stdin().is_terminal(), || {
+            inquire::Confirm::new(&format!("remove {folder}?"))
                 .with_default(false)
                 .prompt()
-                .unwrap_or(false);
+                .unwrap_or(false)
+        });
         if !confirmed {
             println!("cancelled");
             return ExitCode::from(1);
@@ -1503,23 +1504,27 @@ pub fn run_remove(folder: String, yes: bool, force: bool) -> ExitCode {
     }
 }
 
-/// Runs `kadou check`'s loader on the just-accepted kata and prints any diagnostics, the same
-/// cargo-shaped text `kadou check` itself would print (§6.7 "and running `kadou check` on the
-/// result").
-fn check_accepted_kata(paths: &KadouPaths, target_path: &Path, folder: &str) -> bool {
-    let checked = kadou_core::check_path(target_path);
-    let ok = checked.diagnostics.iter().all(|d| !d.is_error());
-    if !checked.diagnostics.is_empty() {
-        let report = kadou_core::FolderReport {
-            folder: folder.to_string(),
-            files: vec![checked],
-        };
-        print!(
-            "{}",
-            kadou_core::render_report(&report, &paths.config_dir, false)
-        );
+/// Runs `kadou check`'s real loader (`check_folder`, not just the one accepted file) on the
+/// target folder and prints any diagnostics, the same cargo-shaped text `kadou check <folder>`
+/// itself would print (§6.7 "and running `kadou check` on the result"). Checking the whole
+/// folder, not just the copied file, is what can actually fail here: the draft's own header
+/// already passed `prepare_accept`'s strict load, but a cross-kata conflict (a duplicate alias,
+/// say) with another kata already in the target folder is a check-time-only failure.
+fn check_accepted_kata(paths: &KadouPaths, folder: &str) -> bool {
+    let vault = load_vault(paths);
+    match kadou_core::check_folder(&paths.kata_dir(), folder, &vault) {
+        Ok(report) => {
+            print!(
+                "{}",
+                kadou_core::render_report(&report, &paths.config_dir, false)
+            );
+            report.is_ok()
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            false
+        }
     }
-    ok
 }
 
 /// `kadou accept <id> [--into F] [--yes]` (§6.7): prints the diff, prompts `y/N` unless
@@ -1544,11 +1549,12 @@ pub fn run_accept(id: String, into: Option<String>, yes: bool) -> ExitCode {
     print!("{}", prep.diff);
 
     if !yes {
-        let confirmed = std::io::stdin().is_terminal()
-            && inquire::Confirm::new(&format!("accept into {}?", prep.new_id))
+        let confirmed = confirm::yes_no(std::io::stdin().is_terminal(), || {
+            inquire::Confirm::new(&format!("accept into {}?", prep.new_id))
                 .with_default(false)
                 .prompt()
-                .unwrap_or(false);
+                .unwrap_or(false)
+        });
         if !confirmed {
             println!("cancelled");
             return ExitCode::from(1);
@@ -1562,7 +1568,7 @@ pub fn run_accept(id: String, into: Option<String>, yes: bool) -> ExitCode {
     println!("accepted {}", prep.new_id);
 
     let folder = prep.new_id.split('/').next().unwrap_or(&prep.new_id);
-    if check_accepted_kata(&paths, &prep.target_path, folder) {
+    if check_accepted_kata(&paths, folder) {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

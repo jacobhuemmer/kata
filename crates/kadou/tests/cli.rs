@@ -1680,3 +1680,75 @@ fn accept_into_an_existing_folder_refused_when_it_is_git_backed_but_succeeds_int
             .is_file()
     );
 }
+
+#[test]
+fn accept_without_yes_cancels_off_a_tty() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".config/kadou/kata/ops")).unwrap();
+    write_proposed_draft(
+        home.path(),
+        "ops",
+        "hello-team",
+        "#!/bin/sh\n# ---\n# about: Say hello\n# risk:  low\n# ---\necho hi\n",
+    );
+
+    kadou_in(home.path())
+        .args(["accept", "ops/hello-team"])
+        .write_stdin("")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("cancelled"));
+
+    assert!(
+        !home
+            .path()
+            .join(".config/kadou/kata/ops/hello-team.sh")
+            .exists(),
+        "cancelling must not copy the draft"
+    );
+    assert!(
+        home.path()
+            .join(".local/state/kadou/proposed/ops/hello-team.sh")
+            .exists(),
+        "cancelling must not remove the draft either"
+    );
+}
+
+#[test]
+fn accept_succeeds_but_fails_the_check_when_its_alias_collides_with_the_target_folder() {
+    // §6.7 "and running kadou check on the result": the draft's own header already passed
+    // prepare_accept's strict load, but a duplicate alias with another kata already in the
+    // target folder is a cross-kata conflict only kadou check's folder-wide loader catches.
+    let home = tempfile::tempdir().unwrap();
+    let ops_dir = home.path().join(".config/kadou/kata/ops");
+    std::fs::create_dir_all(&ops_dir).unwrap();
+    std::fs::write(
+        ops_dir.join("existing.sh"),
+        "#!/bin/sh\n# ---\n# about: Existing\n# risk:  low\n# alias: greet\n# ---\necho hi\n",
+    )
+    .unwrap();
+    write_proposed_draft(
+        home.path(),
+        "ops",
+        "hello-team",
+        "#!/bin/sh\n# ---\n# about: Say hello\n# risk:  low\n# alias: greet\n# ---\necho hi\n",
+    );
+
+    kadou_in(home.path())
+        .args(["accept", "ops/hello-team", "--yes"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("accepted ops/hello-team"))
+        .stdout(predicate::str::contains(
+            "alias `greet` is declared by more than one kata",
+        ));
+
+    // The copy and draft removal still happened -- only the after-the-fact check failed.
+    assert!(ops_dir.join("hello-team.sh").is_file());
+    assert!(
+        !home
+            .path()
+            .join(".local/state/kadou/proposed/ops/hello-team.sh")
+            .exists()
+    );
+}
