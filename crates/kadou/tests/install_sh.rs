@@ -2,6 +2,8 @@
 //! verification. Every test here points `KADOU_INSTALL_BASE_URL` at a local `file://` fixture
 //! -- no real network, per the repo's no-network test gate.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
