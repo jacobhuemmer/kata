@@ -9,6 +9,7 @@ use clap::{Args, Parser, Subcommand};
 mod commands;
 mod confirm;
 mod starter;
+mod ui;
 
 /// kadou (稼働): a script library that is also an MCP server for AI agents.
 #[derive(Debug, Parser)]

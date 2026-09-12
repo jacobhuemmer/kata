@@ -6,11 +6,16 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+anstream.workspace = true
+anstyle.workspace = true
 clap = { workspace = true, features = ["derive"] }
+clap_complete.workspace = true
+crossterm.workspace = true
 inquire.workspace = true
 kadou-core = { path = "../kadou-core", version = "0.1.0" }
 kadou-exec = { path = "../kadou-exec", version = "0.1.0" }
 kadou-mcp = { path = "../kadou-mcp", version = "0.1.0" }
+nucleo-matcher.workspace = true
 rust-embed.workspace = true
 similar.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
@@ -20,6 +25,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 [dev-dependencies]
 assert_cmd.workspace = true
 humantime.workspace = true
+insta.workspace = true
 predicates.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
