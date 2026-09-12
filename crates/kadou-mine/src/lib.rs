@@ -3,3 +3,5 @@
 //!
 //! Not yet implemented — lands in slice 9 ("Session mining (`kadou-mine`)") per §9. Carries
 //! no MCP types; the miner is a local batch job driven by `kadou mine` and a LaunchAgent.
+
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]

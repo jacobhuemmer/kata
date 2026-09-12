@@ -4,6 +4,8 @@
 //! integration test target the way it never reliably is for a bin's own unit-test harness --
 //! see `docs/design/10-mutation-baseline.md`'s "known blocker".
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::collections::BTreeMap;
 use std::path::Path;
 

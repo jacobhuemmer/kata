@@ -4,6 +4,8 @@
 //! resolution); it never runs a script and never speaks MCP — `kadou-exec` and `kadou-mcp`
 //! own those (`docs/design/05-prd.md` §3).
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 mod check;
 mod config;
 mod digest;

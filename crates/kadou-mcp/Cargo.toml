@@ -23,3 +23,6 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 rmcp = { workspace = true, features = ["server", "client", "macros", "transport-io"] }
 tempfile.workspace = true
+
+[lints]
+workspace = true

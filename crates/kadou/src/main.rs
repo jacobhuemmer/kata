@@ -2,6 +2,8 @@
 //! `docs/design/05-prd.md` §7.1; every command besides `--help` and `version` is a stub in
 //! this slice (§9 slice 1 "kadou --help lists the command tree stubs").
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 use clap::{Args, Parser, Subcommand};
 
 mod commands;

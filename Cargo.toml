@@ -8,6 +8,14 @@ members = [
     "crates/kadou-mine",
 ]
 
+[workspace.lints.clippy]
+# Panic hygiene (A2, R6): every non-test unwrap()/expect() in the tree has been removed
+# (docs/design/11-code-review.md R6) — deny both so the class cannot come back outside a
+# `#[cfg(test)]` module or an integration test file, both of which carry their own
+# `#![allow]`/`#![cfg_attr]` carve-out.
+unwrap_used = "deny"
+expect_used = "deny"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

@@ -3,6 +3,8 @@
 //! sanitized, shape-preserving fixture at `tests/fixtures/sesami-shaped/` instead — same
 //! kata count, same arg-type shape (86 booleans + 1 integer coerced), invented hostnames.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::PathBuf;
 
 fn fixture_src_dir() -> PathBuf {

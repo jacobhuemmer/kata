@@ -7,6 +7,8 @@
 //! to observe a stray byte on the server's own stdout) and the tools/list byte-identity gate
 //! (covered directly in `kadou-mcp`'s own unit tests against the static schema).
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::{Path, PathBuf};
 
 use kadou_core::{Config, KadouPaths, RiskLevel, Vault, VaultStore};

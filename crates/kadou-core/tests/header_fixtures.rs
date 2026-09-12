@@ -2,6 +2,8 @@
 //! the bespoke parser's error messages are its user interface, so `tests/fixtures/headers/
 //! {good,bad}/` is snapshot-tested the way `tools/list` is.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::PathBuf;
 
 fn fixtures_dir(sub: &str) -> PathBuf {
