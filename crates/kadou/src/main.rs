@@ -371,6 +371,20 @@ mod tests {
     }
 
     #[test]
+    fn run_ask_refuses_as_not_yet_implemented() {
+        // §7.3: "kadou run <id> --ask prompts for every arg" -- unimplemented until slice 8.
+        // Parsed-and-silently-dropped (I-19) is worse than an explicit refusal.
+        let home = tempfile::tempdir().unwrap();
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["run", "starter/hello", "--ask"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("not yet implemented (slice 8)"));
+    }
+
+    #[test]
     fn show_with_no_id_is_a_slice_8_stub() {
         kadou()
             .arg("show")
