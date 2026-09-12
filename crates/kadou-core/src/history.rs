@@ -228,6 +228,49 @@ mod tests {
     }
 
     #[test]
+    fn finish_does_not_rewrite_bytes_already_written_to_the_log() {
+        // `kadou-exec`'s own collector streams every redacted line straight to `log_path` as it
+        // arrives, trailing newline included (§6.6 "redaction happens in the line stream, before
+        // the log is written"). `finish` must not rewrite those bytes afterward — doing so is
+        // D18: a second, whole-file write that swaps the inode out from under anything already
+        // holding `log_path` open, and drops the trailing newline the stream wrote.
+        let dir = tempfile::tempdir().unwrap();
+        let store = HistoryStore::new(dir.path());
+        let mut record = store
+            .begin(
+                "starter/hello",
+                "starter",
+                &BTreeMap::new(),
+                "mcp",
+                "local",
+                None,
+            )
+            .unwrap();
+
+        std::fs::write(&record.log_path, b"hello, world\n").unwrap();
+
+        store
+            .finish(
+                &mut record,
+                FinishOutcome {
+                    status: "success",
+                    exit_code: Some(0),
+                    redacted_output: "hello, world",
+                    output_lines: 1,
+                    output_summary: "hello, world",
+                    duration_ms: 42,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&record.log_path).unwrap(),
+            "hello, world\n",
+            "finish must leave log_path's bytes exactly as the stream wrote them"
+        );
+    }
+
+    #[test]
     fn finish_writes_the_log_and_updates_the_record() {
         let dir = tempfile::tempdir().unwrap();
         let store = HistoryStore::new(dir.path());
