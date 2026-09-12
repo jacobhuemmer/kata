@@ -556,6 +556,88 @@ mod tests {
     }
 
     #[test]
+    fn split_shebang_returns_the_exact_remainder_byte_for_byte() {
+        let (shebang, rest) = split_shebang("#!/bin/sh\necho one\necho two\n");
+        assert_eq!(shebang, Some("#!/bin/sh"));
+        assert_eq!(rest, "echo one\necho two\n");
+    }
+
+    #[test]
+    fn split_shebang_is_none_when_the_first_line_is_not_a_shebang() {
+        let (shebang, rest) = split_shebang("echo one\n");
+        assert_eq!(shebang, None);
+        assert_eq!(rest, "echo one\n");
+    }
+
+    #[test]
+    fn unified_diff_renders_a_pure_addition_against_dev_null() {
+        let diff = unified_diff(Path::new("sesami/deploy.sh"), "echo one\necho two");
+        assert_eq!(
+            diff,
+            "--- /dev/null\n+++ sesami/deploy.sh\n+echo one\n+echo two\n"
+        );
+    }
+
+    #[test]
+    fn missing_script_key_defaults_to_script_sh() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "src/widget/runbook.yaml",
+            "name: widget\ndescription: Widget\nrisk_level: low\nparameters: []\n",
+        );
+        write(dir.path(), "src/widget/script.sh", "#!/bin/sh\necho hi\n");
+
+        let kata_dir = dir.path().join("kata");
+        import_catalog(&dir.path().join("src"), &kata_dir, "sesami").unwrap();
+        assert!(kata_dir.join("sesami/widget.sh").is_file());
+    }
+
+    #[test]
+    fn import_copies_the_catalogs_own_shared_scripts_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "catalog/src/widget/runbook.yaml",
+            "name: widget\ndescription: Widget\nrisk_level: low\nscript: script.sh\nparameters: []\n",
+        );
+        write(
+            dir.path(),
+            "catalog/src/widget/script.sh",
+            "#!/bin/sh\necho hi\n",
+        );
+        // Shared helper scripts live one level up from `src/`, per §4.6.
+        write(
+            dir.path(),
+            "catalog/scripts/trigger-pipeline.sh",
+            "#!/bin/sh\necho shared\n",
+        );
+
+        let kata_dir = dir.path().join("kata");
+        import_catalog(&dir.path().join("catalog/src"), &kata_dir, "sesami").unwrap();
+        assert!(
+            kata_dir
+                .join("sesami/scripts/trigger-pipeline.sh")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn a_select_default_not_in_its_own_options_is_an_import_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "src/widget/runbook.yaml",
+            "name: widget\ndescription: Widget\nrisk_level: low\nscript: script.sh\nparameters:\n  - name: env\n    type: select\n    default: staging\n    options: [dev, prod]\n    scope: runbook\n",
+        );
+        write(dir.path(), "src/widget/script.sh", "#!/bin/sh\necho hi\n");
+
+        let kata_dir = dir.path().join("kata");
+        let err = import_catalog(&dir.path().join("src"), &kata_dir, "sesami").unwrap_err();
+        assert!(err.to_string().contains("not one of the declared options"));
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)] // table-driven cleanup is G2/R16, not this slice
     fn converts_a_simple_wrapper_with_globals_and_bool_coercion() {
         let dir = tempfile::tempdir().unwrap();

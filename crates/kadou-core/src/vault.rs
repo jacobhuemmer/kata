@@ -675,6 +675,37 @@ mod tests {
     }
 
     #[test]
+    fn vault_remove_is_empty_and_len_track_entries_directly() {
+        let mut vault = Vault::default();
+        assert!(vault.is_empty());
+        assert_eq!(vault.len(), 0);
+        assert!(!vault.remove("nope"));
+
+        vault.set("jenkins_token", "hunter2ok", true);
+        assert!(!vault.is_empty());
+        assert_eq!(vault.len(), 1);
+
+        assert!(vault.remove("jenkins_token"));
+        assert!(vault.is_empty());
+        assert_eq!(vault.len(), 0);
+    }
+
+    #[test]
+    fn go_vault_source_exists_requires_both_files_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = GoVaultSource::under_home(dir.path());
+        assert!(!source.exists());
+
+        std::fs::create_dir_all(source.vault_json.parent().unwrap()).unwrap();
+        std::fs::write(&source.vault_json, "{}").unwrap();
+        assert!(!source.exists(), "keys.txt is still missing");
+
+        std::fs::create_dir_all(source.keys_txt.parent().unwrap()).unwrap();
+        std::fs::write(&source.keys_txt, "AGE-SECRET-KEY-1...\n").unwrap();
+        assert!(source.exists());
+    }
+
+    #[test]
     fn round_trips_a_vault_through_the_real_envelope_and_a_fresh_identity() {
         let dir = tempfile::tempdir().unwrap();
         let store = VaultStore::new(dir.path());

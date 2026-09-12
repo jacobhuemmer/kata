@@ -468,6 +468,17 @@ mod tests {
         assert_eq!(interpreter_missing(Some("#!/usr/bin/env python3")), None);
     }
 
+    #[test]
+    fn a_bare_env_shebang_with_no_interpreter_name_names_env_itself() {
+        // `words.len() > 1` guards the `env`-unwrap: a bare `#!/usr/bin/env` (no interpreter
+        // after it) must fall through to naming `env` itself, not panic on an empty index.
+        assert_eq!(
+            interpreter_missing(Some("#!/usr/bin/env")),
+            None,
+            "env itself is always on PATH in this test environment"
+        );
+    }
+
     #[tokio::test]
     async fn fixture_kata_echoes_an_env_var() {
         let dir = tempfile::tempdir().unwrap();
@@ -609,6 +620,21 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
+    async fn a_kata_that_signals_itself_reports_the_negative_signal_as_its_exit_code() {
+        // exit_code_of's signal branch (`status.signal().map(|s| -s)`) only fires when the
+        // child exits *on its own* via a signal -- our own timeout/cancel escalation always
+        // reports `None` regardless (§6.1: a killed-by-us run is TimedOut/Cancelled, not
+        // Failed). A script that signals itself is the only way to reach that branch.
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_script(dir.path(), "kata.sh", "#!/bin/sh\nkill -TERM $$\n");
+        let s = spec(Some("#!/bin/sh"), file, dir.path().to_path_buf());
+        let outcome = run(s, None).await.unwrap();
+        assert_eq!(outcome.status, RunStatus::Failed);
+        assert_eq!(outcome.exit_code, Some(-15)); // SIGTERM = 15
+    }
+
+    #[tokio::test]
     async fn timeout_terminates_a_sleeping_kata_via_sigterm() {
         let dir = tempfile::tempdir().unwrap();
         let file = write_script(dir.path(), "kata.sh", "#!/bin/sh\nsleep 30\n");
@@ -623,6 +649,10 @@ mod tests {
             "a plain `sleep` should die on SIGTERM alone, not need the SIGKILL grace: took {:?}",
             start.elapsed()
         );
+        // A timed-out run's exit_code is always None (§6.1) -- distinct from a signal-killed
+        // process that actually reported its own exit status (see the SIGKILL-escalation
+        // test below, which asserts the signal-derived negative code on that path instead).
+        assert_eq!(outcome.exit_code, None);
     }
 
     #[tokio::test]

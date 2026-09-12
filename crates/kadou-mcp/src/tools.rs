@@ -976,3 +976,218 @@ pub fn propose_kata(
         ),
     }
 }
+
+#[cfg(test)]
+mod tools_tests {
+    use super::*;
+
+    fn lines(n: usize, prefix: &str) -> Vec<String> {
+        (0..n).map(|i| format!("{prefix}{i}")).collect()
+    }
+
+    #[test]
+    fn sibling_files_lists_headerless_files_relative_to_the_folder_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let kata_dir = dir.path().join("kata");
+        let folder_dir = kata_dir.join("sesami");
+        std::fs::create_dir_all(&folder_dir).unwrap();
+        std::fs::write(
+            folder_dir.join("deploy.sh"),
+            "#!/bin/sh\n# ---\n# about: Deploy\n# risk:  low\n# ---\necho hi\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(folder_dir.join("scripts")).unwrap();
+        std::fs::write(
+            folder_dir.join("scripts/trigger-pipeline.sh"),
+            "#!/bin/sh\necho helper\n",
+        )
+        .unwrap();
+
+        let files = sibling_files(&kata_dir, "sesami");
+        assert_eq!(files, vec!["scripts/trigger-pipeline.sh".to_string()]);
+    }
+
+    #[test]
+    fn sibling_files_is_empty_for_an_unknown_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(sibling_files(&dir.path().join("kata"), "nope").is_empty());
+    }
+
+    #[test]
+    fn read_source_capped_returns_untruncated_content_under_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kata.sh");
+        std::fs::write(&path, "echo hi\n").unwrap();
+        let (source, truncated) = read_source_capped(&path);
+        assert_eq!(source, "echo hi\n");
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn read_source_capped_truncates_at_a_char_boundary_over_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kata.sh");
+        // Multi-byte characters straddling SOURCE_CAP_BYTES exercise the char-boundary walk-back.
+        std::fs::write(&path, "é".repeat(SOURCE_CAP_BYTES)).unwrap();
+        let (source, truncated) = read_source_capped(&path);
+        assert!(truncated);
+        assert!(source.len() <= SOURCE_CAP_BYTES);
+        assert!(source.is_char_boundary(source.len()));
+    }
+
+    fn text_arg(name: &str, default: Option<ArgDefault>) -> Arg {
+        Arg {
+            name: name.to_string(),
+            ty: ArgType::Text,
+            default,
+            help: None,
+        }
+    }
+
+    #[test]
+    fn build_args_schema_encodes_int_bool_and_select_defaults() {
+        let args = vec![
+            Arg {
+                name: "retries".to_string(),
+                ty: ArgType::Int,
+                default: Some(ArgDefault::Int(3)),
+                help: None,
+            },
+            Arg {
+                name: "force".to_string(),
+                ty: ArgType::Bool,
+                default: Some(ArgDefault::Bool(true)),
+                help: None,
+            },
+            Arg {
+                name: "env".to_string(),
+                ty: ArgType::Select {
+                    options: vec!["dev".to_string(), "prod".to_string()],
+                },
+                default: Some(ArgDefault::Select("dev".to_string())),
+                help: None,
+            },
+            text_arg("required_text", None),
+        ];
+        let schema = build_args_schema(&args);
+        assert_eq!(schema["properties"]["retries"]["type"], "integer");
+        assert_eq!(schema["properties"]["retries"]["default"], 3);
+        assert_eq!(schema["properties"]["force"]["type"], "boolean");
+        assert_eq!(schema["properties"]["force"]["default"], true);
+        assert_eq!(schema["properties"]["env"]["enum"][0], "dev");
+        assert_eq!(schema["properties"]["env"]["default"], "dev");
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.iter().any(|r| r == "required_text"));
+        assert!(!required.iter().any(|r| r == "retries"));
+    }
+
+    fn row(id: &str, risk: RiskLevel) -> Row {
+        row_from(id, "about", risk, &[], false)
+    }
+
+    fn list_args(limit: usize, offset: usize) -> ListArgs {
+        ListArgs {
+            query: None,
+            folder: None,
+            risk: None,
+            limit,
+            offset,
+            include_drafts: false,
+        }
+    }
+
+    #[test]
+    fn paginate_reports_truncated_when_more_rows_remain() {
+        let rows = vec![
+            row("a/one", RiskLevel::Low),
+            row("a/two", RiskLevel::Low),
+            row("a/three", RiskLevel::Low),
+        ];
+        let value = paginate(rows, &list_args(2, 0));
+        assert_eq!(value["total"], 3);
+        assert_eq!(value["truncated"], true);
+        assert_eq!(value["kata"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn paginate_offset_returns_the_remaining_page_untruncated() {
+        // paginate() sorts by id first, so the page order is alphabetical: one, three, two.
+        let rows = vec![
+            row("a/one", RiskLevel::Low),
+            row("a/two", RiskLevel::Low),
+            row("a/three", RiskLevel::Low),
+        ];
+        let value = paginate(rows, &list_args(2, 2));
+        assert_eq!(value["truncated"], false);
+        let ids: Vec<&str> = value["kata"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["a/two"]);
+    }
+
+    #[test]
+    fn paginate_filters_by_risk() {
+        let rows = vec![
+            row("a/low", RiskLevel::Low),
+            row("a/medium", RiskLevel::Medium),
+        ];
+        let mut args = list_args(50, 0);
+        args.risk = Some(RiskLevel::Medium);
+        let value = paginate(rows, &args);
+        let ids: Vec<&str> = value["kata"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["a/medium"]);
+    }
+
+    #[test]
+    fn truncate_output_keeps_only_the_last_max_lines() {
+        let input = lines(60, "line");
+        let (joined, output_lines, truncated) = truncate_output(&input, 50);
+        assert!(truncated);
+        assert_eq!(output_lines, 50);
+        assert!(joined.starts_with("line10\n"));
+        assert!(joined.ends_with("line59"));
+    }
+
+    #[test]
+    fn truncate_output_under_the_line_limit_is_not_truncated() {
+        let input = lines(3, "line");
+        let (joined, output_lines, truncated) = truncate_output(&input, 50);
+        assert!(!truncated);
+        assert_eq!(output_lines, 3);
+        assert_eq!(joined, "line0\nline1\nline2");
+    }
+
+    #[test]
+    fn truncate_output_enforces_the_8192_byte_cap_by_dropping_whole_lines() {
+        // Each line is 1000 bytes; 9 of them (9000 bytes) exceeds MAX_OUTPUT_BYTES (8192), so
+        // whole lines must be dropped from the front until it fits.
+        let input: Vec<String> = (0..9)
+            .map(|i| format!("{i}").repeat(1) + &"x".repeat(999))
+            .collect();
+        let (joined, output_lines, truncated) = truncate_output(&input, 50);
+        assert!(truncated);
+        assert!(joined.len() <= MAX_OUTPUT_BYTES);
+        assert!(output_lines < 9);
+    }
+
+    #[test]
+    fn truncate_output_cuts_at_a_char_boundary_when_a_single_line_exceeds_the_cap() {
+        // One line alone (a multi-byte character repeated) already exceeds MAX_OUTPUT_BYTES,
+        // so the byte-cap loop must fall through to the char-boundary truncation branch.
+        let huge_line = "é".repeat(MAX_OUTPUT_BYTES); // 2 bytes/char in UTF-8
+        let input = vec![huge_line];
+        let (joined, output_lines, truncated) = truncate_output(&input, 50);
+        assert!(truncated);
+        assert_eq!(output_lines, 1);
+        assert!(joined.len() <= MAX_OUTPUT_BYTES);
+        assert!(joined.is_char_boundary(joined.len()));
+    }
+}

@@ -1100,6 +1100,52 @@ mod tests {
     }
 
     #[test]
+    fn about_at_exactly_120_chars_is_the_maximum_allowed() {
+        let exactly = "x".repeat(120);
+        let source =
+            format!("#!/bin/sh\n# ---\n# about: {exactly}\n# risk:  low\n# ---\necho hi\n");
+        let header = parse_ok(&source);
+        assert_eq!(header.about.chars().count(), 120);
+    }
+
+    #[test]
+    fn timeout_at_exactly_24h_is_the_maximum_allowed() {
+        let source = "#!/bin/sh\n# ---\n# about: X\n# risk:  low\n# timeout: 24h\n# ---\necho hi\n";
+        let header = parse_ok(source);
+        assert_eq!(header.timeout, Some(MAX_TIMEOUT));
+    }
+
+    #[test]
+    fn timeout_over_24h_fails() {
+        let source = "#!/bin/sh\n# ---\n# about: X\n# risk:  low\n# timeout: 25h\n# ---\necho hi\n";
+        let diags = parse_err(source);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("exceeds the 24h maximum"))
+        );
+    }
+
+    #[test]
+    fn validate_name_rejects_a_bad_first_char_even_with_an_otherwise_valid_tail() {
+        // Isolates the `&&` between the first-char check and the rest-chars check: a name
+        // whose *tail* alone would pass must still fail because of the leading digit.
+        assert!(validate_name("1abc").is_err());
+    }
+
+    #[test]
+    fn validate_name_rejects_each_reserved_condition_independently() {
+        // Each disjunct of the 4-way reserved-name OR, checked in isolation so deleting any
+        // one arm would be caught: a name in RESERVED_NAMES that doesn't match any prefix,
+        // and a name matching each prefix that isn't itself in RESERVED_NAMES.
+        assert!(validate_name("path").is_err()); // RESERVED_NAMES, no prefix match
+        assert!(validate_name("ld_preload").is_err()); // LD_ prefix, not in RESERVED_NAMES
+        assert!(validate_name("dyld_insert_libraries").is_err()); // DYLD_ prefix
+        assert!(validate_name("kadou_id").is_err()); // KADOU_ prefix
+        assert!(validate_name("jenkins_url").is_ok()); // none of the four
+    }
+
+    #[test]
     fn notes_is_first_comment_paragraph_after_close() {
         let source = "#!/bin/sh\n# ---\n# about: X\n# risk:  low\n# ---\n# Usage notes here.\n# Second line.\n\n# Not included.\necho hi\n";
         let header = parse_ok(source);

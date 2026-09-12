@@ -381,6 +381,85 @@ mod tests {
 
     const HELLO: &str = "#!/bin/sh\n# ---\n# about: Say hello\n# risk:  low\n# ---\necho hi\n";
 
+    fn diag(line: usize, col: usize, len: usize, message: &str, fix: Option<&str>) -> Diagnostic {
+        Diagnostic {
+            severity: Severity::Error,
+            message: message.to_string(),
+            fix: fix.map(str::to_string),
+            line,
+            col,
+            len,
+        }
+    }
+
+    #[test]
+    fn render_diagnostic_prints_location_snippet_caret_and_fix_line() {
+        let mut out = String::new();
+        let diag = diag(2, 3, 4, "unknown key `oops`", Some("known keys are ..."));
+        render_diagnostic(
+            &mut out,
+            &diag,
+            Path::new("/home/x/kata/sesami/deploy.sh"),
+            Path::new("/home/x"),
+            "# ---\n# oops: bad\n# ---\n",
+        );
+        assert_eq!(
+            out,
+            "error: unknown key `oops`\n  --> kata/sesami/deploy.sh:2:3\n  |\n2 | # oops: bad\n  |   ^^^^\n  = known keys are ...\n"
+        );
+    }
+
+    #[test]
+    fn render_diagnostic_without_a_fix_line_omits_it() {
+        let mut out = String::new();
+        let diag = diag(1, 1, 1, "empty file: no header", None);
+        render_diagnostic(&mut out, &diag, Path::new("/x/y.sh"), Path::new("/x"), "");
+        assert!(!out.contains("  = "));
+        assert!(out.contains("  --> y.sh"));
+    }
+
+    #[test]
+    fn render_report_does_not_mark_a_well_formed_kata_ignored_in_verbose_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "kata/starter/hello.sh", HELLO);
+        let report = check_folder(&dir.path().join("kata"), "starter", &Vault::default()).unwrap();
+        let rendered = render_report(&report, dir.path(), true);
+        assert!(!rendered.contains("ignored:"));
+    }
+
+    #[test]
+    fn render_report_marks_a_headerless_helper_ignored_in_verbose_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "kata/starter/hello.sh", HELLO);
+        write(
+            dir.path(),
+            "kata/starter/helper.sh",
+            "#!/bin/sh\necho helper\n",
+        );
+        let report = check_folder(&dir.path().join("kata"), "starter", &Vault::default()).unwrap();
+        let rendered = render_report(&report, dir.path(), true);
+        assert!(rendered.contains("ignored: kata/starter/helper.sh"));
+    }
+
+    #[test]
+    fn display_path_strips_the_root_when_it_is_a_prefix() {
+        assert_eq!(
+            display_path(
+                Path::new("/home/x/kata/sesami/deploy.sh"),
+                Path::new("/home/x")
+            ),
+            "kata/sesami/deploy.sh"
+        );
+    }
+
+    #[test]
+    fn display_path_falls_back_to_the_full_path_when_not_under_root() {
+        assert_eq!(
+            display_path(Path::new("/other/deploy.sh"), Path::new("/home/x")),
+            "/other/deploy.sh"
+        );
+    }
+
     #[test]
     fn clean_folder_reports_zero_errors() {
         let dir = tempfile::tempdir().unwrap();

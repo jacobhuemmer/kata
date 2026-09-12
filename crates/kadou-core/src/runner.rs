@@ -325,6 +325,27 @@ mod tests {
     use super::*;
     use crate::risk::RiskLevel;
 
+    #[test]
+    fn last_non_empty_line_skips_trailing_blank_lines() {
+        let lines = vec!["first".to_string(), "second".to_string(), String::new()];
+        assert_eq!(last_non_empty_line(&lines), "second");
+    }
+
+    #[test]
+    fn last_non_empty_line_truncates_at_200_characters() {
+        let long = "x".repeat(250);
+        let lines = vec![long.clone()];
+        let summary = last_non_empty_line(&lines);
+        assert_eq!(summary.chars().count(), 200);
+        assert_eq!(summary, long.chars().take(200).collect::<String>());
+    }
+
+    #[test]
+    fn last_non_empty_line_of_all_blank_lines_is_empty() {
+        let lines = vec![String::new(), "   ".to_string()];
+        assert_eq!(last_non_empty_line(&lines), "");
+    }
+
     fn write_script(dir: &Path, name: &str, content: &str) -> PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, content).unwrap();

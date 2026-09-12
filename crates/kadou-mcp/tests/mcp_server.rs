@@ -172,6 +172,48 @@ async fn list_kata_at_default_ceiling_returns_exactly_the_five_low_risk_sesami_i
 }
 
 #[tokio::test]
+async fn list_kata_risk_argument_filters_over_the_wire() {
+    // Mutation baseline item 4: server.rs's risk-argument parsing (now RiskLevel::from_str)
+    // and list_kata's own risk filter, exercised together end to end over the wire — no
+    // existing test ever passed an explicit `risk` argument to `list_kata` before this one.
+    let home = setup_sesami(|c| {
+        c.max_risk = RiskLevel::Medium;
+        c.agent.max_risk = RiskLevel::Medium;
+    });
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let (value, is_error) = call(
+        &client,
+        "list_kata",
+        serde_json::json!({"folder": "sesami", "limit": 50, "risk": "medium"}),
+    )
+    .await;
+    assert!(!is_error, "{value}");
+    let kata = value["kata"].as_array().unwrap();
+    assert!(!kata.is_empty(), "expected at least one medium-risk kata");
+    for k in kata {
+        assert_eq!(k["risk"], "medium", "unexpected entry: {k}");
+    }
+
+    let (value, is_error) = call(
+        &client,
+        "list_kata",
+        serde_json::json!({"folder": "sesami", "limit": 50, "risk": "low"}),
+    )
+    .await;
+    assert!(!is_error, "{value}");
+    let ids: Vec<String> = value["kata"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(ids.contains(&"sesami/clone-ses-repos".to_string()));
+    assert!(!ids.iter().any(|id| id.contains("cc4")));
+}
+
+#[tokio::test]
 async fn describe_a_medium_kata_lists_needs_names_but_never_values() {
     let home = setup_sesami(|c| {
         c.max_risk = RiskLevel::Medium;
