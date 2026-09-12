@@ -724,6 +724,30 @@ mod tests {
 
     const MINIMAL: &str = "#!/bin/sh\n# ---\n# about: Say hello\n# risk:  low\n# ---\necho hi\n";
 
+    /// A header block of exactly `total` lines (the opener and closer both count, §4.3),
+    /// padded with distinct `args:` entries so the fill lines are valid header content.
+    fn header_with_total_lines(total: usize) -> String {
+        assert!(total >= 5, "need room for about, risk, args:, opener, closer");
+        let mut s = String::from("#!/bin/sh\n# ---\n# about: Test\n# risk:  low\n# args:\n");
+        for n in 0..total - 5 {
+            s.push_str(&format!("#   a{n}: text = v\n"));
+        }
+        s.push_str("# ---\necho hi\n");
+        s
+    }
+
+    #[test]
+    fn a_header_of_exactly_64_lines_is_the_maximum_allowed() {
+        // §4.3: "Max 64 header lines" -- the opener line itself counts toward the budget.
+        parse_ok(&header_with_total_lines(64));
+    }
+
+    #[test]
+    fn a_header_of_65_lines_exceeds_the_maximum() {
+        let diags = parse_err(&header_with_total_lines(65));
+        assert!(diags.iter().any(|d| d.message.contains("exceeds 64 lines")));
+    }
+
     #[test]
     fn minimal_header_parses() {
         let header = parse_ok(MINIMAL);
