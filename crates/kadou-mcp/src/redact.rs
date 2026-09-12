@@ -127,7 +127,8 @@ mod tests {
         let basic =
             base64::engine::general_purpose::STANDARD.encode(format!("{user}:{token}").as_bytes());
         let text = format!("Authorization: Basic {basic}");
-        let out = redact_all(&text, &[token.clone()], &[user, token]);
+        let secrets = [token.clone()];
+        let out = redact_all(&text, &secrets, &[user, token]);
         assert_eq!(out, "Authorization: Basic ****");
     }
 }
