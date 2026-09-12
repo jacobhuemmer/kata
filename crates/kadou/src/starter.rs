@@ -3,14 +3,14 @@
 //! Embedded inside the `kadou` bin crate — not `kadou-core` — so `cargo package` works for
 //! `rust-embed` (§3 crate layout note).
 //!
-//! **Decision D6 (slice 6):** every embedded file under `starter/` is materialized
-//! independently, on **every** command that scans kata (`list`, `check`, `run`, `show`, `mcp
-//! serve`, `grant`, and the bare `kadou` frame) — never only "when `kata/` doesn't exist yet".
-//! The slice-5 version checked that instead, so a home that ran `kadou import` (or only ever
-//! `kadou mcp serve`) before touching `starter` directly never got the starter kata at all,
-//! since `kata/` already existed once any other folder had been written into it. A file that
-//! already exists (materialized before, or a human's own edit) is never overwritten or
-//! recreated once it exists; only files genuinely missing get written.
+//! **Decision D6 (revised, I-2):** the whole embedded set is materialized on a scan **only if
+//! `kata/starter/` does not exist yet** — not per file, and not gated on `kata/` itself. Once
+//! `kata/starter/` exists at all, it is never touched again: a deleted file inside it stays
+//! deleted (`kadou get starter` is what restores it, slice 7). Gating on `kata/starter/`
+//! specifically (rather than `kata/`) is what still fixes the slice-5 defect this replaces: a
+//! home that ran `kadou import` (or only `kadou mcp serve`) before ever touching `starter`
+//! still gets the starter kata, because `kata/team/` existing does not make `kata/starter/`
+//! exist.
 use std::path::Path;
 
 use rust_embed::RustEmbed;
@@ -19,15 +19,16 @@ use rust_embed::RustEmbed;
 #[folder = "starter/"]
 struct StarterKata;
 
-/// Materializes every embedded starter file whose destination under `kata_dir/starter/` does
-/// not yet exist (§7.4 item 2, decision D6). Safe to call on every command that scans kata —
-/// a fully-materialized starter folder does no I/O beyond the existence checks.
+/// Materializes the whole embedded starter set under `kata_dir/starter/` the first time that
+/// directory doesn't exist yet (§7.4 item 2, decision D6). A no-op once it exists, by design —
+/// safe to call on every command that scans kata.
 pub fn materialize_if_needed(kata_dir: &Path) -> std::io::Result<()> {
+    let starter_dir = kata_dir.join("starter");
+    if starter_dir.exists() {
+        return Ok(());
+    }
     for name in StarterKata::iter() {
-        let dest = kata_dir.join("starter").join(name.as_ref());
-        if dest.exists() {
-            continue;
-        }
+        let dest = starter_dir.join(name.as_ref());
         let file = StarterKata::get(&name).expect("embedded file listed by iter() must exist");
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
