@@ -11,7 +11,9 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod cluster;
+pub mod model;
 pub mod normalize;
+pub mod parse;
 pub mod rank;
 pub mod redact;
 pub mod risk;
