@@ -31,6 +31,14 @@ use tokio::sync::{mpsc, oneshot};
 /// How long to wait after `SIGTERM` before escalating to `SIGKILL` (§6.1).
 const KILL_GRACE: Duration = Duration::from_secs(5);
 
+/// Most lines the collector keeps in memory (`docs/design/12-mvp-review.md` §6 Later-2, E6).
+/// MCP's own view is at most 200 lines over an 8192-byte cap (`mcp.max_output_lines`,
+/// `MAX_OUTPUT_BYTES` in `kadou-mcp/src/tools.rs`) and the CLI prints the same collected
+/// output — this is generous headroom above that so a normal kata's full output is never
+/// observably different, while a kata that prints gigabytes still bounds memory to a ring of
+/// the most recent lines rather than growing without limit.
+const MAX_COLLECTED_LINES: usize = 10_000;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExecError {
     #[error("failed to spawn {program}: {source}")]
@@ -251,7 +259,7 @@ fn spawn_line_pumps(
                 .ok(),
             None => None,
         };
-        let mut lines = Vec::new();
+        let mut lines: std::collections::VecDeque<String> = std::collections::VecDeque::new();
         while let Some(line) = rx.recv().await {
             let line = match &redact {
                 Some(f) => f(&line),
@@ -262,9 +270,12 @@ fn spawn_line_pumps(
                 let _ = file.write_all(b"\n").await;
                 let _ = file.flush().await;
             }
-            lines.push(line);
+            if lines.len() == MAX_COLLECTED_LINES {
+                lines.pop_front();
+            }
+            lines.push_back(line);
         }
-        lines
+        Vec::from(lines)
     });
 
     Ok((out_task, err_task, collector))
@@ -741,6 +752,44 @@ mod tests {
 
         let outcome = run(s, None).await.unwrap();
         assert_eq!(outcome.output, vec!["****".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn collector_bounds_memory_for_a_script_that_prints_a_million_lines() {
+        // §5.5's own view is at most 200 lines (mcp.max_output_lines, clamped) over an
+        // 8192-byte cap (tools.rs MAX_OUTPUT_BYTES) -- the collector's in-memory Vec must not
+        // grow with a kata's real output. `seq`+`awk` generate the million lines as two child
+        // processes rather than a million shell-loop iterations, so the test stays fast.
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_script(
+            dir.path(),
+            "kata.sh",
+            "#!/bin/sh\nseq 0 999999 | awk '{print \"line-\" $0}'\n",
+        );
+        let mut s = spec(Some("#!/bin/sh"), file, dir.path().to_path_buf());
+        s.timeout = Duration::from_secs(30);
+
+        let outcome = run(s, None).await.unwrap();
+        assert_eq!(outcome.status, RunStatus::Success);
+        assert!(
+            outcome.output.len() <= MAX_COLLECTED_LINES,
+            "collector must bound the collected lines, got {}",
+            outcome.output.len()
+        );
+
+        let last_50: Vec<&str> = outcome
+            .output
+            .iter()
+            .rev()
+            .take(50)
+            .map(String::as_str)
+            .collect();
+        let expected: Vec<String> = (999_950..1_000_000)
+            .rev()
+            .map(|i| format!("line-{i}"))
+            .collect();
+        let expected_refs: Vec<&str> = expected.iter().map(String::as_str).collect();
+        assert_eq!(last_50, expected_refs);
     }
 
     #[tokio::test]

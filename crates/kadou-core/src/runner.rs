@@ -266,7 +266,6 @@ pub fn finish(
                 FinishOutcome {
                     status: "failed",
                     exit_code: None,
-                    redacted_output: "",
                     output_lines: 0,
                     output_summary: "",
                     duration_ms: 0,
@@ -277,7 +276,6 @@ pub fn finish(
     };
 
     let output = outcome.output;
-    let joined = output.join("\n");
     let summary = last_non_empty_line(&output);
     let duration_ms = u64::try_from(outcome.duration.as_millis()).unwrap_or(u64::MAX);
     let status = status_str(outcome.status);
@@ -287,7 +285,6 @@ pub fn finish(
         FinishOutcome {
             status,
             exit_code: outcome.exit_code,
-            redacted_output: &joined,
             output_lines: output.len(),
             output_summary: &summary,
             duration_ms,
@@ -491,8 +488,10 @@ mod tests {
                 "interface={interface}"
             );
 
+            // `finish` no longer rewrites `log_path` (D18) — its bytes are exactly what
+            // `kadou-exec`'s own collector streamed, trailing newline included.
             let logged = std::fs::read_to_string(&report.log_path).unwrap();
-            assert_eq!(logged, "token=****", "interface={interface}");
+            assert_eq!(logged, "token=****\n", "interface={interface}");
             assert!(!logged.contains("hunter2ok"), "interface={interface}");
 
             let record_path = state_dir
