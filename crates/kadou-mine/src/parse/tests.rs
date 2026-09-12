@@ -41,6 +41,14 @@ fn claude_extracts_a_written_sh_file_as_a_script_file_kind() {
 }
 
 #[test]
+fn claude_ignores_a_non_tool_use_item_even_if_it_names_write() {
+    // Guards item_type == "tool_use" && name == "Write" against a looser match that would
+    // fire on name == "Write" alone regardless of item_type.
+    let line = r#"{"type":"assistant","timestamp":"2026-09-01T00:00:00Z","message":{"content":[{"type":"not_tool_use","name":"Write","input":{"file_path":"scripts/x.sh","content":"kubectl get pods\nkubectl logs deploy/api\n"}}]}}"#;
+    assert!(parse_transcript(Agent::Claude, line).is_empty());
+}
+
+#[test]
 fn claude_ignores_a_written_file_that_is_not_a_shell_script() {
     let line = r#"{"type":"assistant","timestamp":"2026-09-01T00:00:00Z","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"notes.md","content":"hello notes"}}]}}"#;
     assert!(parse_transcript(Agent::Claude, line).is_empty());
