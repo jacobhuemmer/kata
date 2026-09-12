@@ -13,39 +13,50 @@ pub const CROSS: char = '✗';
 pub const DOT: char = '\u{25cf}';
 
 /// Rule 3 (§7 "Styled on a TTY only. `NO_COLOR` and `--plain` force plain on a TTY.").
-pub fn use_color(_is_tty: bool, _no_color_set: bool, _plain_flag: bool) -> bool {
-    todo!()
+pub fn use_color(is_tty: bool, no_color_set: bool, plain_flag: bool) -> bool {
+    is_tty && !no_color_set && !plain_flag
 }
 
-fn paint(_text: &str, _style: Style, _styled: bool) -> String {
-    todo!()
+fn paint(text: &str, style: Style, styled: bool) -> String {
+    if !styled {
+        return text.to_string();
+    }
+    format!("{}{text}{}", style.render(), style.render_reset())
 }
 
 /// One palette (§7 rule 4): the color a risk level's dot renders in. Never the only carrier
 /// of meaning -- [`risk_badge`] always prints the word too (rule 1).
-pub fn risk_color(_risk: RiskLevel) -> AnsiColor {
-    todo!()
+pub fn risk_color(risk: RiskLevel) -> AnsiColor {
+    match risk {
+        RiskLevel::Low => AnsiColor::Green,
+        RiskLevel::Medium => AnsiColor::Yellow,
+        RiskLevel::High => AnsiColor::Red,
+        RiskLevel::Critical => AnsiColor::Magenta,
+    }
 }
 
 /// Rule 1: "Risk is a colored dot plus a word. Never only a color."
-pub fn risk_badge(_risk: RiskLevel, _styled: bool) -> String {
-    todo!()
+pub fn risk_badge(risk: RiskLevel, styled: bool) -> String {
+    let style = Style::new().fg_color(Some(Color::Ansi(risk_color(risk))));
+    format!("{} {}", paint(&DOT.to_string(), style, styled), risk.as_str())
 }
 
-pub fn muted(_text: &str, _styled: bool) -> String {
-    todo!()
+pub fn muted(text: &str, styled: bool) -> String {
+    paint(text, Style::new().dimmed(), styled)
 }
 
-pub fn bold(_text: &str, _styled: bool) -> String {
-    todo!()
+pub fn bold(text: &str, styled: bool) -> String {
+    paint(text, Style::new().bold(), styled)
 }
 
-pub fn ok_mark(_styled: bool) -> String {
-    todo!()
+pub fn ok_mark(styled: bool) -> String {
+    let style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Green)));
+    paint(&CHECK.to_string(), style, styled)
 }
 
-pub fn err_mark(_styled: bool) -> String {
-    todo!()
+pub fn err_mark(styled: bool) -> String {
+    let style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red)));
+    paint(&CROSS.to_string(), style, styled)
 }
 
 #[cfg(test)]
