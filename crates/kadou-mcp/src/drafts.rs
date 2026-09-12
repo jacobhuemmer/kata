@@ -468,6 +468,17 @@ mod tests {
     }
 
     #[test]
+    fn source_at_the_byte_cap_is_accepted() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        let prefix = "#!/bin/sh\n# ---\n# about: pad\n# risk:  low\n# ---\necho hi\n# ";
+        let padding = schema::PROPOSE_SOURCE_MAX_BYTES - prefix.len();
+        let source = format!("{prefix}{}", "x".repeat(padding));
+        assert_eq!(source.len(), schema::PROPOSE_SOURCE_MAX_BYTES);
+        propose(state_dir.path(), kata_dir.path(), "sesami/at-cap", &source).unwrap();
+    }
+
+    #[test]
     fn propose_rejects_an_oversized_source() {
         let state_dir = tempfile::tempdir().unwrap();
         let kata_dir = tempfile::tempdir().unwrap();
@@ -480,6 +491,21 @@ mod tests {
             matches!(err, ProposeError::SourceTooLarge { .. }),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn propose_id_at_the_length_cap_is_accepted_one_over_is_rejected() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+
+        let at_cap = format!("{}/b", "a".repeat(schema::PROPOSE_ID_MAX_LEN - 2));
+        assert_eq!(at_cap.len(), schema::PROPOSE_ID_MAX_LEN);
+        propose(state_dir.path(), kata_dir.path(), &at_cap, HELLO).unwrap();
+
+        let over_cap = format!("{}/b", "a".repeat(schema::PROPOSE_ID_MAX_LEN - 1));
+        assert_eq!(over_cap.len(), schema::PROPOSE_ID_MAX_LEN + 1);
+        let err = propose(state_dir.path(), kata_dir.path(), &over_cap, HELLO).unwrap_err();
+        assert!(matches!(err, ProposeError::InvalidId { .. }), "{err:?}");
     }
 
     #[test]
