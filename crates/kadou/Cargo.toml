@@ -11,6 +11,7 @@ anstyle.workspace = true
 clap = { workspace = true, features = ["derive"] }
 clap_complete.workspace = true
 crossterm.workspace = true
+humantime.workspace = true
 inquire.workspace = true
 kadou-core = { path = "../kadou-core", version = "0.1.0" }
 kadou-exec = { path = "../kadou-exec", version = "0.1.0" }
@@ -24,7 +25,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 assert_cmd.workspace = true
-humantime.workspace = true
 insta.workspace = true
 predicates.workspace = true
 serde_json.workspace = true
