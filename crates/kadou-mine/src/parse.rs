@@ -87,11 +87,13 @@ fn cursor_line(value: &Value, when: &str, out: &mut Vec<RawShellEvent>) {
     }
 }
 
-/// Parses one native transcript's shell invocations, dispatching on `agent` (`06` §1.5). A
-/// line that fails to parse as JSON, or doesn't carry the shape this agent's shell-call
-/// pointer expects, contributes nothing -- never an error, since a transcript legitimately
-/// mixes tool calls, text, and other envelope types line by line.
-pub fn parse_transcript(agent: Agent, content: &str) -> Vec<RawShellEvent> {
+/// Parses one transcript line, dispatching on `agent` (`06` §1.5), and appends any shell
+/// invocation it carries to `out`. A line that fails to parse as JSON, or doesn't carry the
+/// shape this agent's shell-call pointer expects, contributes nothing -- never an error, since
+/// a transcript legitimately mixes tool calls, text, and other envelope types line by line.
+/// The one-line-at-a-time shape lets a caller stream a transcript (`orchestrate::ingest_row`)
+/// rather than parse a whole slurped string at once.
+pub fn parse_line(agent: Agent, line: &str, out: &mut Vec<RawShellEvent>) {
     let per_line: fn(&Value, &str, &mut Vec<RawShellEvent>) = match agent {
         Agent::Claude => claude_line,
         Agent::Codex => codex_line,
@@ -99,17 +101,25 @@ pub fn parse_transcript(agent: Agent, content: &str) -> Vec<RawShellEvent> {
         Agent::Cursor => cursor_line,
     };
 
+    let line = line.trim();
+    if line.is_empty() {
+        return;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return;
+    };
+    let when = line_when(&value);
+    per_line(&value, &when, out);
+}
+
+/// Parses one native transcript's shell invocations, dispatching on `agent` (`06` §1.5). A
+/// thin wrapper over [`parse_line`] for callers that already hold the whole transcript in
+/// memory (fixtures, tests); `orchestrate::ingest_row` calls `parse_line` directly, per line,
+/// off a `BufReader` instead.
+pub fn parse_transcript(agent: Agent, content: &str) -> Vec<RawShellEvent> {
     let mut out = Vec::new();
     for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        let when = line_when(&value);
-        per_line(&value, &when, &mut out);
+        parse_line(agent, line, &mut out);
     }
     out
 }

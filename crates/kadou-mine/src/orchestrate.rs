@@ -6,8 +6,14 @@
 //! transcripts, so it extracts zero new candidates and queues nothing new, without this
 //! module needing to merge new evidence into an existing `meta.json` (`06` §3.4 rule 4,
 //! deliberately not implemented this slice -- see the handoff's interpretation calls).
+//!
+//! `ingest_row` streams each transcript with a `BufReader`, line by line, rather than reading
+//! the whole file into memory first: `06` §2.1 measured a real Codex store at ~2.8 GB, and
+//! §3.5 requires the scan to stop mid-file once [`MineConfig::max_bytes_scanned`] is hit,
+//! which is only possible if bytes are charged to the bound as each line is actually read.
 
 use std::collections::BTreeMap;
+use std::io::BufRead as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -19,11 +25,10 @@ use crate::propose::StepWithParams;
 use crate::store::MineHome;
 use crate::{extract, ingest, normalize, parse, propose, rank, store};
 
-/// 20 minutes / 2 GB scanned (`06` §3.5). RSS is not actively measured this slice: the miner
-/// streams event markdown and transcript files line-by-line rather than slurping them, which
-/// keeps real usage well under 512 MB regardless (see the handoff's interpretation calls).
+/// 20 minutes (`06` §3.5).
 const MAX_WALL_TIME: Duration = Duration::from_secs(20 * 60);
-const MAX_BYTES_SCANNED: u64 = 2 * 1024 * 1024 * 1024;
+/// 2 GB (`06` §3.5), the default for [`MineConfig::max_bytes_scanned`].
+const DEFAULT_MAX_BYTES_SCANNED: u64 = 2 * 1024 * 1024 * 1024;
 /// A lock older than this is treated as an abandoned prior run, not a live one, and is
 /// reclaimed rather than blocking forever (`06` §3.4 rule 5).
 const LOCK_STALE_AFTER: Duration = Duration::from_secs(25 * 60);
@@ -34,6 +39,9 @@ pub struct MineConfig {
     pub redact_extra: Vec<String>,
     pub home_prefix: Option<String>,
     pub root_prefix: Option<String>,
+    /// The run-wide scanned-bytes bound (`06` §3.5). Defaults to 2 GB; a test lowers it to
+    /// prove the mid-transcript stop without needing a real multi-gigabyte fixture (B2).
+    pub max_bytes_scanned: u64,
 }
 
 impl MineConfig {
@@ -44,6 +52,7 @@ impl MineConfig {
             redact_extra: Vec::new(),
             home_prefix: None,
             root_prefix: None,
+            max_bytes_scanned: DEFAULT_MAX_BYTES_SCANNED,
         }
     }
 }
@@ -144,10 +153,39 @@ struct IngestOutcome {
     bounded_stop: bool,
 }
 
-/// One index row's contribution: reads its transcript (bounded, §3.5), parses, extracts, and
-/// normalizes into candidates, recording a processed-checkpoint row along the way. Returns
-/// `None` when the resource bounds were hit *before* this row could be attempted at all, so
-/// the caller stops the whole loop.
+/// Streams `transcript_path` line by line, charging each line's bytes to `bytes_scanned` as it
+/// is read (§3.5) and stopping *before* reading a line that would push `bytes_scanned` past
+/// `config.max_bytes_scanned` -- never reading the rest of the file. Returns the shell events
+/// parsed from whatever was read, and whether the bound cut the file short.
+fn stream_transcript(
+    config: &MineConfig,
+    agent: Agent,
+    transcript_path: &std::path::Path,
+    bytes_scanned: &mut u64,
+) -> std::io::Result<(Vec<crate::model::RawShellEvent>, bool)> {
+    let file = std::fs::File::open(transcript_path)?;
+    let reader = std::io::BufReader::new(file);
+    let mut raw_events = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        // +1 for the newline the reader stripped -- an approximation for the last,
+        // possibly-unterminated line, which is fine: this bound only has to be close, not exact.
+        let line_bytes = line.len() as u64 + 1;
+        if *bytes_scanned + line_bytes > config.max_bytes_scanned {
+            return Ok((raw_events, true));
+        }
+        *bytes_scanned += line_bytes;
+        parse::parse_line(agent, &line, &mut raw_events);
+    }
+    Ok((raw_events, false))
+}
+
+/// One index row's contribution: streams its transcript (bounded, §3.5), parses, extracts,
+/// and normalizes into candidates, recording a processed-checkpoint row along the way.
+/// Returns `false` when the resource bounds were hit -- either before this row could be
+/// attempted at all, or mid-file while streaming it -- so the caller stops the whole loop. A
+/// row cut short mid-file is deliberately *not* checkpointed as processed, so the next run
+/// re-reads it from the start rather than skipping the part it never saw.
 #[allow(clippy::too_many_arguments)]
 fn ingest_row(
     config: &MineConfig,
@@ -159,7 +197,7 @@ fn ingest_row(
     bytes_scanned: &mut u64,
     out: &mut IngestOutcome,
 ) -> bool {
-    if started.elapsed() >= MAX_WALL_TIME || *bytes_scanned >= MAX_BYTES_SCANNED {
+    if started.elapsed() >= MAX_WALL_TIME || *bytes_scanned >= config.max_bytes_scanned {
         return false;
     }
 
@@ -170,20 +208,21 @@ fn ingest_row(
         return true;
     };
     let transcript_path = ingest::resolve_relative(index_base, &transcript_raw);
-    let Ok(transcript_bytes) = std::fs::read(&transcript_path) else {
-        record_processed(home, processed, row, "skip: transcript_missing", None);
-        out.transcripts_missing += 1;
-        return true;
-    };
-    *bytes_scanned += transcript_bytes.len() as u64;
-    out.transcripts_seen += 1;
 
     let Some(agent) = Agent::parse(&row.agent) else {
         record_processed(home, processed, row, "skip: unknown_agent", None);
         return true;
     };
-    let content = String::from_utf8_lossy(&transcript_bytes);
-    let raw_events = parse::parse_transcript(agent, &content);
+
+    let Ok((raw_events, bounded_mid_file)) =
+        stream_transcript(config, agent, &transcript_path, bytes_scanned)
+    else {
+        record_processed(home, processed, row, "skip: transcript_missing", None);
+        out.transcripts_missing += 1;
+        return true;
+    };
+    out.transcripts_seen += 1;
+
     for sequence in extract::extract_sequences(&raw_events) {
         let normalized: Vec<normalize::Normalized> = sequence
             .steps
@@ -210,6 +249,9 @@ fn ingest_row(
         out.candidates_emitted += 1;
     }
 
+    if bounded_mid_file {
+        return false;
+    }
     record_processed(home, processed, row, "ok", None);
     true
 }
