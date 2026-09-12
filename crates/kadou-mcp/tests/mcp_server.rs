@@ -669,9 +669,10 @@ async fn max_wait_returns_running_with_a_log_that_already_has_partial_output() {
     assert_eq!(value["status"], "running");
     let log_path = PathBuf::from(value["log_path"].as_str().unwrap());
 
-    wait_for("log never gained the first line while the run was still in flight", || {
-        std::fs::read_to_string(&log_path).is_ok_and(|log| log.contains("first-line"))
-    })
+    wait_for(
+        "log never gained the first line while the run was still in flight",
+        || std::fs::read_to_string(&log_path).is_ok_and(|log| log.contains("first-line")),
+    )
     .await;
     let log = std::fs::read_to_string(&log_path).unwrap();
     assert!(

@@ -109,7 +109,11 @@ mod tests {
     #[test]
     fn one_under_min_length_secret_is_left_alone() {
         let secret = "7charle";
-        assert_eq!(secret.len(), 7, "test fixture must be exactly one under the floor");
+        assert_eq!(
+            secret.len(),
+            7,
+            "test fixture must be exactly one under the floor"
+        );
         let out = redact_all(&format!("token={secret}"), &[secret.to_string()], &[]);
         assert_eq!(out, "token=7charle");
     }
@@ -158,9 +162,13 @@ mod tests {
     fn a_basic_auth_pairing_exactly_at_min_length_is_redacted() {
         let user = "user".to_string();
         let token = "abc".to_string();
-        assert_eq!(format!("{user}:{token}").len(), 8, "fixture must be exactly at the floor");
-        let basic = base64::engine::general_purpose::STANDARD
-            .encode(format!("{user}:{token}").as_bytes());
+        assert_eq!(
+            format!("{user}:{token}").len(),
+            8,
+            "fixture must be exactly at the floor"
+        );
+        let basic =
+            base64::engine::general_purpose::STANDARD.encode(format!("{user}:{token}").as_bytes());
         let text = format!("Authorization: Basic {basic}");
         let out = redact_all(&text, &[], &[user, token]);
         assert_eq!(out, "Authorization: Basic ****");
@@ -175,8 +183,8 @@ mod tests {
             7,
             "fixture must be exactly one under the floor"
         );
-        let basic = base64::engine::general_purpose::STANDARD
-            .encode(format!("{user}:{token}").as_bytes());
+        let basic =
+            base64::engine::general_purpose::STANDARD.encode(format!("{user}:{token}").as_bytes());
         let text = format!("Authorization: Basic {basic}");
         let out = redact_all(&text, &[], &[user, token]);
         assert_eq!(

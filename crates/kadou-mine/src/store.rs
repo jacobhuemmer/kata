@@ -192,7 +192,9 @@ pub enum ApproveError {
     NotFound(String),
     #[error("fingerprint {0} was already {1}")]
     AlreadyDecided(String, String),
-    #[error("invalid --into name `{0}`; expected one id segment matching ^[a-z0-9][a-z0-9-]*$, not a path")]
+    #[error(
+        "invalid --into name `{0}`; expected one id segment matching ^[a-z0-9][a-z0-9-]*$, not a path"
+    )]
     InvalidName(String),
     #[error(transparent)]
     Store(#[from] StoreError),

@@ -284,8 +284,7 @@ mod tests {
         // tells people to paste.
         let root = tempfile::tempdir().unwrap();
         let dest = root.path().join("checkout");
-        let err =
-            super::clone("--upload-pack=touch /tmp/pwned", &dest, None).unwrap_err();
+        let err = super::clone("--upload-pack=touch /tmp/pwned", &dest, None).unwrap_err();
         assert!(
             matches!(err, super::GitError::UrlLooksLikeAFlag(_)),
             "{err}"
