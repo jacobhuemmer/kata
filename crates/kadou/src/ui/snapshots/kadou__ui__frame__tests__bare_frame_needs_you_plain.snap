@@ -1,0 +1,21 @@
+---
+source: crates/kadou/src/ui/frame.rs
+assertion_line: 474
+expression: text
+---
+ kadou 稼働   2 folders · 3 kata                  needs you: 1 grant · 2 drafts
+
+ starter
+   hello       ● low   Print a greeting
+   disk-usage  ● low   Disk usage of a directory
+
+ sesami                git ✓
+   ses-deploy  ● critical   Trigger the SES Deploy pipeline
+
+ needs you
+   grant  sesami/ses-deploy  version=25.6.1.2 oke_cluster=uat   claude-code · 4m ago
+          kadou grant approve 7c1e   ·   kadou grant deny 7c1e
+   draft  proposed/ops/argocd-sync                kadou accept ops/argocd-sync
+   draft  mined/k8s-pod-logs                kadou mine review
+
+ run  kadou run   ·   help  kadou --help

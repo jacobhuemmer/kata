@@ -1,0 +1,15 @@
+---
+source: crates/kadou/src/ui/frame.rs
+assertion_line: 417
+expression: text
+---
+ kadou 稼働   1 folder · 2 kata
+
+ starter
+   hello       ● low   Print a greeting
+   disk-usage  ● low   Disk usage of a directory
+
+ run     kadou run                 pick one, or:  kadou run starter/hello
+ new     kadou new <folder/name>   write a kata and open it
+ team    kadou get <git-url>       add your team's kata as a folder
+ agents  kadou mcp serve

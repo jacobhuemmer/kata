@@ -38,7 +38,11 @@ pub fn risk_color(risk: RiskLevel) -> AnsiColor {
 /// Rule 1: "Risk is a colored dot plus a word. Never only a color."
 pub fn risk_badge(risk: RiskLevel, styled: bool) -> String {
     let style = Style::new().fg_color(Some(Color::Ansi(risk_color(risk))));
-    format!("{} {}", paint(&DOT.to_string(), style, styled), risk.as_str())
+    format!(
+        "{} {}",
+        paint(&DOT.to_string(), style, styled),
+        risk.as_str()
+    )
 }
 
 pub fn muted(text: &str, styled: bool) -> String {
@@ -66,7 +70,10 @@ mod tests {
     #[test]
     fn plain_on_a_pipe_styled_on_a_real_tty() {
         assert!(!use_color(false, false, false), "not a tty");
-        assert!(use_color(true, false, false), "a tty, nothing forcing plain");
+        assert!(
+            use_color(true, false, false),
+            "a tty, nothing forcing plain"
+        );
     }
 
     #[test]

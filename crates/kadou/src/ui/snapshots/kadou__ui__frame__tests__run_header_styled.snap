@@ -1,0 +1,9 @@
+---
+source: crates/kadou/src/ui/frame.rs
+assertion_line: 528
+expression: styled
+---
+ ▸ sesami/ses-deploy  [35m●[0m critical
+   version=25.6.1.2  oke_cluster=uat
+   needs  [32m✓[0m vault
+ ────────────────────────────────────────────────────────────────────────

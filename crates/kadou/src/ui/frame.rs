@@ -98,7 +98,17 @@ impl BareFrame {
 /// already-computed [`Duration`] rather than two `SystemTime`s so it is a pure, deterministic
 /// function of its input.
 pub fn humanize_ago(elapsed: Duration) -> String {
-    todo!()
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        return "just now".to_string();
+    }
+    if secs < 60 * 60 {
+        return format!("{}m ago", secs / 60);
+    }
+    if secs < 60 * 60 * 24 {
+        return format!("{}h ago", secs / (60 * 60));
+    }
+    format!("{}d ago", secs / (60 * 60 * 24))
 }
 
 fn needs_you_header(needs_you: &NeedsYou) -> Option<String> {
@@ -166,7 +176,10 @@ fn push_needs_you_block(out: &mut String, needs_you: &NeedsYou) {
         ));
     }
     for draft in &needs_you.drafts {
-        out.push_str(&format!("   draft  {}                {}\n", draft.id, draft.action));
+        out.push_str(&format!(
+            "   draft  {}                {}\n",
+            draft.id, draft.action
+        ));
     }
 }
 
@@ -192,13 +205,47 @@ fn push_footer(out: &mut String, frame: &BareFrame) {
 
 /// The bare `kadou` frame on a TTY (§7.2, `09` §3.2).
 pub fn render_bare(frame: &BareFrame, styled: bool) -> String {
-    todo!()
+    let folder_word = if frame.folders.len() == 1 {
+        "folder"
+    } else {
+        "folders"
+    };
+    // "kata" (per docs/design/04-naming.md) is invariant under pluralization, unlike
+    // "folder"/"grant"/"draft" -- the PRD's own examples show both "5 kata" and "37 kata".
+    let mut out = format!(
+        " kadou 稼働   {} {folder_word} · {} kata",
+        frame.folders.len(),
+        frame.kata_count()
+    );
+    if let Some(needs_you) = needs_you_header(&frame.needs_you) {
+        out.push_str("                  ");
+        out.push_str(&needs_you);
+    }
+    out.push('\n');
+
+    for folder in &frame.folders {
+        out.push('\n');
+        push_folder_block(&mut out, folder, styled);
+    }
+
+    push_needs_you_block(&mut out, &frame.needs_you);
+    push_footer(&mut out, frame);
+    out
 }
 
 /// Piped `kadou`: one kata per line, tab-separated, full id (§7.2 "Piped, `kadou` prints one
 /// kata per line, tab-separated").
 pub fn render_bare_piped(frame: &BareFrame) -> String {
-    todo!()
+    let mut out = String::new();
+    for folder in &frame.folders {
+        for kata in &folder.kata {
+            out.push_str(&format!(
+                "{}/{}\t{}\t{}\n",
+                folder.name, kata.name, kata.risk, kata.about
+            ));
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +262,30 @@ pub fn run_header(
     needs_satisfied: Option<bool>,
     styled: bool,
 ) -> String {
-    todo!()
+    let mut out = format!(
+        " {} {}  {}\n",
+        style::MARKER,
+        kata_id,
+        style::risk_badge(risk, styled)
+    );
+    if !args.is_empty() {
+        let rendered = args
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("  ");
+        out.push_str(&format!("   {rendered}\n"));
+    }
+    if let Some(satisfied) = needs_satisfied {
+        let mark = if satisfied {
+            format!("{} vault", style::ok_mark(styled))
+        } else {
+            format!("{} missing", style::err_mark(styled))
+        };
+        out.push_str(&format!("   needs  {mark}\n"));
+    }
+    out.push_str(&format!(" {}\n", "─".repeat(72)));
+    out
 }
 
 /// The final status line after a run completes (§9 `08` §2.7's frame, carried unchanged).
@@ -227,7 +297,15 @@ pub fn run_footer(
     history_short: &str,
     styled: bool,
 ) -> String {
-    todo!()
+    let mark = if success {
+        style::ok_mark(styled)
+    } else {
+        style::err_mark(styled)
+    };
+    format!(
+        " {mark} {kata_id}  exit {exit_code}  {}   kadou history {history_short}\n",
+        humantime::format_duration(duration)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -240,13 +318,22 @@ pub fn run_footer(
 /// changes the text itself -- `styled = false` returns the input unchanged, so scripts piping
 /// `kadou check` see the exact bytes `kadou_core` produced.
 pub fn colorize_check_report(text: &str, styled: bool) -> String {
-    todo!()
+    if !styled {
+        return text.to_string();
+    }
+    text.lines()
+        .map(colorize_check_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + if text.ends_with('\n') { "\n" } else { "" }
 }
 
 fn colorize_check_line(line: &str) -> String {
     use anstyle::{AnsiColor, Color, Style};
 
-    let red_bold = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red))).bold();
+    let red_bold = Style::new()
+        .fg_color(Some(Color::Ansi(AnsiColor::Red)))
+        .bold();
     let yellow_bold = Style::new()
         .fg_color(Some(Color::Ansi(AnsiColor::Yellow)))
         .bold();
@@ -272,11 +359,7 @@ fn colorize_check_line(line: &str) -> String {
         return style::muted(line, true);
     }
     if is_caret_line(line) {
-        return format!(
-            "{}{line}{}",
-            red_bold.render(),
-            red_bold.render_reset()
-        );
+        return format!("{}{line}{}", red_bold.render(), red_bold.render_reset());
     }
     if let Some(fix) = line.strip_prefix("  = ") {
         return format!("  {}", style::muted(&format!("= {fix}"), true));
@@ -431,7 +514,10 @@ mod tests {
         assert_eq!(humanize_ago(Duration::from_secs(30)), "just now");
         assert_eq!(humanize_ago(Duration::from_secs(4 * 60)), "4m ago");
         assert_eq!(humanize_ago(Duration::from_secs(2 * 60 * 60)), "2h ago");
-        assert_eq!(humanize_ago(Duration::from_secs(3 * 24 * 60 * 60)), "3d ago");
+        assert_eq!(
+            humanize_ago(Duration::from_secs(3 * 24 * 60 * 60)),
+            "3d ago"
+        );
     }
 
     #[test]
@@ -440,17 +526,43 @@ mod tests {
             ("version".to_string(), "25.6.1.2".to_string()),
             ("oke_cluster".to_string(), "uat".to_string()),
         ];
-        let plain = run_header("sesami/ses-deploy", RiskLevel::Critical, &args, Some(true), false);
+        let plain = run_header(
+            "sesami/ses-deploy",
+            RiskLevel::Critical,
+            &args,
+            Some(true),
+            false,
+        );
         insta::assert_snapshot!("run_header_plain", plain);
-        let styled = run_header("sesami/ses-deploy", RiskLevel::Critical, &args, Some(true), true);
+        let styled = run_header(
+            "sesami/ses-deploy",
+            RiskLevel::Critical,
+            &args,
+            Some(true),
+            true,
+        );
         insta::assert_snapshot!("run_header_styled", styled);
     }
 
     #[test]
     fn run_footer_reports_success_and_failure() {
-        let ok = run_footer("starter/hello", true, 0, Duration::from_secs(1), "91aa", false);
+        let ok = run_footer(
+            "starter/hello",
+            true,
+            0,
+            Duration::from_secs(1),
+            "91aa",
+            false,
+        );
         assert!(ok.contains("✓ starter/hello  exit 0"));
-        let failed = run_footer("starter/hello", false, 1, Duration::from_secs(1), "91aa", false);
+        let failed = run_footer(
+            "starter/hello",
+            false,
+            1,
+            Duration::from_secs(1),
+            "91aa",
+            false,
+        );
         assert!(failed.contains("✗ starter/hello  exit 1"));
     }
 
