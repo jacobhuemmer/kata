@@ -9,6 +9,7 @@
 mod check;
 mod config;
 mod digest;
+pub mod folder;
 pub mod fsutil;
 pub mod git;
 mod header;
