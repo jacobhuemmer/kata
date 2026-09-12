@@ -4,7 +4,7 @@
 //! kata would run; other folders are unaffected. Diagnostics are rendered cargo-shaped: a
 //! line per error, a fix line per error, one summary line per folder.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -79,7 +79,7 @@ pub fn check_folder(
 /// decides which needs are actually missing (§4.7).
 pub fn check_all(kata_dir: &Path, vault: &Vault) -> Result<CheckReport, ScanError> {
     let scanned = scan::scan_kata_dir(kata_dir)?;
-    let mut extra_by_folder: HashMap<String, Vec<ScannedFile>> = HashMap::new();
+    let mut extra_by_folder: BTreeMap<String, Vec<ScannedFile>> = BTreeMap::new();
     for (folder, diag_file) in cross_kata_diagnostics(&scanned) {
         extra_by_folder.entry(folder).or_default().push(diag_file);
     }
@@ -166,15 +166,15 @@ pub fn check_path(path: &Path) -> ScannedFile {
 /// entry attached to every folder involved, so `checked N kata in F` still counts real kata
 /// while the conflict still fails that folder's check.
 /// (folder, kata_id, need default), grouped by need name.
-type NeedsSeen<'a> = HashMap<&'a str, Vec<(&'a str, &'a str, &'a Option<String>)>>;
+type NeedsSeen<'a> = BTreeMap<&'a str, Vec<(&'a str, &'a str, &'a Option<String>)>>;
 /// (folder, kata_id), grouped by alias name.
-type AliasSeen<'a> = HashMap<&'a str, Vec<(&'a str, &'a str)>>;
+type AliasSeen<'a> = BTreeMap<&'a str, Vec<(&'a str, &'a str)>>;
 
 fn cross_kata_diagnostics(folders: &[(String, Vec<ScannedFile>)]) -> Vec<(String, ScannedFile)> {
     let mut out = Vec::new();
 
-    let mut needs_seen: NeedsSeen = HashMap::new();
-    let mut alias_seen: AliasSeen = HashMap::new();
+    let mut needs_seen: NeedsSeen = BTreeMap::new();
+    let mut alias_seen: AliasSeen = BTreeMap::new();
 
     for (folder, files) in folders {
         for file in files.iter() {
