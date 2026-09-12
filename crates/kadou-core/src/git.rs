@@ -97,6 +97,17 @@ mod tests {
         run(dir, &["commit", "-q", "-m", message]);
     }
 
+    fn run_capture(dir: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git must be on PATH for this test");
+        assert!(output.status.success(), "git {args:?} failed in {}", dir.display());
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
     #[test]
     fn is_git_backed_is_false_for_a_plain_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -163,5 +174,75 @@ mod tests {
     fn has_local_changes_is_false_for_a_non_git_directory() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!super::has_local_changes(dir.path()));
+    }
+
+    /// A local bare fixture repo with one commit on `main` — no network, per §9 slice 7's
+    /// test list ("create it in the test with `git init --bare` and a commit").
+    fn bare_fixture_with_one_commit(root: &Path) -> PathBuf {
+        let bare = root.join("origin.git");
+        std::fs::create_dir_all(&bare).unwrap();
+        run(&bare, &["init", "-q", "--bare", "-b", "main"]);
+
+        let seed = root.join("seed");
+        std::fs::create_dir_all(&seed).unwrap();
+        run(&seed, &["init", "-q", "-b", "main"]);
+        run(&seed, &["config", "user.email", "test@example.com"]);
+        run(&seed, &["config", "user.name", "test"]);
+        std::fs::write(seed.join("hello.sh"), "#!/bin/sh\necho hi\n").unwrap();
+        commit_all(&seed, "init");
+        run(&seed, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        run(&seed, &["push", "-q", "origin", "main"]);
+        bare
+    }
+
+    #[test]
+    fn clone_creates_a_working_tree_from_a_local_bare_repo() {
+        let root = tempfile::tempdir().unwrap();
+        let bare = bare_fixture_with_one_commit(root.path());
+        let dest = root.path().join("checkout");
+
+        super::clone(bare.to_str().unwrap(), &dest, None).unwrap();
+
+        assert!(dest.join("hello.sh").is_file());
+        assert!(super::is_git_backed(&dest));
+    }
+
+    #[test]
+    fn clone_with_a_ref_checks_out_the_named_branch() {
+        let root = tempfile::tempdir().unwrap();
+        let bare = bare_fixture_with_one_commit(root.path());
+        let dest = root.path().join("checkout");
+
+        super::clone(bare.to_str().unwrap(), &dest, Some("main")).unwrap();
+
+        let branch = run_capture(&dest, &["branch", "--show-current"]);
+        assert_eq!(branch, "main");
+    }
+
+    #[test]
+    fn clone_of_a_bad_url_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let dest = root.path().join("checkout");
+        let err = super::clone("/no/such/repo", &dest, None).unwrap_err();
+        assert!(matches!(err, super::GitError::Command { .. }));
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn pull_fast_forwards_a_new_commit_from_the_remote() {
+        let root = tempfile::tempdir().unwrap();
+        let bare = bare_fixture_with_one_commit(root.path());
+        let dest = root.path().join("checkout");
+        super::clone(bare.to_str().unwrap(), &dest, None).unwrap();
+
+        // A second clone plays the role of another contributor pushing a new commit.
+        let other = root.path().join("other-checkout");
+        super::clone(bare.to_str().unwrap(), &other, None).unwrap();
+        std::fs::write(other.join("second.txt"), "second").unwrap();
+        commit_all(&other, "second commit");
+        run(&other, &["push", "-q", "origin", "main"]);
+
+        super::pull(&dest).unwrap();
+        assert!(dest.join("second.txt").is_file());
     }
 }
