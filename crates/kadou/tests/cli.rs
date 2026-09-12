@@ -1901,6 +1901,17 @@ fn edit_with_an_id_opens_the_configured_editor() {
 }
 
 #[test]
+fn edit_reports_a_nonzero_editor_exit_as_a_failure() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .env("EDITOR", "false")
+        .args(["edit", "starter/hello"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("exited with"));
+}
+
+#[test]
 fn edit_of_an_unknown_kata_is_a_clean_error() {
     let home = tempfile::tempdir().unwrap();
     kadou_in(home.path())

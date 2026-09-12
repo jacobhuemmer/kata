@@ -12,7 +12,23 @@
 # calls it), so a mutant there can never be "caught" by any test -- that would be noise, not a
 # real coverage gap.
 exclude_globs = ["crates/kadou-mine/**"]
-exclude_re = ['^crates/kadou/src/main\.rs:.*replace main ->']
+exclude_re = [
+  '^crates/kadou/src/main\.rs:.*replace main ->',
+  # §9 slice 8: these run only over a real terminal (raw-mode key events, or an `inquire`
+  # widget reading from a real stdin) -- `cargo test`'s subprocess stdin/stdout is never a
+  # TTY, so `resolve_id_or_pick`'s picker branch, the picker's own event loop, and the
+  # interactive branch of the run/--ask arg prompts can never execute under `cargo test`, the
+  # same "mutant can never be caught by any test" reasoning as `fn main` above. Verified
+  # manually over a real pty (expect) instead -- see the handoff for the exact transcripts.
+  '^crates/kadou/src/commands\.rs:.*styled_for_stdout',
+  '^crates/kadou/src/commands\.rs:.*run_picker_interactive',
+  '^crates/kadou/src/commands\.rs:.*map_key',
+  '^crates/kadou/src/commands\.rs:.*clear_picker_frame',
+  '^crates/kadou/src/commands\.rs:.*in prompt_for_arg$',
+  '^crates/kadou/src/commands\.rs:.*prompt_for_arg ->',
+  '^crates/kadou/src/commands\.rs:.*prompt_for_args ->',
+  '^crates/kadou/src/commands\.rs:.*int_validator',
+]
 
 # kadou-exec spawns real child processes and asserts on SIGTERM/SIGKILL timing (KILL_GRACE =
 # 5s in crates/kadou-exec/src/lib.rs); a mutant that breaks the kill path can let a `sleep 30`
