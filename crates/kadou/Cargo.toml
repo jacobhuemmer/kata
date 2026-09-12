@@ -14,6 +14,7 @@ kadou-mcp = { path = "../kadou-mcp", version = "0.1.0" }
 rust-embed.workspace = true
 similar.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+toml_edit.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

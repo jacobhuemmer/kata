@@ -1034,15 +1034,25 @@ pub fn run_grant_allow(id: String, any_version: bool) -> ExitCode {
         }
     };
 
-    let mut config = load_config(&paths);
+    let config = load_config(&paths);
     let pin_prefix = format!("{id}@");
-    config
+    let mut allow: Vec<String> = config
         .agent
         .allow
-        .retain(|existing| existing != &id && !existing.starts_with(&pin_prefix));
-    config.agent.allow.push(entry.clone());
+        .into_iter()
+        .filter(|existing| existing != &id && !existing.starts_with(&pin_prefix))
+        .collect();
+    allow.push(entry.clone());
 
-    match config.save(&paths.config_file()) {
+    let result = Config::edit(&paths.config_file(), |doc| {
+        let mut array = toml_edit::Array::new();
+        for item in &allow {
+            array.push(item.as_str());
+        }
+        doc["agent"]["allow"] = toml_edit::Item::Value(toml_edit::Value::Array(array));
+    });
+
+    match result {
         Ok(()) => {
             println!("allowed {entry}");
             ExitCode::SUCCESS

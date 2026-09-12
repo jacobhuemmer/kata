@@ -153,6 +153,12 @@ pub enum ConfigError {
         #[source]
         source: io::Error,
     },
+    #[error("failed to parse {path}: {source}")]
+    TomlEdit {
+        path: PathBuf,
+        #[source]
+        source: toml_edit::TomlError,
+    },
 }
 
 impl Config {
@@ -197,6 +203,39 @@ impl Config {
         write_atomic_0600(path, text.as_bytes()).map_err(|source| ConfigError::Write {
             path: path.to_path_buf(),
             source,
+        })
+    }
+
+    /// Applies `edit` to the TOML document at `path` (an empty document if nothing exists
+    /// there yet) and writes the result back atomically at 0600 -- comments and every key
+    /// `edit` doesn't touch survive, and an untouched default is never materialized (§3.1:
+    /// "Comment-preserving `kadou trust` / `kadou grant allow` config edits"). Unlike
+    /// [`Config::save`], this never re-serializes the whole `Config`.
+    pub fn edit(
+        path: &Path,
+        edit: impl FnOnce(&mut toml_edit::DocumentMut),
+    ) -> Result<(), ConfigError> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(source) => {
+                return Err(ConfigError::Read {
+                    path: path.to_path_buf(),
+                    source,
+                });
+            }
+        };
+        let mut doc: toml_edit::DocumentMut =
+            text.parse().map_err(|source| ConfigError::TomlEdit {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        edit(&mut doc);
+        write_atomic_0600(path, doc.to_string().as_bytes()).map_err(|source| {
+            ConfigError::Write {
+                path: path.to_path_buf(),
+                source,
+            }
         })
     }
 }
