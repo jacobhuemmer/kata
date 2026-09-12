@@ -126,7 +126,7 @@ fn parse_list_args(arguments: &serde_json::Map<String, serde_json::Value>) -> to
         risk: arguments
             .get("risk")
             .and_then(|v| v.as_str())
-            .and_then(parse_risk),
+            .and_then(|s| s.parse().ok()),
         // §5.5's schema caps `limit` at 200 and `offset` has no declared upper bound, but
         // either is attacker/agent-influenced JSON input — a saturating conversion rather
         // than `as usize` keeps a huge value from silently truncating on a 32-bit target
@@ -184,14 +184,4 @@ fn parse_propose_args(
         id: arguments.get("id")?.as_str()?.to_string(),
         source: arguments.get("source")?.as_str()?.to_string(),
     })
-}
-
-fn parse_risk(s: &str) -> Option<kadou_core::RiskLevel> {
-    match s {
-        "low" => Some(kadou_core::RiskLevel::Low),
-        "medium" => Some(kadou_core::RiskLevel::Medium),
-        "high" => Some(kadou_core::RiskLevel::High),
-        "critical" => Some(kadou_core::RiskLevel::Critical),
-        _ => None,
-    }
 }

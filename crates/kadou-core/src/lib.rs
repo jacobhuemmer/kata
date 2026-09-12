@@ -23,6 +23,7 @@ mod risk;
 pub mod runner;
 mod scan;
 mod vault;
+pub mod visibility;
 
 pub use check::{CheckReport, FolderReport, check_all, check_folder, check_path, render_report};
 pub use config::{

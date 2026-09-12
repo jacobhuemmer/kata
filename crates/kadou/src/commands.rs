@@ -107,22 +107,13 @@ pub fn materialize_starter_for_bare_invocation() {
     materialize_starter(&resolve_paths());
 }
 
-/// The human ceiling for `folder`, per §6.2's formula: `folder[f].max_risk ?? max_risk`.
-fn human_ceiling(config: &Config, folder: &str) -> RiskLevel {
-    config
-        .folder
-        .get(folder)
-        .and_then(|f| f.max_risk)
-        .unwrap_or(config.max_risk)
-}
-
 /// The human ceiling still applies regardless of the confirm protocol (§6.2, §6.3 "The human
 /// ceiling still applies"): a kata above `max_risk`/`[folder.<f>] max_risk` never runs, no
 /// matter what `--confirm` or a TTY prompt says. `--dry-run` never spawns, so it bypasses this
 /// too (§6.1).
 fn check_human_ceiling(kata: &Kata, config: &Config) -> Result<(), ExitCode> {
     let folder = kata.id.split('/').next().unwrap_or(&kata.id);
-    let ceiling = human_ceiling(config, folder);
+    let ceiling = kadou_core::visibility::human_ceiling(config, folder);
     if kata.risk > ceiling {
         eprintln!(
             "error: {} is {} risk, above the max_risk ceiling {ceiling} for folder {folder}",
@@ -205,16 +196,6 @@ fn read_vault_value(name: &str, plain: bool) -> Result<String, String> {
     Ok(buf.trim_end_matches(['\n', '\r']).to_string())
 }
 
-fn parse_risk(s: &str) -> Option<RiskLevel> {
-    match s {
-        "low" => Some(RiskLevel::Low),
-        "medium" => Some(RiskLevel::Medium),
-        "high" => Some(RiskLevel::High),
-        "critical" => Some(RiskLevel::Critical),
-        _ => None,
-    }
-}
-
 /// `kadou list [--folder F] [--risk R] [query]` — the CLI projection of `list_kata` (§7.1).
 /// A human's own ceiling applies (§6.2 `visible(k,f) = rank(k.risk) ≤ human_ceiling(f)
 /// [CLI]`); untrusted project-local folders are out of scope for this slice.
@@ -271,11 +252,7 @@ fn list_rows(
         {
             continue;
         }
-        let ceiling = config
-            .folder
-            .get(name)
-            .and_then(|f| f.max_risk)
-            .unwrap_or(config.max_risk);
+        let ceiling = kadou_core::visibility::human_ceiling(config, name);
         rows.extend(list_rows_for_folder(
             files,
             ceiling,
@@ -294,9 +271,9 @@ pub fn run_list(query: Option<String>, folder: Option<String>, risk: Option<Stri
 
     let risk_filter = match risk.as_deref() {
         None => None,
-        Some(s) => match parse_risk(s) {
-            Some(r) => Some(r),
-            None => {
+        Some(s) => match s.parse::<RiskLevel>() {
+            Ok(r) => Some(r),
+            Err(_) => {
                 eprintln!("error: unknown risk level `{s}`");
                 eprintln!("  = risk is one of low, medium, high, critical");
                 return ExitCode::from(2);
@@ -939,9 +916,9 @@ pub fn run_mcp_serve(
 
     let max_risk_flag = match max_risk.as_deref() {
         None => None,
-        Some(s) => match parse_risk(s) {
-            Some(r) => Some(r),
-            None => {
+        Some(s) => match s.parse::<RiskLevel>() {
+            Ok(r) => Some(r),
+            Err(_) => {
                 eprintln!("error: unknown risk level `{s}`");
                 eprintln!("  = risk is one of low, medium, high, critical");
                 return ExitCode::from(2);
