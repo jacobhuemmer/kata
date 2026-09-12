@@ -583,6 +583,48 @@ parameters:
     }
 
     #[test]
+    fn a_runbook_scoped_secret_param_is_an_import_error_not_an_arg() {
+        // Decision 13 / §4.4: a secret must never be agent-settable. scope decides need vs.
+        // arg; a non-global param that also carries secret: true would otherwise convert
+        // silently into a plain, agent-settable arg (I-15).
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "src/widget/runbook.yaml",
+            r#"
+name: widget
+description: Trigger the widget pipeline
+risk_level: medium
+script: script.sh
+parameters:
+  - name: api_token
+    type: string
+    required: true
+    scope: runbook
+    secret: true
+"#,
+        );
+        write(dir.path(), "src/widget/script.sh", "#!/bin/sh\necho hi\n");
+
+        let kata_dir = dir.path().join("kata");
+        let err = import_catalog(&dir.path().join("src"), &kata_dir, "sesami").unwrap_err();
+        let ImportError::Param {
+            kata,
+            param,
+            message,
+        } = err
+        else {
+            panic!("expected ImportError::Param, got {err:?}");
+        };
+        assert_eq!(kata, "widget");
+        assert_eq!(param, "api_token");
+        assert!(
+            message.contains("scope: global"),
+            "message should tell the operator to make it a need: {message}"
+        );
+    }
+
+    #[test]
     fn refuses_to_overwrite_an_existing_folder() {
         let dir = tempfile::tempdir().unwrap();
         write(
