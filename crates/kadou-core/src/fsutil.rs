@@ -68,6 +68,36 @@ pub fn ensure_dir_0700(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Appends `line` (plus a trailing newline) to `path`, creating the file at mode `0600` and
+/// its parent directory at `0700` if either is missing (§6.6/§6.8's append-only
+/// checkpoint/audit logs). A true append -- O(1) in the file's existing size, unlike the
+/// read-whole-file/push-one-line/rewrite-whole-file cycle every append-only log in
+/// `kadou-mine` used before (12-mvp-review L8: `processed.jsonl` is the hot path, one append
+/// per index row, and Mason's real ledger has thousands).
+pub fn append_line_0600(path: &Path, line: &str) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        ensure_dir_0700(parent)?;
+    }
+
+    #[cfg(unix)]
+    let mut file = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)?
+    };
+    #[cfg(not(unix))]
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+
+    file.write_all(line.as_bytes())?;
+    file.write_all(b"\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +144,26 @@ mod tests {
         assert_eq!(mode(&path), 0o700, "leaf");
         assert_eq!(mode(&root.path().join("a/b")), 0o700, "intermediate b");
         assert_eq!(mode(&root.path().join("a")), 0o700, "intermediate a");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn append_line_0600_creates_the_file_0600_and_its_parent_0700() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/log.jsonl");
+        append_line_0600(&path, "first").unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+    }
+
+    #[test]
+    fn append_line_0600_is_a_true_append_not_a_rewrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+        append_line_0600(&path, "one").unwrap();
+        append_line_0600(&path, "two").unwrap();
+        append_line_0600(&path, "three").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\ntwo\nthree\n");
     }
 
     #[test]

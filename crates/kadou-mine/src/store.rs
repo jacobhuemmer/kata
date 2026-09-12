@@ -41,10 +41,6 @@ impl MineHome {
         self.mine_dir.join("audit.jsonl")
     }
 
-    pub fn state_path(&self) -> PathBuf {
-        self.mine_dir.join("state.json")
-    }
-
     pub fn processed_path(&self) -> PathBuf {
         self.mine_dir.join("checkpoints/processed.jsonl")
     }
@@ -166,14 +162,8 @@ fn now_rfc3339() -> String {
 /// (`06` §4.6).
 pub fn append_audit(home: &MineHome, row: &AuditRow) -> Result<(), StoreError> {
     let path = home.audit_log_path();
-    kadou_core::fsutil::ensure_dir_0700(&home.mine_dir)
-        .map_err(|e| io_err("create", &home.mine_dir, e))?;
-    let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
     let line = serde_json::to_string(row).unwrap_or_default();
-    existing.push_str(&line);
-    existing.push('\n');
-    kadou_core::fsutil::write_atomic_0600(&path, existing.as_bytes())
-        .map_err(|e| io_err("write", &path, e))
+    kadou_core::fsutil::append_line_0600(&path, &line).map_err(|e| io_err("write", &path, e))
 }
 
 /// Every audit row on disk, oldest first. A missing or unreadable log reads as empty (a fresh

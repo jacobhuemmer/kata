@@ -83,13 +83,8 @@ pub fn load_processed(home: &MineHome) -> Vec<ProcessedRecord> {
 /// Appends one record to `checkpoints/processed.jsonl`, creating its directory as needed.
 pub fn append_processed(home: &MineHome, record: &ProcessedRecord) -> std::io::Result<()> {
     let path = home.processed_path();
-    if let Some(parent) = path.parent() {
-        kadou_core::fsutil::ensure_dir_0700(parent)?;
-    }
-    let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
-    existing.push_str(&serde_json::to_string(record).unwrap_or_default());
-    existing.push('\n');
-    kadou_core::fsutil::write_atomic_0600(&path, existing.as_bytes())
+    let line = serde_json::to_string(record).unwrap_or_default();
+    kadou_core::fsutil::append_line_0600(&path, &line)
 }
 
 /// `06` §3.4 rule 1: same event path + bytes -> skip.

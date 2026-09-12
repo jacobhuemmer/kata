@@ -180,124 +180,138 @@ fn stream_transcript(
     Ok((raw_events, false))
 }
 
-/// One index row's contribution: streams its transcript (bounded, §3.5), parses, extracts,
-/// and normalizes into candidates, recording a processed-checkpoint row along the way.
-/// Returns `false` when the resource bounds were hit -- either before this row could be
-/// attempted at all, or mid-file while streaming it -- so the caller stops the whole loop. A
-/// row cut short mid-file is deliberately *not* checkpointed as processed, so the next run
-/// re-reads it from the start rather than skipping the part it never saw.
-#[allow(clippy::too_many_arguments)]
-fn ingest_row(
-    config: &MineConfig,
-    home: &MineHome,
-    index_base: &std::path::Path,
-    row: &ingest::IndexRow,
-    processed: &mut Vec<ingest::ProcessedRecord>,
+/// One in-flight `ingest_new_candidates` run's own state (L9, `docs/design/12-mvp-review.md`
+/// §4/§6): `home`/`index_base` are fixed for the run, `processed`/`started`/`bytes_scanned`
+/// accumulate across rows, and `out` is the summary being built -- one logical unit, not eight
+/// separate parameters threaded through a free function.
+struct IngestRun<'a> {
+    home: &'a MineHome,
+    index_base: PathBuf,
+    processed: Vec<ingest::ProcessedRecord>,
     started: Instant,
-    bytes_scanned: &mut u64,
-    out: &mut IngestOutcome,
-) -> bool {
-    if started.elapsed() >= MAX_WALL_TIME || *bytes_scanned >= config.max_bytes_scanned {
-        return false;
+    bytes_scanned: u64,
+    out: IngestOutcome,
+}
+
+impl IngestRun<'_> {
+    /// One index row's contribution: streams its transcript (bounded, §3.5), parses,
+    /// extracts, and normalizes into candidates, recording a processed-checkpoint row along
+    /// the way. Returns `false` when the resource bounds were hit -- either before this row
+    /// could be attempted at all, or mid-file while streaming it -- so the caller stops the
+    /// whole loop. A row cut short mid-file is deliberately *not* checkpointed as processed,
+    /// so the next run re-reads it from the start rather than skipping the part it never saw.
+    fn ingest_row(&mut self, config: &MineConfig, row: &ingest::IndexRow) -> bool {
+        if self.started.elapsed() >= MAX_WALL_TIME || self.bytes_scanned >= config.max_bytes_scanned
+        {
+            return false;
+        }
+
+        let event_md_path = ingest::resolve_relative(&self.index_base, &row.path);
+        let Some(transcript_raw) = ingest::read_transcript_path(&event_md_path) else {
+            self.record_processed(row, "skip: transcript_missing");
+            self.out.transcripts_missing += 1;
+            return true;
+        };
+        let transcript_path = ingest::resolve_relative(&self.index_base, &transcript_raw);
+
+        let Some(agent) = Agent::parse(&row.agent) else {
+            self.record_processed(row, "skip: unknown_agent");
+            return true;
+        };
+
+        let Ok((raw_events, bounded_mid_file)) =
+            stream_transcript(config, agent, &transcript_path, &mut self.bytes_scanned)
+        else {
+            self.record_processed(row, "skip: transcript_missing");
+            self.out.transcripts_missing += 1;
+            return true;
+        };
+        self.out.transcripts_seen += 1;
+
+        for sequence in extract::extract_sequences(&raw_events) {
+            let normalized: Vec<normalize::Normalized> = sequence
+                .steps
+                .iter()
+                .map(|step| {
+                    normalize::normalize_command(
+                        step,
+                        config.home_prefix.as_deref(),
+                        config.root_prefix.as_deref(),
+                    )
+                })
+                .collect();
+            let templates: Vec<String> = normalized.iter().map(|n| n.template.clone()).collect();
+            self.out
+                .template_params
+                .entry(templates.join("\n"))
+                .or_insert_with(|| normalized.iter().map(|n| n.params.clone()).collect());
+
+            self.out.candidates.push(cluster::Candidate {
+                steps: templates,
+                agent: agent.as_str().to_string(),
+                session_id: row.session_id.clone(),
+                when: sequence.when,
+            });
+            self.out.candidates_emitted += 1;
+        }
+
+        if bounded_mid_file {
+            return false;
+        }
+        self.record_processed(row, "ok");
+        true
     }
 
-    let event_md_path = ingest::resolve_relative(index_base, &row.path);
-    let Some(transcript_raw) = ingest::read_transcript_path(&event_md_path) else {
-        record_processed(home, processed, row, "skip: transcript_missing", None);
-        out.transcripts_missing += 1;
-        return true;
-    };
-    let transcript_path = ingest::resolve_relative(index_base, &transcript_raw);
-
-    let Some(agent) = Agent::parse(&row.agent) else {
-        record_processed(home, processed, row, "skip: unknown_agent", None);
-        return true;
-    };
-
-    let Ok((raw_events, bounded_mid_file)) =
-        stream_transcript(config, agent, &transcript_path, bytes_scanned)
-    else {
-        record_processed(home, processed, row, "skip: transcript_missing", None);
-        out.transcripts_missing += 1;
-        return true;
-    };
-    out.transcripts_seen += 1;
-
-    for sequence in extract::extract_sequences(&raw_events) {
-        let normalized: Vec<normalize::Normalized> = sequence
-            .steps
-            .iter()
-            .map(|step| {
-                normalize::normalize_command(
-                    step,
-                    config.home_prefix.as_deref(),
-                    config.root_prefix.as_deref(),
-                )
-            })
-            .collect();
-        let templates: Vec<String> = normalized.iter().map(|n| n.template.clone()).collect();
-        out.template_params
-            .entry(templates.join("\n"))
-            .or_insert_with(|| normalized.iter().map(|n| n.params.clone()).collect());
-
-        out.candidates.push(cluster::Candidate {
-            steps: templates,
-            agent: agent.as_str().to_string(),
-            session_id: row.session_id.clone(),
-            when: sequence.when,
-        });
-        out.candidates_emitted += 1;
+    fn record_processed(&mut self, row: &ingest::IndexRow, status: &str) {
+        let record = ingest::ProcessedRecord {
+            event_path: row.path.clone(),
+            bytes: row.bytes,
+            transcript_sha256: None,
+            status: status.to_string(),
+        };
+        let _ = ingest::append_processed(self.home, &record);
+        self.processed.push(record);
     }
-
-    if bounded_mid_file {
-        return false;
-    }
-    record_processed(home, processed, row, "ok", None);
-    true
 }
 
 fn ingest_new_candidates(config: &MineConfig, home: &MineHome) -> IngestOutcome {
-    let started = Instant::now();
-    let mut bytes_scanned: u64 = 0;
     let index_base = config
         .index_path
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_default();
     let rows = ingest::read_index_rows(&config.index_path);
-    let mut processed = ingest::load_processed(home);
+    let processed = ingest::load_processed(home);
 
-    let mut out = IngestOutcome {
-        candidates: Vec::new(),
-        template_params: TemplateParams::new(),
-        events_seen: 0,
-        transcripts_seen: 0,
-        transcripts_missing: 0,
-        candidates_emitted: 0,
-        bounded_stop: false,
+    let mut run = IngestRun {
+        home,
+        index_base,
+        processed,
+        started: Instant::now(),
+        bytes_scanned: 0,
+        out: IngestOutcome {
+            candidates: Vec::new(),
+            template_params: TemplateParams::new(),
+            events_seen: 0,
+            transcripts_seen: 0,
+            transcripts_missing: 0,
+            candidates_emitted: 0,
+            bounded_stop: false,
+        },
     };
 
     for row in &rows {
-        if ingest::already_processed(&processed, &row.path, row.bytes) {
+        if ingest::already_processed(&run.processed, &row.path, row.bytes) {
             continue;
         }
-        out.events_seen += 1;
-        if !ingest_row(
-            config,
-            home,
-            &index_base,
-            row,
-            &mut processed,
-            started,
-            &mut bytes_scanned,
-            &mut out,
-        ) {
-            out.bounded_stop = true;
+        run.out.events_seen += 1;
+        if !run.ingest_row(config, row) {
+            run.out.bounded_stop = true;
             break;
         }
     }
 
-    out
+    run.out
 }
 
 fn record_redaction_failure(home: &MineHome, fingerprint: &str) {
@@ -307,14 +321,7 @@ fn record_redaction_failure(home: &MineHome, fingerprint: &str) {
         "when": humantime::format_rfc3339_seconds(SystemTime::now()).to_string(),
     })
     .to_string();
-    let path = home.redaction_failures_path();
-    if let Some(parent) = path.parent() {
-        let _ = kadou_core::fsutil::ensure_dir_0700(parent);
-    }
-    let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
-    existing.push_str(&line);
-    existing.push('\n');
-    let _ = kadou_core::fsutil::write_atomic_0600(&path, existing.as_bytes());
+    let _ = kadou_core::fsutil::append_line_0600(&home.redaction_failures_path(), &line);
 }
 
 /// One passing cluster's propose-and-queue attempt: `true` if it was newly queued.
@@ -402,21 +409,4 @@ fn run_locked(config: &MineConfig, home: &MineHome) -> RunSummary {
 
 fn default_risk_for(cluster: &Cluster) -> RiskLevel {
     crate::risk::default_risk(&cluster.template)
-}
-
-fn record_processed(
-    home: &MineHome,
-    processed: &mut Vec<ingest::ProcessedRecord>,
-    row: &ingest::IndexRow,
-    status: &str,
-    transcript_sha256: Option<String>,
-) {
-    let record = ingest::ProcessedRecord {
-        event_path: row.path.clone(),
-        bytes: row.bytes,
-        transcript_sha256,
-        status: status.to_string(),
-    };
-    let _ = ingest::append_processed(home, &record);
-    processed.push(record);
 }
