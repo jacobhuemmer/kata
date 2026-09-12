@@ -48,7 +48,20 @@ fn send(title: &str, body: &str) {
 
 #[cfg(target_os = "macos")]
 fn send_with(title: &str, body: &str, path_override: Option<&std::ffi::OsStr>) {
-    todo!()
+    // AppleScript string literals: escape `"` and `\`; every other character in kadou's own
+    // notification bodies (ids, risk words, a `kadou grant approve ...` line) is already
+    // AppleScript-safe.
+    fn quote(s: &str) -> String {
+        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+    let script = format!(
+        "display notification {} with title {}",
+        quote(body),
+        quote(title)
+    );
+    let mut cmd = Command::new("osascript");
+    cmd.arg("-e").arg(script);
+    spawn_scoped(cmd, path_override);
 }
 
 #[cfg(target_os = "linux")]
