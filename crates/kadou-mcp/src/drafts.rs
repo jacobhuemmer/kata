@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use kadou_core::{Diagnostic, ScannedFile};
+use kadou_core::{Diagnostic, FolderReport, ScannedFile};
 
 use crate::schema;
 
@@ -91,15 +91,24 @@ pub struct ProposeOutcome {
     pub accept_command: String,
 }
 
-/// Renders every error diagnostic the same way `kadou check` would (§5.4 "a bad header is
-/// `invalid_args` with the same diagnostic text `kadou check` prints").
-fn render_diagnostics(diagnostics: &[Diagnostic]) -> String {
-    diagnostics
-        .iter()
-        .filter(|d| d.is_error())
-        .map(|d| d.message.clone())
-        .collect::<Vec<_>>()
-        .join("; ")
+/// Renders every diagnostic exactly the way `kadou check` would (§5.4 "a bad header is
+/// `invalid_args` with the same diagnostic text `kadou check` prints") -- location, source
+/// snippet, carets, and fix line, not just the bare message (I-23). Wraps the parsed draft in
+/// a one-file `FolderReport`, the same shape `check_path` builds for `kadou check <path>`, so
+/// `render_report` produces identical text for free.
+fn render_diagnostics(input_id: &str, source: &str, diagnostics: Vec<Diagnostic>) -> String {
+    let scanned = ScannedFile {
+        id: input_id.to_string(),
+        path: PathBuf::from(format!("{input_id}.sh")),
+        source: source.to_string(),
+        header: None,
+        diagnostics,
+    };
+    let report = FolderReport {
+        folder: PROPOSED_NS.to_string(),
+        files: vec![scanned],
+    };
+    kadou_core::render_report(&report, Path::new(""), false)
 }
 
 /// Writes `source` as a draft at `<state_dir>/proposed/<input_id>.sh`, strict-loading the
@@ -126,7 +135,11 @@ pub fn propose(
 
     let (header, diagnostics) = kadou_core::parse_header(source);
     if header.is_none() {
-        return Err(ProposeError::BadHeader(render_diagnostics(&diagnostics)));
+        return Err(ProposeError::BadHeader(render_diagnostics(
+            input_id,
+            source,
+            diagnostics,
+        )));
     }
 
     let proposed_root = state_dir.join(PROPOSED_NS);
