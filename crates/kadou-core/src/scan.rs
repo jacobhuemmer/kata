@@ -143,17 +143,14 @@ fn scan_dir(dir: &Path, id_prefix: &str, out: &mut Vec<ScannedFile>) -> Result<(
         if dir_kata.contains_key(stem) {
             continue;
         }
-        out.push(scan_file(format!("{id_prefix}{stem}"), file_path.clone()));
+        out.push(validated_scan_file(id_prefix, stem, file_path.clone()));
     }
 
     for (stem, dir_path) in &dir_kata {
         if file_candidates.contains_key(stem) {
             continue;
         }
-        out.push(scan_file(
-            format!("{id_prefix}{stem}"),
-            dir_path.join("kata.sh"),
-        ));
+        out.push(validated_scan_file(id_prefix, stem, dir_path.join("kata.sh")));
     }
 
     for nd in namespace_dirs {
@@ -165,6 +162,50 @@ fn scan_dir(dir: &Path, id_prefix: &str, out: &mut Vec<ScannedFile>) -> Result<(
     }
 
     Ok(())
+}
+
+/// `scan_file`, but first checks `stem` against the PRD §4.2 id-segment grammar (I-11): an
+/// uppercase letter or underscore in a filename is a check error with a kebab-case rename
+/// suggestion, not a silently-accepted kata.
+fn validated_scan_file(id_prefix: &str, stem: &str, path: PathBuf) -> ScannedFile {
+    if header::is_valid_id_segment(stem) {
+        return scan_file(format!("{id_prefix}{stem}"), path);
+    }
+    ScannedFile {
+        id: format!("{id_prefix}{stem}"),
+        path,
+        source: String::new(),
+        header: None,
+        diagnostics: vec![Diagnostic {
+            severity: Severity::Error,
+            message: format!("`{stem}` is not a valid kata name"),
+            fix: Some(format!(
+                "rename to `{}` (id segments match ^[a-z0-9][a-z0-9-]*$)",
+                kebab_case_suggestion(stem)
+            )),
+            line: 1,
+            col: 1,
+            len: stem.chars().count().max(1),
+        }],
+    }
+}
+
+/// A best-effort kebab-case rename suggestion for an invalid id segment: lowercase, and any
+/// run of characters outside `[a-z0-9]` becomes a single `-`.
+fn kebab_case_suggestion(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        let lower = c.to_ascii_lowercase();
+        if lower.is_ascii_lowercase() || lower.is_ascii_digit() {
+            out.push(lower);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
 }
 
 fn scan_file(id: String, path: PathBuf) -> ScannedFile {
