@@ -27,13 +27,71 @@ pub struct PickCandidate {
 /// matches (§7.3 "Fuzzy match, id ranked above about"), each group ordered by its own nucleo
 /// score. An empty query matches every candidate, in the given order.
 pub fn filter<'a>(query: &str, candidates: &'a [PickCandidate]) -> Vec<&'a PickCandidate> {
-    todo!()
+    if query.is_empty() {
+        return candidates.iter().collect();
+    }
+
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let pattern = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart);
+    let mut buf = Vec::new();
+
+    let mut id_matches: Vec<(u32, &PickCandidate)> = Vec::new();
+    let mut about_matches: Vec<(u32, &PickCandidate)> = Vec::new();
+
+    for candidate in candidates {
+        if let Some(score) = pattern.score(Utf32Str::new(&candidate.id, &mut buf), &mut matcher) {
+            id_matches.push((score, candidate));
+            continue;
+        }
+        let haystack = format!("{} {}", candidate.about, candidate.alias.join(" "));
+        if let Some(score) = pattern.score(Utf32Str::new(&haystack, &mut buf), &mut matcher) {
+            about_matches.push((score, candidate));
+        }
+    }
+
+    id_matches.sort_by(|a, b| b.0.cmp(&a.0));
+    about_matches.sort_by(|a, b| b.0.cmp(&a.0));
+    id_matches
+        .into_iter()
+        .chain(about_matches)
+        .map(|(_, c)| c)
+        .collect()
 }
 
 /// The picker's list block: the filter header, up to [`MAX_ROWS`] rows, or the no-matches
 /// line (§7.3 `no kata matches "xyz"   kadou new sesami/xyz`).
-pub fn render_list(command_label: &str, query: &str, matches: &[&PickCandidate], styled: bool) -> String {
-    todo!()
+pub fn render_list(
+    command_label: &str,
+    query: &str,
+    matches: &[&PickCandidate],
+    styled: bool,
+) -> String {
+    let mut out = format!(
+        " {} {command_label} which kata?  {query}\u{2588}\n",
+        style::MARKER
+    );
+    if matches.is_empty() {
+        out.push_str(&format!(
+            "   no kata matches \"{query}\"   kadou new {query}\n"
+        ));
+        return out;
+    }
+    let width = matches
+        .iter()
+        .take(MAX_ROWS)
+        .map(|c| c.id.len())
+        .max()
+        .unwrap_or(0)
+        + 3;
+    for candidate in matches.iter().take(MAX_ROWS) {
+        out.push_str(&format!(
+            "   {:width$}{}   {}\n",
+            candidate.id,
+            style::risk_badge(candidate.risk, styled),
+            candidate.about
+        ));
+    }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -63,7 +121,31 @@ pub struct Preview {
 /// The header preview block below the picker list: the highlighted kata's own `kadou show`
 /// summary (§7.3 "the highlighted kata's header shows below the list").
 pub fn render_preview(preview: &Preview, styled: bool) -> String {
-    todo!()
+    let mut out = format!("{}\n", "─".repeat(72));
+    out.push_str(&format!(
+        " {}   {}   {}\n",
+        preview.id,
+        style::risk_badge(preview.risk, styled),
+        preview.about
+    ));
+    if !preview.needs.is_empty() {
+        let names: Vec<&str> = preview.needs.iter().map(|n| n.name.as_str()).collect();
+        let mark = if preview.needs.iter().all(|n| n.satisfied) {
+            format!("{} vault", style::ok_mark(styled))
+        } else {
+            format!("{} missing", style::err_mark(styled))
+        };
+        out.push_str(&format!(" needs  {}   {mark}\n", names.join(" ")));
+    }
+    for arg in &preview.args {
+        out.push_str(&format!(" args   {:<12} {}\n", arg.name, arg.summary));
+    }
+    out.push_str(&format!(
+        " file   {}   sha {}\n",
+        preview.file, preview.sha_short
+    ));
+    out.push_str(" ↑↓ move   ↵ run   tab show   e edit   esc cancel\n");
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +191,38 @@ pub struct PickerState {
 /// *current* query matches, what does this keypress do. Selection wraps; typing or
 /// backspacing always resets it to the top match, the same way fzf and friends behave.
 pub fn apply_key(state: &mut PickerState, key: PickerKey, match_count: usize) -> PickerAction {
-    todo!()
+    match key {
+        PickerKey::Char('e') => {
+            if match_count == 0 {
+                PickerAction::Continue
+            } else {
+                PickerAction::EditAndReturn(state.selected)
+            }
+        }
+        PickerKey::Char(c) => {
+            state.query.push(c);
+            state.selected = 0;
+            PickerAction::Continue
+        }
+        PickerKey::Backspace => {
+            state.query.pop();
+            state.selected = 0;
+            PickerAction::Continue
+        }
+        PickerKey::Down if match_count > 0 => {
+            state.selected = (state.selected + 1) % match_count;
+            PickerAction::Continue
+        }
+        PickerKey::Up if match_count > 0 => {
+            state.selected = (state.selected + match_count - 1) % match_count;
+            PickerAction::Continue
+        }
+        PickerKey::Down | PickerKey::Up => PickerAction::Continue,
+        PickerKey::Enter if match_count > 0 => PickerAction::Select(state.selected),
+        PickerKey::Tab if match_count > 0 => PickerAction::ShowFull(state.selected),
+        PickerKey::Enter | PickerKey::Tab => PickerAction::Continue,
+        PickerKey::Escape => PickerAction::Cancel,
+    }
 }
 
 #[cfg(test)]
@@ -143,7 +256,10 @@ mod tests {
         ];
         let matches = filter("deploy", &candidates);
         assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].id, "sesami/ses-deploy", "id match must rank first");
+        assert_eq!(
+            matches[0].id, "sesami/ses-deploy",
+            "id match must rank first"
+        );
         assert_eq!(matches[1].id, "sesami/ses-release-build");
     }
 
@@ -203,7 +319,10 @@ mod tests {
     #[test]
     fn arrow_keys_wrap_the_selection() {
         let mut state = PickerState::default();
-        assert_eq!(apply_key(&mut state, PickerKey::Up, 3), PickerAction::Continue);
+        assert_eq!(
+            apply_key(&mut state, PickerKey::Up, 3),
+            PickerAction::Continue
+        );
         assert_eq!(state.selected, 2, "up from 0 wraps to the last row");
         apply_key(&mut state, PickerKey::Down, 3);
         assert_eq!(state.selected, 0);
@@ -215,13 +334,19 @@ mod tests {
             query: String::new(),
             selected: 1,
         };
-        assert_eq!(apply_key(&mut state, PickerKey::Enter, 3), PickerAction::Select(1));
+        assert_eq!(
+            apply_key(&mut state, PickerKey::Enter, 3),
+            PickerAction::Select(1)
+        );
     }
 
     #[test]
     fn enter_on_an_empty_list_does_nothing() {
         let mut state = PickerState::default();
-        assert_eq!(apply_key(&mut state, PickerKey::Enter, 0), PickerAction::Continue);
+        assert_eq!(
+            apply_key(&mut state, PickerKey::Enter, 0),
+            PickerAction::Continue
+        );
     }
 
     #[test]
@@ -230,7 +355,10 @@ mod tests {
             query: String::new(),
             selected: 0,
         };
-        assert_eq!(apply_key(&mut state, PickerKey::Tab, 1), PickerAction::ShowFull(0));
+        assert_eq!(
+            apply_key(&mut state, PickerKey::Tab, 1),
+            PickerAction::ShowFull(0)
+        );
         assert_eq!(
             apply_key(&mut state, PickerKey::Char('e'), 1),
             PickerAction::EditAndReturn(0)
@@ -240,6 +368,9 @@ mod tests {
     #[test]
     fn escape_always_cancels() {
         let mut state = PickerState::default();
-        assert_eq!(apply_key(&mut state, PickerKey::Escape, 0), PickerAction::Cancel);
+        assert_eq!(
+            apply_key(&mut state, PickerKey::Escape, 0),
+            PickerAction::Cancel
+        );
     }
 }
