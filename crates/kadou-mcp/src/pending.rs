@@ -242,25 +242,11 @@ impl PendingStore {
 }
 
 /// The folder's git HEAD (§6.4 "the folder's git HEAD... pinned at request time"), `None` when
-/// `folder_dir` is not a git checkout — an imported (non-`kadou get`) folder, for instance.
-/// Shells out to the real `git` binary rather than adding a `git2` dependency for one
-/// read-only `rev-parse`.
+/// `folder_dir` is not git-backed — an imported (non-`kadou get`) folder, for instance.
+/// Delegates to `kadou_core::git::head`, the one place `--show-toplevel` detection lives
+/// (`docs/design/05-prd.md` §9 slice 7), rather than re-shelling to `git` here.
 pub fn git_head(folder_dir: &Path) -> Option<String> {
-    if !folder_dir.join(".git").exists() {
-        return None;
-    }
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(folder_dir)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let head = String::from_utf8(output.stdout).ok()?;
-    let head = head.trim();
-    (!head.is_empty()).then(|| head.to_string())
+    kadou_core::git::head(folder_dir)
 }
 
 #[cfg(test)]
