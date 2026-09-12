@@ -71,9 +71,10 @@ cargo mutants                                   # where a crate has a mutants co
 ```
 
 These mirror `.github/workflows/ci.yml` (`fmt`, `clippy`, `test` on macOS +
-Linux, `msrv`, `deny`); `cargo mutants` is not yet a CI job, run it
-locally per the `mutation-testing` skill when a slice touches
-security-relevant logic (visibility, redaction, vault, header parsing).
+Linux, `msrv`, `deny`, and now `mutants` — a per-crate mutation-score
+ratchet). Also run `cargo mutants` locally per the `mutation-testing`
+skill when a slice touches security-relevant logic (visibility,
+redaction, vault, header parsing).
 
 ## Small conventional commits
 
@@ -127,9 +128,11 @@ simplification, regardless of how it affects test coverage:
    only place this JSON is built.
 2. **Agents never see high/critical by default.** Default `agent.max_risk`
    is `low`; the visibility formula lives in
-   `crates/kadou-mcp/src/visibility.rs` (`human_ceiling`, `agent_ceiling`,
-   `is_visible_risk`). `--allow-risk` / `--max-risk` may only narrow, never
-   raise, an agent's ceiling above config (§6.2).
+   `crates/kadou-core/src/visibility.rs` (`human_ceiling`, `agent_ceiling`,
+   `is_visible_risk`) — `crates/kadou-mcp/src/visibility.rs` only
+   re-exports `agent_ceiling`/`is_visible_risk` for its own call sites.
+   `--allow-risk` / `--max-risk` may only narrow, never raise, an agent's
+   ceiling above config (§6.2).
 3. **Needs are never args.** The split is structural, not a runtime scope
    check — a secret is a need, never an arg, by construction (§4.4). A
    `run_kata` call naming a need in `args` is `invalid_args`, never a
@@ -139,7 +142,7 @@ simplification, regardless of how it affects test coverage:
    wiring a vault write path through `kadou-mcp`, stop — that path
    doesn't exist in this product.
 5. **Secrets are redacted in results and logs, before either is
-   written.** `crates/kadou-mcp/src/redact.rs` (`redact_all`) runs on the
+   written.** `crates/kadou-core/src/redact.rs` (`redact_all`) runs on the
    line stream before it hits the history log or the MCP result — never
    redact-on-read (§6.6).
 6. **MCP children get an explicit env allowlist, never the agent host's

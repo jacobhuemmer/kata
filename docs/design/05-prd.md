@@ -197,7 +197,8 @@ Add `cargo-deny` with a license allowlist plus advisories to CI. Every dependenc
 ```
 ~/.config/kadou/
   kadou.toml              # may be empty; missing keys mean defaults
-  themes/                 # drop-in *.toml themes
+  themes/                 # drop-in *.toml themes (post-v1: config.theme is parsed and
+                           # round-tripped, but nothing reads themes/ or the key yet — D14)
   kata/
     starter/hello.sh      # written on first run; yours after that
     sesami/                # `kadou get <git-url> --as sesami`; a git checkout
@@ -771,7 +772,7 @@ Contract: `06-session-mining.md` (pipeline, redaction, bounds, review gate). **P
 |---|---|
 | `$DOPS_HOME/mine/` | `~/.local/state/kadou/mine/` |
 | `$DOPS_HOME/mine/queue/<fingerprint>/` | `~/.local/state/kadou/mine/queue/<fingerprint>/{meta.json,kata.sh}` |
-| `$DOPS_HOME/catalogs/mined/` | `~/.local/share/kadou/kata-drafts/mined/` (never in the library path; listed regardless of ceiling — §4.1) |
+| `$DOPS_HOME/catalogs/mined/` | `~/.local/state/kadou/mined/` (never in the library path; listed regardless of ceiling — §4.1) |
 | `$DOPS_HOME/mine/redact-extra.txt` | `~/.config/kadou/mine/redact-extra.txt` |
 
 Pipeline, redaction ids R1–R13, rank cutoff, LaunchAgent **`dev.kadou.mine`**, bounds (20 min / 512 MB RSS / 2 GB scan), and fail-closed secret drop are **as specified in `06` §2–4**.
@@ -805,7 +806,7 @@ Rules every human-facing frame obeys (`09` §3.1):
 1. Risk is a colored dot plus a word, never only a color.
 2. Success is one line. Errors are a sentence and a fix line the reader can paste.
 3. Styled on a TTY only. `NO_COLOR` and `--plain` force plain on a TTY. `TERM=dumb` disables the picker and prompts (they become errors with the non-interactive form).
-4. One palette: `theme = "doop"` in `kadou.toml` colors dots, the `▸` marker, `✓`/`✗`, and muted text everywhere.
+4. One palette: `theme = "doop"` in `kadou.toml` colors dots, the `▸` marker, `✓`/`✗`, and muted text everywhere. **Post-v1:** the key round-trips but is not read yet; `crates/kadou/src/ui/style.rs` hard-codes the one palette this rule describes (D14, `docs/design/12-mvp-review.md` §3).
 5. Nothing paginates; nothing is interactive unless the command is missing an id.
 6. Interactive means inline: the picker and prompts draw below the shell prompt and erase themselves when done. No alternate screen, no lost scrollback; `Ctrl+c` always exits with a one-line "cancelled".
 
@@ -940,10 +941,10 @@ Homebrew / Nix / cargo-binstall / winget must produce the **same first-run state
 | Kind | Path | Override |
 |---|---|---|
 | User config | `~/.config/kadou/kadou.toml` | `KADOU_HOME` replaces the config **root** for tests/containers. `DOPS_HOME` is honored as a documented, deprecated alias for one release. |
-| User kata, user themes | `~/.config/kadou/kata/`, `~/.config/kadou/themes/` | |
+| User kata, user themes | `~/.config/kadou/kata/`, `~/.config/kadou/themes/` (post-v1: not read yet — D14) | |
 | Product data (vault, keys, cloned kata folders, mined/proposed drafts) | `~/.local/share/kadou/` | |
 | State (history, pending, last-used args, mine work queue) | `~/.local/state/kadou/` | |
-| Starter kata / bundled themes | embedded in the binary | |
+| Starter kata / bundled themes | embedded in the binary (starter kata: yes; themes: post-v1, only the one hard-coded palette exists — D14) | |
 
 `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME` are not a second override next to `KADOU_HOME` — `etcetera`'s default strategy (used when `KADOU_HOME` is unset) already reads those.
 
