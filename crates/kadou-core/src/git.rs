@@ -72,9 +72,37 @@ pub fn has_local_changes(dir: &Path) -> bool {
     run(dir, &["status", "--porcelain"]).is_ok_and(|text| !text.is_empty())
 }
 
+/// `git clone [--branch <git_ref>] <url> <dest>`. `dest`'s parent must already exist; `git
+/// clone` creates only the leaf directory.
+pub fn clone(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<(), GitError> {
+    let dest_str = dest.to_string_lossy().to_string();
+    let mut args: Vec<&str> = vec!["clone"];
+    if let Some(git_ref) = git_ref {
+        args.push("--branch");
+        args.push(git_ref);
+    }
+    args.push(url);
+    args.push(&dest_str);
+
+    let output = Command::new("git").args(&args).output().map_err(GitError::Spawn)?;
+    if !output.status.success() {
+        return Err(GitError::Command {
+            args: args.join(" "),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// `git -C <dir> pull --ff-only` — never creates a merge commit in a folder a human didn't
+/// touch by hand.
+pub fn pull(dir: &Path) -> Result<(), GitError> {
+    run(dir, &["pull", "--ff-only"]).map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     fn run(dir: &Path, args: &[&str]) {
         let status = std::process::Command::new("git")
@@ -238,6 +266,8 @@ mod tests {
         // A second clone plays the role of another contributor pushing a new commit.
         let other = root.path().join("other-checkout");
         super::clone(bare.to_str().unwrap(), &other, None).unwrap();
+        run(&other, &["config", "user.email", "test@example.com"]);
+        run(&other, &["config", "user.name", "test"]);
         std::fs::write(other.join("second.txt"), "second").unwrap();
         commit_all(&other, "second commit");
         run(&other, &["push", "-q", "origin", "main"]);
