@@ -621,15 +621,40 @@ mod tests {
 
     #[tokio::test]
     async fn timeout_escalates_to_sigkill_when_sigterm_is_ignored() {
+        // The original bare `trap '' TERM; sleep 30` raced spec.timeout against the shell's
+        // own startup: if the 200ms timeout fired before `trap '' TERM` had actually run, the
+        // shell still carried the default SIGTERM disposition and died at once, instead of
+        // surviving to prove the SIGKILL escalation (G1: reproduced 5 of 8 failures under
+        // parallel load). The script now writes a readiness file *after* installing the
+        // trap, and the test polls for it before sending the termination signal itself (via
+        // `cancel`, which shares the exact same terminate() escalation path as a real
+        // spec.timeout firing) -- removing the race instead of just widening its window.
         let dir = tempfile::tempdir().unwrap();
-        let file = write_script(dir.path(), "kata.sh", "#!/bin/sh\ntrap '' TERM\nsleep 30\n");
+        let ready = dir.path().join("ready");
+        let file = write_script(
+            dir.path(),
+            "kata.sh",
+            "#!/bin/sh\ntrap '' TERM\n: > \"$READY\"\nsleep 30\n",
+        );
         let mut s = spec(Some("#!/bin/sh"), file, dir.path().to_path_buf());
-        s.timeout = Duration::from_millis(200);
+        s.timeout = Duration::from_secs(60); // never meant to fire; the test cancels instead
+        s.env.push(("READY".to_string(), ready.display().to_string()));
+
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let handle = tokio::spawn(run(s, Some(cancel_rx)));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline, "script never became ready");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
 
         let start = Instant::now();
-        let outcome = run(s, None).await.unwrap();
+        cancel_tx.send(()).unwrap();
+        let outcome = handle.await.unwrap().unwrap();
         let elapsed = start.elapsed();
-        assert_eq!(outcome.status, RunStatus::TimedOut);
+
+        assert_eq!(outcome.status, RunStatus::Cancelled);
         assert!(
             elapsed >= KILL_GRACE,
             "a SIGTERM-ignoring script must wait out the SIGKILL grace: took {elapsed:?}"
