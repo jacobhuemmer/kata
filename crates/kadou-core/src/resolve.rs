@@ -1,11 +1,11 @@
 //! Needs/args resolution for a run (`docs/design/05-prd.md` §4.4, §6.5, §9 slice 4).
 //!
-//! Needs resolve vault-before-default's inverse order, precisely: a header default always
-//! wins first (a default in a git-tracked file is by definition not a secret, §4.4), then the
-//! vault, else `missing` — not prompted, not silently skipped, and never guessed secret.
-//! Secret status comes from the vault's own bit on the entry it supplied, not from whether
-//! the need merely lacked a default (that stopgap lived here through slice 3; the vault now
-//! decides). The caller (`kadou run`) turns a missing need into the fix line `kadou vault set
+//! Needs resolve vault-first: the vault always wins when it has an entry, carrying that
+//! entry's own secret bit, so `kadou vault set <name>` is never a silent no-op on a kata whose
+//! header also declares a default. The header default is only a fallback for when the vault
+//! has no entry, and is always plain (a default in a git-tracked file is by definition not a
+//! secret, §4.4). Else `missing` — not prompted, not silently skipped, and never guessed
+//! secret. The caller (`kadou run`) turns a missing need into the fix line `kadou vault set
 //! <name>` (§4.4 "Missing needs"). Args always resolve here: a required arg with no value is
 //! a hard error, same as `describe_kata` would report `invalid_args`.
 
@@ -125,7 +125,7 @@ fn coerce(arg: &Arg, raw: &str) -> Result<String, ResolveError> {
     }
 }
 
-/// Resolves every `needs:` entry: header default, else the vault, else `missing` (§4.4).
+/// Resolves every `needs:` entry: the vault, else the header default, else `missing` (§4.4).
 pub fn resolve_needs(kata: &Kata, vault: &Vault) -> Vec<ResolvedNeed> {
     kata.needs
         .iter()
@@ -135,20 +135,20 @@ pub fn resolve_needs(kata: &Kata, vault: &Vault) -> Vec<ResolvedNeed> {
 
 fn resolve_one_need(need: &Need, vault: &Vault) -> ResolvedNeed {
     let env_name = need.env_name();
-    if let Some(default) = &need.default {
-        return ResolvedNeed {
-            name: need.name.clone(),
-            env_name,
-            value: Some(default.clone()),
-            secret: false,
-        };
-    }
     if let Some(entry) = vault.get(&need.name) {
         return ResolvedNeed {
             name: need.name.clone(),
             env_name,
             value: Some(entry.value.clone()),
             secret: entry.secret,
+        };
+    }
+    if let Some(default) = &need.default {
+        return ResolvedNeed {
+            name: need.name.clone(),
+            env_name,
+            value: Some(default.clone()),
+            secret: false,
         };
     }
     ResolvedNeed {
