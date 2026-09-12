@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use kadou_core::fsutil;
+use crate::fsutil;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

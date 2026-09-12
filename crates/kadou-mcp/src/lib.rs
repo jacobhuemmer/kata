@@ -5,10 +5,8 @@
 mod concurrency;
 mod drafts;
 mod env;
-pub mod history;
 mod notify;
 pub mod pending;
-pub mod redact;
 pub mod schema;
 mod server;
 pub mod state;
@@ -17,3 +15,9 @@ mod visibility;
 
 pub use server::KadouMcpServer;
 pub use state::ServerState;
+
+/// Re-exported from `kadou-core` for one release (R2, `docs/design/05-prd.md` §3 assigns
+/// history/redaction to `kadou-core`); callers should move to `kadou_core::history` and
+/// `kadou_core::redact` directly.
+pub use kadou_core::history;
+pub use kadou_core::redact;
