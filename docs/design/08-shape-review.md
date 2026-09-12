@@ -149,7 +149,7 @@ Rules the frame obeys:
 - Risk is a colored dot plus a word, never only a color.
 - The right pane is *file first*: about, risk, needs, args, file, last run, then the source below the fold (`j`/`k` scroll it).
 - `p pending 1` appears in the footer only when a grant is waiting. Badges that are always present are noise.
-- The Japanese mark `稼働` is the only decoration. It is the name, not a logo.
+- The Japanese mark `稼働` is the only decoration. It is the name, not a logo. **Superseded (Mason, 2026-09-12):** dropped from the shipped frame; the one decoration is now a colored `▸` before the name (`05-prd.md` §7 rule 4).
 
 CLI output shares the palette. Success is one line. Errors are a sentence and a fix.
 

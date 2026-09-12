@@ -92,7 +92,7 @@ First run, empty config, starter materialized (D6):
 
 ```
 $ kadou
- kadou 稼働   1 folder · 5 kata
+ ▸ kadou   1 folder · 5 kata
 
  starter
    hello         ● low   Print a greeting
@@ -111,7 +111,7 @@ After `kadou get` of the converted Sesami folder (D4), with `[folder.sesami] max
 
 ```
 $ kadou
- kadou 稼働   2 folders · 37 kata                  needs you: 1 grant · 2 drafts
+ ▸ kadou   2 folders · 37 kata                needs you: 1 grant · 2 drafts
 
  starter
    hello               ● low    Print a greeting

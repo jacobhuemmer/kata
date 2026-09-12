@@ -1,6 +1,6 @@
 # kadou
 
-Rust rewrite of [dops](https://github.com/rundops/dops) as **kadou** (稼働):
+Rust rewrite of [dops](https://github.com/rundops/dops) as **kadou**:
 a script library that serves as an MCP server for AI agents, built to cut
 tokens and prefer scripts and automation over model reasoning. The unit is a
 **kata** — one script with a closed-grammar header — kept in **folders** on

@@ -213,7 +213,9 @@ pub fn render_bare(frame: &BareFrame, styled: bool) -> String {
     // "kata" (per docs/design/04-naming.md) is invariant under pluralization, unlike
     // "folder"/"grant"/"draft" -- the PRD's own examples show both "5 kata" and "37 kata".
     let mut out = format!(
-        " kadou 稼働   {} {folder_word} · {} kata",
+        " {} {}   {} {folder_word} · {} kata",
+        style::brand_mark(styled),
+        style::bold("kadou", styled),
         frame.folders.len(),
         frame.kata_count()
     );

@@ -12,6 +12,16 @@ pub const CHECK: char = '✓';
 pub const CROSS: char = '✗';
 pub const DOT: char = '\u{25cf}';
 
+/// The library frame's one piece of branding (`docs/design/05-prd.md` §7 rule 4; replaces the
+/// kanji mark the name (kadou) is transliterated from, Mason, 2026-09-12): [`MARKER`] in a
+/// fixed accent color, used nowhere else risk/ok/err already claim a meaning (cyan is not in
+/// [`risk_color`]'s palette, nor [`ok_mark`]/[`err_mark`]'s). It is the name's one colored
+/// accent, not a logo -- still one line, still readable with `styled = false`.
+pub fn brand_mark(styled: bool) -> String {
+    let style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Cyan)));
+    paint(&MARKER.to_string(), style, styled)
+}
+
 /// Rule 3 (§7 "Styled on a TTY only. `NO_COLOR` and `--plain` force plain on a TTY.").
 pub fn use_color(is_tty: bool, no_color_set: bool, plain_flag: bool) -> bool {
     is_tty && !no_color_set && !plain_flag

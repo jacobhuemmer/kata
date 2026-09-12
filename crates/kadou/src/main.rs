@@ -11,7 +11,7 @@ mod confirm;
 mod starter;
 mod ui;
 
-/// kadou (稼働): a script library that is also an MCP server for AI agents.
+/// kadou: a script library that is also an MCP server for AI agents.
 #[derive(Debug, Parser)]
 #[command(name = "kadou", version = env!("CARGO_PKG_VERSION"))]
 struct Cli {

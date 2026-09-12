@@ -806,7 +806,7 @@ Rules every human-facing frame obeys (`09` §3.1):
 1. Risk is a colored dot plus a word, never only a color.
 2. Success is one line. Errors are a sentence and a fix line the reader can paste.
 3. Styled on a TTY only. `NO_COLOR` and `--plain` force plain on a TTY. `TERM=dumb` disables the picker and prompts (they become errors with the non-interactive form).
-4. One palette: `theme = "doop"` in `kadou.toml` colors dots, the `▸` marker, `✓`/`✗`, and muted text everywhere. **Post-v1:** the key round-trips but is not read yet; `crates/kadou/src/ui/style.rs` hard-codes the one palette this rule describes (D14, `docs/design/12-mvp-review.md` §3).
+4. One palette: `theme = "doop"` in `kadou.toml` colors dots, the `▸` marker, `✓`/`✗`, and muted text everywhere. **Post-v1:** the key round-trips but is not read yet; `crates/kadou/src/ui/style.rs` hard-codes the one palette this rule describes (D14, `docs/design/12-mvp-review.md` §3). **Amended (Mason, 2026-09-12):** the `稼働` kanji the library frame's header used to carry alongside the name is dropped; the header's one decoration is now a cyan `▸` before a bold `kadou` (`crates/kadou/src/ui/style.rs::brand_mark`), still one palette, still not a logo.
 5. Nothing paginates; nothing is interactive unless the command is missing an id.
 6. Interactive means inline: the picker and prompts draw below the shell prompt and erase themselves when done. No alternate screen, no lost scrollback; `Ctrl+c` always exits with a one-line "cancelled".
 
@@ -860,7 +860,7 @@ First run, empty config, starter materialized (`09` §3.2):
 
 ```
 $ kadou
- kadou 稼働   1 folder · 5 kata
+ ▸ kadou   1 folder · 5 kata
 
  starter
    hello         ● low   Print a greeting
@@ -879,7 +879,7 @@ With a grant and drafts waiting, the `needs you` block appears (and disappears w
 
 ```
 $ kadou
- kadou 稼働   2 folders · 37 kata                  needs you: 1 grant · 2 drafts
+ ▸ kadou   2 folders · 37 kata                needs you: 1 grant · 2 drafts
 
  …
 

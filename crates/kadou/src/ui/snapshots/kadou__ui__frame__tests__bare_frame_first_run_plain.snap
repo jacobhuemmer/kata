@@ -1,9 +1,9 @@
 ---
 source: crates/kadou/src/ui/frame.rs
-assertion_line: 417
+assertion_line: 420
 expression: text
 ---
- kadou 稼働   1 folder · 2 kata
+ ▸ kadou   1 folder · 2 kata
 
  starter
    hello       ● low   Print a greeting
