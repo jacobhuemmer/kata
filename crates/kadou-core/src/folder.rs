@@ -22,6 +22,12 @@ pub enum FolderError {
     RootEscapes(String),
     #[error("--root `{0}` is not a directory in the checkout")]
     RootNotFound(String),
+    #[error("no such folder: {0}")]
+    NoSuchFolder(String),
+    #[error("refusing to remove the reserved folder `{0}`")]
+    ReservedRemove(String),
+    #[error("{0} has uncommitted local changes; pass --force to remove it anyway")]
+    Dirty(String),
     #[error(transparent)]
     Git(#[from] GitError),
     #[error("failed to {action} {path}: {source}")]
@@ -229,6 +235,31 @@ pub fn update_all(kata_dir: &Path) -> Vec<UpdateOutcome> {
         .iter()
         .map(|name| update_folder(kata_dir, name))
         .collect()
+}
+
+/// `kadou remove <folder> [--force]` (§7.1, §4.2): never touches a reserved name (starter,
+/// proposed, mined -- though the latter two never live under `kata_dir` in the first place),
+/// never removes a git-backed folder with uncommitted local changes unless `force` is set,
+/// and removes any hidden `.checkouts/<folder>` a `--root` install left behind. The `y/N`
+/// prompt (or `--yes`) is the CLI's own concern, not this function's.
+pub fn remove_folder(kata_dir: &Path, folder: &str, force: bool) -> Result<(), FolderError> {
+    if RESERVED_FOLDER_NAMES.contains(&folder) {
+        return Err(FolderError::ReservedRemove(folder.to_string()));
+    }
+    let target = kata_dir.join(folder);
+    if !target.is_dir() {
+        return Err(FolderError::NoSuchFolder(folder.to_string()));
+    }
+    if git::has_local_changes(&target) && !force {
+        return Err(FolderError::Dirty(folder.to_string()));
+    }
+
+    std::fs::remove_dir_all(&target).map_err(|source| io_err("remove", &target, source))?;
+    let hidden = hidden_checkout_dir(kata_dir, folder);
+    if hidden.exists() {
+        let _ = std::fs::remove_dir_all(&hidden);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -575,7 +606,10 @@ mod tests {
     fn remove_folder_fails_cleanly_for_an_unknown_folder() {
         let kata_dir = tempfile::tempdir().unwrap();
         let err = super::remove_folder(kata_dir.path(), "nope", false).unwrap_err();
-        assert!(matches!(err, super::FolderError::NoSuchFolder(_)), "{err:?}");
+        assert!(
+            matches!(err, super::FolderError::NoSuchFolder(_)),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -584,7 +618,14 @@ mod tests {
         let fixture_root = tempfile::tempdir().unwrap();
         let bare = bare_monorepo_fixture(fixture_root.path());
         let url = format!("file://{}", bare.display());
-        super::get_folder(kata_dir.path(), &url, Some("ops"), None, Some("ops/scripts")).unwrap();
+        super::get_folder(
+            kata_dir.path(),
+            &url,
+            Some("ops"),
+            None,
+            Some("ops/scripts"),
+        )
+        .unwrap();
         assert!(kata_dir.path().join(".checkouts/ops").is_dir());
 
         super::remove_folder(kata_dir.path(), "ops", false).unwrap();
