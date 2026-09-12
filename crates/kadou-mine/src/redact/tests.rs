@@ -185,13 +185,44 @@ fn ordinary_short_tokens_do_not_trigger_the_high_entropy_check() {
 }
 
 #[test]
-fn a_blob_with_a_slash_on_either_side_is_absorbed_into_a_path_shaped_match() {
-    // `/` is itself in HIGH_ENTROPY's character class, so a leading or trailing slash joins
-    // the match rather than bounding it -- the whole thing (slash included) reads as
-    // path-shaped, not a bare secret, on either side.
+fn a_blob_with_only_one_slash_is_still_flagged_not_mistaken_for_a_path() {
+    // Later-7/L2 (`docs/design/12-mvp-review.md` §2 P2, §4, §6): standard base64's alphabet
+    // includes `/`, so a real unredacted secret commonly contains exactly one by chance over
+    // a 24+ char run -- treating "the match contains a slash at all" as "this is a path" (the
+    // old rule) missed the single most common shape of an unredacted secret. `/` is itself in
+    // HIGH_ENTROPY's character class, so a leading or trailing slash joins the match rather
+    // than bounding it; a single joined slash on either side must not exempt it.
     let blob = "Zm9vYmFyYmF6cXV1eGNvcmdlZ3JhdWx0Z2FycGx5";
-    assert!(!has_high_entropy_leak(&format!("/{blob} trailing text")));
-    assert!(!has_high_entropy_leak(&format!("leading text {blob}/")));
+    assert!(has_high_entropy_leak(&format!("/{blob} trailing text")));
+    assert!(has_high_entropy_leak(&format!("leading text {blob}/")));
+}
+
+#[test]
+fn a_real_multi_segment_path_is_not_flagged() {
+    // Two or more `/`-separated segments is what actually distinguishes a filesystem path
+    // from a bare secret blob that happens to contain one stray slash.
+    assert!(!has_high_entropy_leak(
+        "reading /very/long/nested/directory/path/that/exceeds/the/24/char/bound now"
+    ));
+}
+
+#[test]
+fn a_variable_prefixed_path_reference_is_not_flagged() {
+    // `$` isn't in HIGH_ENTROPY's own character class, so the match starts right after it --
+    // the character immediately before the match (in the original text, not the match itself)
+    // is the signal that this run continues a variable-based path reference like
+    // `$PATH_1/segment` rather than being a bare secret.
+    assert!(!has_high_entropy_leak(
+        "cd $PATH_1/some-long-enough-segment-name-here && ls"
+    ));
+}
+
+#[test]
+fn a_long_kebab_case_flag_is_not_flagged() {
+    // `06` §4.3's own carve-out: "strings ... that are not paths or --flags".
+    assert!(!has_high_entropy_leak(
+        "run --some-extremely-long-kebab-case-flag-name-right-here now"
+    ));
 }
 
 #[test]
