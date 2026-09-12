@@ -264,6 +264,24 @@ mod tests {
     }
 
     #[test]
+    fn clone_refuses_a_url_that_looks_like_a_flag() {
+        // D15/Later-1 (`docs/design/12-mvp-review.md` §3, §6): `args.push(url)` with no `--`
+        // separator and no scheme check means a URL beginning with `-` is parsed by `git
+        // clone` as an option -- `--upload-pack=...` or `-c core.sshCommand=...` are the
+        // classic escalations, and `kadou get <url>` is exactly the string a team README
+        // tells people to paste.
+        let root = tempfile::tempdir().unwrap();
+        let dest = root.path().join("checkout");
+        let err =
+            super::clone("--upload-pack=touch /tmp/pwned", &dest, None).unwrap_err();
+        assert!(
+            matches!(err, super::GitError::UrlLooksLikeAFlag(_)),
+            "{err}"
+        );
+        assert!(!dest.exists());
+    }
+
+    #[test]
     fn pull_fast_forwards_a_new_commit_from_the_remote() {
         let root = tempfile::tempdir().unwrap();
         let bare = bare_fixture_with_one_commit(root.path());
