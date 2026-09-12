@@ -15,6 +15,8 @@ pub enum GitError {
     Spawn(#[source] std::io::Error),
     #[error("git {args} failed: {stderr}")]
     Command { args: String, stderr: String },
+    #[error("`{0}` looks like a flag, not a URL; git clone would parse it as an option")]
+    UrlLooksLikeAFlag(String),
 }
 
 fn run(dir: &Path, args: &[&str]) -> Result<String, GitError> {
@@ -72,15 +74,25 @@ pub fn has_local_changes(dir: &Path) -> bool {
     run(dir, &["status", "--porcelain"]).is_ok_and(|text| !text.is_empty())
 }
 
-/// `git clone [--branch <git_ref>] <url> <dest>`. `dest`'s parent must already exist; `git
-/// clone` creates only the leaf directory.
+/// `git clone [--branch <git_ref>] -- <url> <dest>`. `dest`'s parent must already exist;
+/// `git clone` creates only the leaf directory.
+///
+/// `url` is refused outright if it starts with `-` (D15/Later-1,
+/// `docs/design/12-mvp-review.md` §3, §6): a leading `-` is exactly how a URL gets
+/// misparsed as a flag before it ever reaches the `--` separator this function also adds as
+/// defense in depth.
 pub fn clone(url: &str, dest: &Path, git_ref: Option<&str>) -> Result<(), GitError> {
+    if url.starts_with('-') {
+        return Err(GitError::UrlLooksLikeAFlag(url.to_string()));
+    }
+
     let dest_str = dest.to_string_lossy().to_string();
     let mut args: Vec<&str> = vec!["clone"];
     if let Some(git_ref) = git_ref {
         args.push("--branch");
         args.push(git_ref);
     }
+    args.push("--");
     args.push(url);
     args.push(&dest_str);
 
