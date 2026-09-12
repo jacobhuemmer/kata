@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use kadou_core::RiskLevel;
@@ -2000,4 +2000,321 @@ fn completion_rejects_an_unknown_shell() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains("unknown shell"));
+}
+
+// -----------------------------------------------------------------------
+// kadou mine (B6, `docs/design/12-mvp-review.md` §5/§6): the eight `kadou mine` subcommands
+// had zero CLI-level coverage -- every one of run_mine_run/status/list/show/review/approve/
+// reject/install_schedule, plus print_queue_row/load_redact_extra/default_sessions_index_path,
+// was an uncaught whole-function mutant, which is what pulled the `kadou` crate's own
+// mutation floor red (87.7% measured against a 90% floor). `--index` always points at
+// kadou-mine's own fixture cluster (`crates/kadou-mine/tests/fixtures/sessions/`) rather than
+// a real `~/Documents/Sessions`, matching that crate's own pipeline test's worked example.
+// -----------------------------------------------------------------------
+
+fn mine_fixtures_index() -> String {
+    PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../kadou-mine/tests/fixtures/sessions/index.jsonl"
+    ))
+    .to_str()
+    .unwrap()
+    .to_string()
+}
+
+/// Runs `mine run --once` against the fixture cluster in `home`, leaving exactly one queued
+/// draft for the next subcommand under test to act on.
+fn mine_run_once(home: &Path) {
+    kadou_in(home)
+        .args(["mine", "run", "--once", "--index", &mine_fixtures_index()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("queued: 1"));
+}
+
+/// The one queued draft's fingerprint, read back off `mine list`'s own first column -- the
+/// same value `mine show`/`approve`/`reject` take as their positional argument.
+fn queued_fingerprint(home: &Path) -> String {
+    let assert = kadou_in(home).args(["mine", "list"]).assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    stdout
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().next())
+        .expect("mine list prints a fingerprint in its first column")
+        .to_string()
+}
+
+#[test]
+fn mine_run_once_ingests_the_fixture_and_queues_one_draft() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .args(["mine", "run", "--once", "--index", &mine_fixtures_index()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "events: 4 transcripts: 3 (missing 1) candidates: 3 clusters: 1 queued: 1",
+        ));
+
+    // Idempotent: a second run against the same, unchanged fixture queues nothing new (06
+    // §3.4 rule 1) -- also exercises default_sessions_index_path's --index branch a second
+    // time, and the processed-checkpoint path this crate's own pipeline test already covers
+    // at the kadou-mine level, now proven end to end over the real binary.
+    kadou_in(home.path())
+        .args(["mine", "run", "--once", "--index", &mine_fixtures_index()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("events: 0"))
+        .stdout(predicate::str::contains("queued: 0"));
+}
+
+#[test]
+fn mine_run_without_an_index_override_falls_back_to_the_session_ledger_dir_env_var() {
+    // No fixture data lives here -- this proves default_sessions_index_path's
+    // AGENT_SESSION_LEDGER_DIR branch runs (a missing index.jsonl reads as zero rows, not an
+    // error) rather than exercising the --index override every other mine test uses.
+    let home = tempfile::tempdir().unwrap();
+    let ledger_dir = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .env("AGENT_SESSION_LEDGER_DIR", ledger_dir.path())
+        .args(["mine", "run", "--once"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "events: 0 transcripts: 0 (missing 0) candidates: 0 clusters: 0 queued: 0",
+        ));
+}
+
+#[test]
+fn mine_run_rejects_watch_as_not_implemented() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .args(["mine", "run", "--watch"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--watch is not implemented"));
+}
+
+#[test]
+fn mine_run_since_warns_but_still_runs_the_full_backlog() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .args([
+            "mine",
+            "run",
+            "--once",
+            "--since",
+            "2026-01-01T00:00:00Z",
+            "--index",
+            &mine_fixtures_index(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "--since is accepted but not yet a real filter",
+        ))
+        .stdout(predicate::str::contains("queued: 1"));
+}
+
+#[test]
+fn mine_status_counts_the_queued_draft() {
+    let home = tempfile::tempdir().unwrap();
+    mine_run_once(home.path());
+    kadou_in(home.path())
+        .args(["mine", "status"])
+        .assert()
+        .success()
+        .stdout("queued: 1 approved: 0 rejected: 0\n");
+}
+
+#[test]
+fn mine_status_on_a_fresh_home_is_all_zeroes() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .args(["mine", "status"])
+        .assert()
+        .success()
+        .stdout("queued: 0 approved: 0 rejected: 0\n");
+}
+
+#[test]
+fn mine_list_prints_the_queued_draft_row() {
+    let home = tempfile::tempdir().unwrap();
+    mine_run_once(home.path());
+    kadou_in(home.path())
+        .args(["mine", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("risk=medium"))
+        .stdout(predicate::str::contains("sessions=3"));
+}
+
+#[test]
+fn mine_list_on_an_empty_queue_says_so() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .args(["mine", "list"])
+        .assert()
+        .success()
+        .stdout("no queued drafts\n");
+}
+
+#[test]
+fn mine_show_prints_meta_then_the_full_redacted_source() {
+    let home = tempfile::tempdir().unwrap();
+    mine_run_once(home.path());
+    let fingerprint = queued_fingerprint(home.path());
+    kadou_in(home.path())
+        .args(["mine", "show", &fingerprint])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"unique_sessions\":3"))
+        .stdout(predicate::str::contains("---"))
+        .stdout(predicate::str::contains("#!/bin/sh"));
+}
+
+#[test]
+fn mine_show_on_an_unknown_fingerprint_is_a_clean_error() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .args(["mine", "show", "deadbeef"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "no queued draft for fingerprint deadbeef",
+        ));
+}
+
+#[test]
+fn mine_review_lists_the_queue_and_the_next_commands() {
+    let home = tempfile::tempdir().unwrap();
+    mine_run_once(home.path());
+    kadou_in(home.path())
+        .args(["mine", "review"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("risk=medium"))
+        .stdout(predicate::str::contains("kadou mine show"))
+        .stdout(predicate::str::contains("kadou mine approve"))
+        .stdout(predicate::str::contains("kadou mine reject"));
+}
+
+#[test]
+fn mine_review_dump_prints_the_same_source_as_show() {
+    let home = tempfile::tempdir().unwrap();
+    mine_run_once(home.path());
+    let fingerprint = queued_fingerprint(home.path());
+    kadou_in(home.path())
+        .args(["mine", "review", "--dump", &fingerprint])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#!/bin/sh"));
+}
+
+#[test]
+fn mine_approve_copies_into_mined_and_prints_the_accept_line() {
+    let home = tempfile::tempdir().unwrap();
+    mine_run_once(home.path());
+    let fingerprint = queued_fingerprint(home.path());
+    kadou_in(home.path())
+        .args(["mine", "approve", &fingerprint, "--into", "k8s-pod-logs"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("approved ->"))
+        .stdout(predicate::str::contains(
+            "kadou accept mined/k8s-pod-logs --into <folder>",
+        ));
+    assert!(
+        home.path()
+            .join(".local/state/kadou/mined/k8s-pod-logs.sh")
+            .is_file()
+    );
+}
+
+#[test]
+fn mine_approve_with_no_into_defaults_to_the_proposal_slug() {
+    let home = tempfile::tempdir().unwrap();
+    mine_run_once(home.path());
+    let fingerprint = queued_fingerprint(home.path());
+    kadou_in(home.path())
+        .args(["mine", "approve", &fingerprint])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("approved ->"));
+    let mined_dir = home.path().join(".local/state/kadou/mined");
+    let entries: Vec<_> = std::fs::read_dir(&mined_dir).unwrap().collect();
+    assert_eq!(entries.len(), 1, "exactly one file under mined/");
+}
+
+#[test]
+fn mine_approve_refuses_a_name_that_escapes_mined() {
+    let home = tempfile::tempdir().unwrap();
+    mine_run_once(home.path());
+    let fingerprint = queued_fingerprint(home.path());
+    kadou_in(home.path())
+        .args([
+            "mine",
+            "approve",
+            &fingerprint,
+            "--into",
+            "../../../etc/pwn",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid --into name"));
+    assert!(!home.path().join(".local/state/kadou/mined").exists());
+}
+
+#[test]
+fn mine_reject_bans_the_fingerprint_with_a_reason() {
+    let home = tempfile::tempdir().unwrap();
+    mine_run_once(home.path());
+    let fingerprint = queued_fingerprint(home.path());
+    kadou_in(home.path())
+        .args(["mine", "reject", &fingerprint, "--reason", "too risky"])
+        .assert()
+        .success()
+        .stdout(format!("rejected {fingerprint}\n"));
+
+    // A second run against the same fixture must not re-queue the fingerprint it just banned
+    // (06 §3.4 rule 3).
+    kadou_in(home.path())
+        .args(["mine", "run", "--once", "--index", &mine_fixtures_index()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("queued: 0"));
+}
+
+#[test]
+fn mine_reject_on_an_unknown_fingerprint_is_a_clean_error() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .args(["mine", "reject", "deadbeef", "--reason", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no queued draft for fingerprint"));
+}
+
+#[test]
+fn mine_install_schedule_writes_a_plist_under_an_isolated_home_without_loading_it() {
+    // Never passes --load: that would shell out to the real `launchctl` (forbidden by this
+    // worktree's gates). HOME is overridden to a second isolated tempdir -- separate from
+    // KADOU_HOME -- because install-schedule's LaunchAgents path is read off the real $HOME,
+    // not KADOU_HOME; kadou_in() removes HOME entirely, which would otherwise resolve
+    // Library/LaunchAgents relative to the test process's own working directory.
+    let home = tempfile::tempdir().unwrap();
+    let launchd_home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .env("HOME", launchd_home.path())
+        .args(["mine", "install-schedule"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wrote"))
+        .stdout(predicate::str::contains("run with --load"));
+    assert!(
+        launchd_home
+            .path()
+            .join("Library/LaunchAgents/dev.kadou.mine.plist")
+            .is_file()
+    );
 }
