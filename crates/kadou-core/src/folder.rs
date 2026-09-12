@@ -3,6 +3,95 @@
 //! and filesystem calls; `kadou`'s `commands.rs` is the thin CLI wrapper that prompts and
 //! prints these results.
 
+use std::path::{Path, PathBuf};
+
+use crate::git::{self, GitError};
+
+/// Top-level names under `kata/` that `kadou get`/`kadou remove` never touch (§4.2).
+pub const RESERVED_FOLDER_NAMES: [&str; 3] = ["starter", "proposed", "mined"];
+
+#[derive(Debug, thiserror::Error)]
+pub enum FolderError {
+    #[error("`{0}` is a reserved name (starter, proposed, mined); pass --as with another name")]
+    ReservedName(String),
+    #[error("`{0}` is not a valid folder name; folder names match ^[a-z0-9][a-z0-9-]*$")]
+    InvalidName(String),
+    #[error("{} already exists; kadou get refuses to overwrite an existing folder", .0.display())]
+    AlreadyExists(PathBuf),
+    #[error(transparent)]
+    Git(#[from] GitError),
+    #[error("failed to {action} {path}: {source}")]
+    Io {
+        action: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// `^[a-z0-9][a-z0-9-]*$` — the same segment shape a folder name's own id segment must match
+/// (§4.2).
+fn is_valid_folder_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// The folder name `kadou get` defaults to when `--as` is absent: the URL's last path
+/// segment (scp-like `host:path` included), minus a trailing `.git`.
+fn folder_name_from_url(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/');
+    let last = trimmed.rsplit(['/', ':']).next().unwrap_or(trimmed);
+    last.strip_suffix(".git").unwrap_or(last).to_string()
+}
+
+fn validate_folder_name(name: &str) -> Result<(), FolderError> {
+    if RESERVED_FOLDER_NAMES.contains(&name) {
+        return Err(FolderError::ReservedName(name.to_string()));
+    }
+    if !is_valid_folder_name(name) {
+        return Err(FolderError::InvalidName(name.to_string()));
+    }
+    Ok(())
+}
+
+fn io_err(action: &'static str, path: &Path, source: std::io::Error) -> FolderError {
+    FolderError::Io {
+        action,
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+/// `kadou get <url> [--as <folder>] [--ref <git_ref>] [--root <sub>]` (§7.1, §6.7, §4.1).
+/// Clones straight into `kata_dir/<folder>` when `root` is absent; `root` support (a symlink
+/// into a subdirectory of a hidden checkout) lands alongside its own tests later this slice.
+pub fn get_folder(
+    kata_dir: &Path,
+    url: &str,
+    as_folder: Option<&str>,
+    git_ref: Option<&str>,
+    root: Option<&str>,
+) -> Result<PathBuf, FolderError> {
+    let folder = as_folder
+        .map(str::to_string)
+        .unwrap_or_else(|| folder_name_from_url(url));
+    validate_folder_name(&folder)?;
+    let _ = root;
+
+    let target = kata_dir.join(&folder);
+    if target.exists() {
+        return Err(FolderError::AlreadyExists(target));
+    }
+    std::fs::create_dir_all(kata_dir).map_err(|source| io_err("create", kata_dir, source))?;
+
+    git::clone(url, &target, git_ref)?;
+    Ok(target)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
