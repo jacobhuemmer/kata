@@ -96,11 +96,33 @@ mod tests {
     }
 
     #[test]
+    fn exactly_min_length_secret_is_redacted() {
+        // MIN_SECRET_LEN's own boundary (`docs/design/12-mvp-review.md` §5 "the
+        // MIN_SECRET_LEN boundary" -- `<` silently becoming `<=` left nothing pinning that an
+        // exactly-8-character secret *is* redacted, only that a short one is left alone).
+        let secret = "8charlen";
+        assert_eq!(secret.len(), 8, "test fixture must be exactly at the floor");
+        let out = redact_all(&format!("token={secret}"), &[secret.to_string()], &[]);
+        assert_eq!(out, "token=****");
+    }
+
+    #[test]
+    fn one_under_min_length_secret_is_left_alone() {
+        let secret = "7charle";
+        assert_eq!(secret.len(), 7, "test fixture must be exactly one under the floor");
+        let out = redact_all(&format!("token={secret}"), &[secret.to_string()], &[]);
+        assert_eq!(out, "token=7charle");
+    }
+
+    #[test]
     fn redacts_base64_and_url_encoded_forms() {
+        // The expected URL-encoded value is hard-coded, not computed with the function under
+        // test: `let url = percent_encode(secret)` made this assertion a tautology for that
+        // encoding -- `percent_encode` could be replaced wholesale and no test would fail
+        // (`docs/design/12-mvp-review.md` §5, redact.rs:70/:73's misses).
         let secret = "hunter2ok!";
         let b64 = base64::engine::general_purpose::STANDARD.encode(secret.as_bytes());
-        let url = percent_encode(secret);
-        let text = format!("raw={secret} b64={b64} url={url}");
+        let text = format!("raw={secret} b64={b64} url=hunter2ok%21");
         let out = redact_all(&text, &[secret.to_string()], &[]);
         assert_eq!(out, "raw=**** b64=**** url=****");
     }
@@ -130,5 +152,36 @@ mod tests {
         let secrets = [token.clone()];
         let out = redact_all(&text, &secrets, &[user, token]);
         assert_eq!(out, "Authorization: Basic ****");
+    }
+
+    #[test]
+    fn a_basic_auth_pairing_exactly_at_min_length_is_redacted() {
+        let user = "user".to_string();
+        let token = "abc".to_string();
+        assert_eq!(format!("{user}:{token}").len(), 8, "fixture must be exactly at the floor");
+        let basic = base64::engine::general_purpose::STANDARD
+            .encode(format!("{user}:{token}").as_bytes());
+        let text = format!("Authorization: Basic {basic}");
+        let out = redact_all(&text, &[], &[user, token]);
+        assert_eq!(out, "Authorization: Basic ****");
+    }
+
+    #[test]
+    fn a_basic_auth_pairing_one_under_min_length_is_left_alone() {
+        let user = "user".to_string();
+        let token = "ab".to_string();
+        assert_eq!(
+            format!("{user}:{token}").len(),
+            7,
+            "fixture must be exactly one under the floor"
+        );
+        let basic = base64::engine::general_purpose::STANDARD
+            .encode(format!("{user}:{token}").as_bytes());
+        let text = format!("Authorization: Basic {basic}");
+        let out = redact_all(&text, &[], &[user, token]);
+        assert_eq!(
+            out, text,
+            "under the floor, the pairing must not be redacted"
+        );
     }
 }
