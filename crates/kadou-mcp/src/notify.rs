@@ -30,25 +30,37 @@ pub fn notify(config: &Config, title: &str, body: &str) -> bool {
     true
 }
 
+/// Runs `cmd`, scoped to `path_override` when given (tests only -- production always passes
+/// `None`, so it searches the real `PATH`). `spawn`'s `Err` (the binary isn't on that `PATH`
+/// at all) is discarded here, not propagated: §7.8 "silently skipped when neither binary
+/// exists" is this line, the same for every platform.
+fn spawn_scoped(mut cmd: Command, path_override: Option<&std::ffi::OsStr>) {
+    if let Some(path) = path_override {
+        cmd.env_clear().env("PATH", path);
+    }
+    let _ = cmd.spawn();
+}
+
 #[cfg(target_os = "macos")]
 fn send(title: &str, body: &str) {
-    // AppleScript string literals: escape `"` and `\`; every other character in kadou's own
-    // notification bodies (ids, risk words, a `kadou grant approve ...` line) is already
-    // AppleScript-safe.
-    fn quote(s: &str) -> String {
-        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-    }
-    let script = format!(
-        "display notification {} with title {}",
-        quote(body),
-        quote(title)
-    );
-    let _ = Command::new("osascript").arg("-e").arg(script).spawn();
+    send_with(title, body, None);
+}
+
+#[cfg(target_os = "macos")]
+fn send_with(title: &str, body: &str, path_override: Option<&std::ffi::OsStr>) {
+    todo!()
 }
 
 #[cfg(target_os = "linux")]
 fn send(title: &str, body: &str) {
-    let _ = Command::new("notify-send").arg(title).arg(body).spawn();
+    send_with(title, body, None);
+}
+
+#[cfg(target_os = "linux")]
+fn send_with(title: &str, body: &str, path_override: Option<&std::ffi::OsStr>) {
+    let mut cmd = Command::new("notify-send");
+    cmd.arg(title).arg(body);
+    spawn_scoped(cmd, path_override);
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -63,6 +75,22 @@ mod tests {
         let mut config = Config::default();
         config.notify.enabled = false;
         assert!(!notify(&config, "t", "b"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn missing_osascript_binary_is_not_an_error() {
+        // §7.8: "silently skipped when neither binary exists" -- scoped to an empty PATH so
+        // this never depends on (or pops a real toast via) whatever is actually installed.
+        let empty = tempfile::tempdir().unwrap();
+        send_with("t", "b", Some(empty.path().as_os_str()));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn missing_notify_send_binary_is_not_an_error() {
+        let empty = tempfile::tempdir().unwrap();
+        send_with("t", "b", Some(empty.path().as_os_str()));
     }
 
     #[test]
