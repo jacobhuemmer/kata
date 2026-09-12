@@ -421,45 +421,67 @@ mod tests {
         assert_eq!(ctx.root, project_kata_dir);
     }
 
+    /// R2: the one shared pipeline redacts identically no matter which caller drives it — a
+    /// table over `interface`, not two hand-copied assertions, so a future interface (e.g. a
+    /// `tui`) is proven the same way for free.
     #[test]
-    fn run_one_blocking_writes_a_history_record_and_redacts_the_output() {
-        let dir = tempfile::tempdir().unwrap();
-        let kata_dir = dir.path().join("kata/sesami");
-        std::fs::create_dir_all(&kata_dir).unwrap();
-        let file = write_script(
-            &kata_dir,
-            "leak.sh",
-            "#!/bin/sh\necho \"token=hunter2ok\"\n",
-        );
-        let kata = test_kata(file, "sesami/leak");
-        let state_dir = dir.path().join("state");
+    fn run_one_redacts_the_same_way_for_every_interface() {
+        for interface in ["cli", "mcp"] {
+            let dir = tempfile::tempdir().unwrap();
+            let kata_dir = dir.path().join("kata/sesami");
+            std::fs::create_dir_all(&kata_dir).unwrap();
+            let file = write_script(
+                &kata_dir,
+                "leak.sh",
+                "#!/bin/sh\necho \"token=hunter2ok\"\n",
+            );
+            let kata = test_kata(file, "sesami/leak");
+            let state_dir = dir.path().join("state");
 
-        let needs = vec![ResolvedNeed {
-            name: "jenkins_token".to_string(),
-            env_name: "JENKINS_TOKEN".to_string(),
-            value: Some("hunter2ok".to_string()),
-            secret: true,
-        }];
-        let req = RunOneRequest {
-            kata: &kata,
-            folder: "sesami",
-            resolved_args: &[],
-            resolved_needs: &needs,
-            kata_dir_root: &dir.path().join("kata"),
-            interface: "cli",
-            initiator: "local",
-            mcp_client: None,
-            base_env: Vec::new(),
-            env_clear: false,
-            config_exec_timeout: std::time::Duration::from_secs(10),
-        };
+            let needs = vec![ResolvedNeed {
+                name: "jenkins_token".to_string(),
+                env_name: "JENKINS_TOKEN".to_string(),
+                value: Some("hunter2ok".to_string()),
+                secret: true,
+            }];
+            let req = RunOneRequest {
+                kata: &kata,
+                folder: "sesami",
+                resolved_args: &[],
+                resolved_needs: &needs,
+                kata_dir_root: &dir.path().join("kata"),
+                interface,
+                initiator: "local",
+                mcp_client: None,
+                base_env: Vec::new(),
+                env_clear: false,
+                config_exec_timeout: std::time::Duration::from_secs(10),
+            };
 
-        let report = run_one_blocking(&state_dir, &req).unwrap();
-        assert_eq!(report.status, kadou_exec::RunStatus::Success);
-        assert_eq!(report.output, vec!["token=****".to_string()]);
+            let report = run_one_blocking(&state_dir, &req).unwrap();
+            assert_eq!(
+                report.status,
+                kadou_exec::RunStatus::Success,
+                "interface={interface}"
+            );
+            assert_eq!(
+                report.output,
+                vec!["token=****".to_string()],
+                "interface={interface}"
+            );
 
-        let logged = std::fs::read_to_string(&report.log_path).unwrap();
-        assert_eq!(logged, "token=****");
-        assert!(!logged.contains("hunter2ok"));
+            let logged = std::fs::read_to_string(&report.log_path).unwrap();
+            assert_eq!(logged, "token=****", "interface={interface}");
+            assert!(!logged.contains("hunter2ok"), "interface={interface}");
+
+            let record_path = state_dir
+                .join("history/records")
+                .join(format!("{}.json", report.history_id));
+            let record_text = std::fs::read_to_string(&record_path).unwrap();
+            assert!(
+                record_text.contains(&format!("\"interface\":\"{interface}\"")),
+                "history record must carry interface={interface}: {record_text}"
+            );
+        }
     }
 }

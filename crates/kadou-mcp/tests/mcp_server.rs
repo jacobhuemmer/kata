@@ -455,6 +455,45 @@ async fn max_wait_returns_running_with_a_pollable_log_path() {
 }
 
 #[tokio::test]
+async fn max_wait_returns_running_with_a_log_that_already_has_partial_output() {
+    // R2/I-7: a status: running log must already hold the output a kata has produced so far —
+    // not stay empty until the background run finishes. The kata echoes a line and then
+    // sleeps far longer than both `mcp.max_wait` and this test's own poll deadline, so a log
+    // update observed before either of those elapses proves it happened mid-run.
+    let home = setup_sesami(|c| c.mcp.max_wait = std::time::Duration::from_millis(100));
+    write_kata(
+        &home.paths.kata_dir(),
+        "team/slow.sh",
+        "#!/bin/sh\n# ---\n# about: Slow\n# risk:  low\n# ---\necho first-line\nsleep 5\necho done\n",
+    );
+
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let (value, is_error) = call(&client, "run_kata", serde_json::json!({"id": "team/slow"})).await;
+    assert!(!is_error, "{value}");
+    assert_eq!(value["status"], "running");
+    let log_path = PathBuf::from(value["log_path"].as_str().unwrap());
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        if log.contains("first-line") {
+            assert!(
+                !log.contains("done"),
+                "the run must not have finished yet: {log}"
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "log never gained the first line while the run was still in flight"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+#[tokio::test]
 async fn the_server_wide_concurrency_limit_returns_busy() {
     let home = setup_sesami(|c| c.mcp.max_wait = std::time::Duration::from_millis(100));
     write_kata(
