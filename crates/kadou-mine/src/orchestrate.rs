@@ -517,6 +517,81 @@ mod tests {
         assert_eq!(outcome.candidates_emitted, 1);
     }
 
+    fn meta_score(home: &MineHome, fingerprint: &str) -> f64 {
+        let entry = store::read_queue_entry(home, fingerprint).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&entry.meta_json).unwrap();
+        meta["score"].as_f64().unwrap()
+    }
+
+    #[test]
+    fn a_catalog_collision_penalizes_the_proposed_scores_meta_json() {
+        // D6 (`docs/design/12-mvp-review.md` §3): rank::score's catalog_penalty already
+        // existed but the one production call site hard-coded `false`, so it never fired.
+        // This proves propose_and_queue now actually looks the candidate up against
+        // config.kata_dir rather than always assuming no conflict.
+        let cluster = Cluster {
+            fingerprint: "f".repeat(64),
+            template: "kubectl --context $CONTEXT -n $NAMESPACE get pods -l app=$APP"
+                .to_string(),
+            step_count: 1,
+            members: vec![
+                cluster::Member {
+                    agent: "codex".to_string(),
+                    session_id: "s1".to_string(),
+                    when: "2026-09-01T00:00:00Z".to_string(),
+                },
+                cluster::Member {
+                    agent: "codex".to_string(),
+                    session_id: "s2".to_string(),
+                    when: "2026-09-01T00:00:00Z".to_string(),
+                },
+                cluster::Member {
+                    agent: "codex".to_string(),
+                    session_id: "s3".to_string(),
+                    when: "2026-09-01T00:00:00Z".to_string(),
+                },
+            ],
+            first_seen: "2026-09-01T00:00:00Z".to_string(),
+            last_seen: "2026-09-01T00:00:00Z".to_string(),
+        };
+        let template_params = TemplateParams::new();
+
+        let without_dir = tempfile::tempdir().unwrap();
+        let home_without = MineHome::new(without_dir.path());
+        let config_without = MineConfig::new(PathBuf::new(), without_dir.path().to_path_buf());
+        assert!(propose_and_queue(
+            &config_without,
+            &home_without,
+            &cluster,
+            &template_params
+        ));
+        let score_without = meta_score(&home_without, &cluster.fingerprint);
+
+        let with_dir = tempfile::tempdir().unwrap();
+        let home_with = MineHome::new(with_dir.path());
+        let kata_dir = with_dir.path().join("kata");
+        std::fs::create_dir_all(kata_dir.join("sesami")).unwrap();
+        std::fs::write(
+            kata_dir.join("sesami/existing.sh"),
+            "#!/bin/sh\n# ---\n# about: existing\n# risk:  low\n# ---\nkubectl get pods\n",
+        )
+        .unwrap();
+        let mut config_with = MineConfig::new(PathBuf::new(), with_dir.path().to_path_buf());
+        config_with.kata_dir = Some(kata_dir);
+        assert!(propose_and_queue(
+            &config_with,
+            &home_with,
+            &cluster,
+            &template_params
+        ));
+        let score_with = meta_score(&home_with, &cluster.fingerprint);
+
+        assert!(
+            score_with < score_without / 5.0,
+            "{score_with} vs {score_without}"
+        );
+    }
+
     #[test]
     fn a_redaction_failure_is_recorded_as_one_r14_high_entropy_jsonl_line() {
         let state_dir = tempfile::tempdir().unwrap();
