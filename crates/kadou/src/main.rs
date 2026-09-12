@@ -867,6 +867,37 @@ parameters:
     }
 
     #[test]
+    fn show_applies_the_human_ceiling_like_list_and_run() {
+        // §6.2: `visible(k,f) = rank(k.risk) <= human_ceiling(f)`, "[CLI]" — `show` is the CLI
+        // projection of `describe_kata`, which already gates on the ceiling; `show` did not
+        // (I-10). Default max_risk is medium, so this critical kata must stay invisible.
+        let home = tempfile::tempdir().unwrap();
+        let kata_dir = home.path().join(".config/kadou/kata/sesami");
+        std::fs::create_dir_all(&kata_dir).unwrap();
+        std::fs::write(
+            kata_dir.join("ses-deploy.sh"),
+            "#!/bin/sh\n# ---\n# about: Deploy\n# risk:  critical\n# ---\necho hi\n",
+        )
+        .unwrap();
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["show", "sesami/ses-deploy"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("above the max_risk ceiling"));
+
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["list"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("ses-deploy").not());
+    }
+
+    #[test]
     fn run_critical_without_confirm_still_works_as_dry_run_only() {
         let home = critical_ceiling_home("ses-deploy", "critical");
 
