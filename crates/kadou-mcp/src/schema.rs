@@ -15,6 +15,14 @@ use std::sync::Arc;
 use rmcp::model::{Tool, ToolAnnotations};
 use serde_json::{Value, json};
 
+/// `propose_kata`'s `id` shape (§4.2 segment rule, applied to every `/`-separated segment,
+/// at least two of them). Shared with `drafts::propose`'s own check (R3) so the wire schema
+/// and the enforced rule cannot drift apart — `rmcp` does not validate `inputSchema` itself
+/// (I-13), so the schema string alone is advisory without a matching runtime check.
+pub const PROPOSE_ID_PATTERN: &str = "^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)+$";
+pub const PROPOSE_ID_MAX_LEN: usize = 128;
+pub const PROPOSE_SOURCE_MAX_BYTES: usize = 65536;
+
 /// The exact `tools/list` response body, matching `docs/design/tools-list.json` byte for
 /// byte once serialized compactly.
 pub fn tools_list_value() -> Value {
@@ -74,8 +82,8 @@ pub fn tools_list_value() -> Value {
                     "additionalProperties": false,
                     "required": ["id", "source"],
                     "properties": {
-                        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)+$", "maxLength": 128 },
-                        "source": { "type": "string", "maxLength": 65536 }
+                        "id": { "type": "string", "pattern": PROPOSE_ID_PATTERN, "maxLength": PROPOSE_ID_MAX_LEN },
+                        "source": { "type": "string", "maxLength": PROPOSE_SOURCE_MAX_BYTES }
                     }
                 },
                 "annotations": { "readOnlyHint": false, "destructiveHint": false }

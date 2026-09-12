@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 use kadou_core::{Diagnostic, ScannedFile};
 
+use crate::schema;
+
 pub const PROPOSED_NS: &str = "proposed";
 pub const MINED_NS: &str = "mined";
 
@@ -223,6 +225,36 @@ mod tests {
         assert!(!outcome.diff.contains("/dev/null"));
         assert!(outcome.diff.contains("-echo hi"));
         assert!(outcome.diff.contains("+echo HI"));
+    }
+
+    #[test]
+    fn propose_rejects_an_id_that_escapes_the_proposed_root() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        let err = propose(state_dir.path(), kata_dir.path(), "a/../../x", HELLO).unwrap_err();
+        assert!(matches!(err, ProposeError::InvalidId(_)), "{err:?}");
+        assert!(!state_dir.path().join("x.sh").exists());
+        assert!(!state_dir.path().parent().unwrap().join("x.sh").exists());
+    }
+
+    #[test]
+    fn propose_rejects_an_oversized_source() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        let huge = format!(
+            "#!/bin/sh\n# ---\n# about: {}\n# risk:  low\n# ---\necho hi\n",
+            "a".repeat(schema::PROPOSE_SOURCE_MAX_BYTES)
+        );
+        let err = propose(state_dir.path(), kata_dir.path(), "sesami/big", &huge).unwrap_err();
+        assert!(matches!(err, ProposeError::SourceTooLarge(_)), "{err:?}");
+    }
+
+    #[test]
+    fn propose_rejects_an_uppercase_id() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        let err = propose(state_dir.path(), kata_dir.path(), "Sesami/Bad", HELLO).unwrap_err();
+        assert!(matches!(err, ProposeError::InvalidId(_)), "{err:?}");
     }
 
     #[test]
