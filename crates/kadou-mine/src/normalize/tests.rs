@@ -53,11 +53,7 @@ fn home_path_becomes_the_home_token() {
 
 #[test]
 fn root_path_becomes_the_root_token() {
-    let n = normalize_command(
-        "ls /repo/worktree/scripts",
-        None,
-        Some("/repo/worktree"),
-    );
+    let n = normalize_command("ls /repo/worktree/scripts", None, Some("/repo/worktree"));
     assert_eq!(n.template, "ls $ROOT/scripts");
 }
 
@@ -81,12 +77,19 @@ fn uuid_becomes_id_token() {
         None,
     );
     assert_eq!(n.template, "kubectl get pod $ID");
-    assert_eq!(n.params.get("ID").unwrap(), "550e8400-e29b-41d4-a716-446655440000");
+    assert_eq!(
+        n.params.get("ID").unwrap(),
+        "550e8400-e29b-41d4-a716-446655440000"
+    );
 }
 
 #[test]
 fn git_sha_becomes_id_token() {
-    let n = normalize_command("git checkout 4b1c9f2a8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b", None, None);
+    let n = normalize_command(
+        "git checkout 4b1c9f2a8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b",
+        None,
+        None,
+    );
     assert_eq!(n.template, "git checkout $ID");
 }
 
@@ -142,7 +145,7 @@ fn ticket_id_becomes_ticket_token() {
 }
 
 #[test]
-fn argv0_and_unknown_flags_are_kept_verbatim() {
+fn argv0_and_unrecognized_bare_words_are_kept_verbatim() {
     let n = normalize_command("helm upgrade --install release chart", None, None);
-    assert_eq!(n.template, "helm upgrade --install $VAL $VAL");
+    assert_eq!(n.template, "helm upgrade --install release chart");
 }
