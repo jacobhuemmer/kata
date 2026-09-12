@@ -140,20 +140,16 @@ impl HistoryStore {
             .map_err(|source| HistoryError::Write { path, source })
     }
 
-    /// Finishes a record: writes the full redacted output to the fresh-tier log file, updates
-    /// the record's terminal fields, and rewrites the record JSON.
+    /// Finishes a record: updates the record's terminal fields and rewrites the record JSON.
+    /// Does not touch `log_path`'s bytes — `kadou-exec`'s own collector already streamed every
+    /// redacted line there as it arrived (§6.6), and a second whole-file write here would only
+    /// swap the inode out from under a caller already holding `log_path` open and drop the
+    /// trailing newline the stream wrote (D18, `docs/design/12-mvp-review.md` §3).
     pub fn finish(
         &self,
         record: &mut HistoryRecord,
         outcome: FinishOutcome<'_>,
     ) -> Result<(), HistoryError> {
-        fsutil::write_atomic_0600(&record.log_path, outcome.redacted_output.as_bytes()).map_err(
-            |source| HistoryError::Write {
-                path: record.log_path.clone(),
-                source,
-            },
-        )?;
-
         record.status = outcome.status.to_string();
         record.exit_code = outcome.exit_code;
         record.end_time = Some(now_rfc3339());
@@ -186,7 +182,6 @@ impl HistoryStore {
 pub struct FinishOutcome<'a> {
     pub status: &'a str,
     pub exit_code: Option<i32>,
-    pub redacted_output: &'a str,
     pub output_lines: usize,
     pub output_summary: &'a str,
     pub duration_ms: u64,
@@ -255,7 +250,6 @@ mod tests {
                 FinishOutcome {
                     status: "success",
                     exit_code: Some(0),
-                    redacted_output: "hello, world",
                     output_lines: 1,
                     output_summary: "hello, world",
                     duration_ms: 42,
@@ -271,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn finish_writes_the_log_and_updates_the_record() {
+    fn finish_updates_the_record_without_touching_the_log() {
         let dir = tempfile::tempdir().unwrap();
         let store = HistoryStore::new(dir.path());
         let mut record = store
@@ -291,7 +285,6 @@ mod tests {
                 FinishOutcome {
                     status: "success",
                     exit_code: Some(0),
-                    redacted_output: "hello, world",
                     output_lines: 1,
                     output_summary: "hello, world",
                     duration_ms: 42,
@@ -301,10 +294,9 @@ mod tests {
 
         assert_eq!(record.status, "success");
         assert_eq!(record.exit_code, Some(0));
-        assert_eq!(
-            std::fs::read_to_string(&record.log_path).unwrap(),
-            "hello, world"
-        );
+        // `begin` creates an empty log file; `finish` no longer writes to it (D18) — populating
+        // it while a run is in flight is `kadou-exec`'s own collector's job (§6.6).
+        assert_eq!(std::fs::read_to_string(&record.log_path).unwrap(), "");
 
         let record_path = dir
             .path()
