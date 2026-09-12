@@ -55,7 +55,13 @@ enum Command {
     /// Pull a folder's git remote (every folder if none is given).
     Update { folder: Option<String> },
     /// Remove a folder.
-    Remove { folder: String },
+    Remove {
+        folder: String,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        force: bool,
+    },
     /// Convert an old dops catalog into a folder.
     Import {
         dir: String,
@@ -67,6 +73,8 @@ enum Command {
         id: String,
         #[arg(long, value_name = "FOLDER")]
         into: Option<String>,
+        #[arg(long)]
+        yes: bool,
     },
     /// Trust (or untrust) the project-local `./kata/` folder.
     Trust {
@@ -270,12 +278,21 @@ fn main() -> std::process::ExitCode {
         // rather than in a second match that has to be kept in sync with this one by hand —
         // an already-dispatched variant added here would be a normal "duplicate match arm"
         // compile error, never a live `unreachable!()`.
+        Some(Command::Get {
+            url,
+            as_folder,
+            git_ref,
+            root,
+        }) => commands::run_get(url, as_folder, git_ref, root),
+        Some(Command::Update { folder }) => commands::run_update(folder),
+        Some(Command::Remove {
+            folder,
+            yes,
+            force,
+        }) => commands::run_remove(folder, yes, force),
+        Some(Command::Accept { id, into, yes }) => commands::run_accept(id, into, yes),
         Some(cmd @ Command::New { .. }) => stub("new", 8, Some(&cmd)),
         Some(cmd @ Command::Edit { .. }) => stub("edit", 8, Some(&cmd)),
-        Some(cmd @ Command::Get { .. }) => stub("get", 7, Some(&cmd)),
-        Some(cmd @ Command::Update { .. }) => stub("update", 7, Some(&cmd)),
-        Some(cmd @ Command::Remove { .. }) => stub("remove", 7, Some(&cmd)),
-        Some(cmd @ Command::Accept { .. }) => stub("accept", 7, Some(&cmd)),
         Some(cmd @ Command::Trust { .. }) => stub("trust", 5, Some(&cmd)),
         Some(cmd @ Command::History { .. }) => stub("history", 5, Some(&cmd)),
         Some(cmd @ Command::Mine(_)) => stub("mine", 9, Some(&cmd)),

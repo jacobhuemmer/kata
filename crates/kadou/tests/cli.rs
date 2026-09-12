@@ -1316,3 +1316,367 @@ fn grant_allow_is_idempotent_replacing_a_prior_entry_for_the_same_id() {
     let config = kadou_core::Config::load(&home.path().join(".config/kadou/kadou.toml")).unwrap();
     assert_eq!(config.agent.allow.len(), 1, "must replace, not accumulate");
 }
+
+// -----------------------------------------------------------------------
+// kadou get / update / remove / accept (§6.7, §7.1, §9 slice 7)
+// -----------------------------------------------------------------------
+
+fn run_git(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?} failed in {}", dir.display());
+}
+
+/// A local bare fixture repo with one commit at its root (D4), no network -- §9 slice 7's
+/// test list ("create it in the test with `git init --bare` and a commit").
+fn bare_fixture_with_one_commit(root: &Path) -> String {
+    let bare = root.join("origin.git");
+    std::fs::create_dir_all(&bare).unwrap();
+    run_git(&bare, &["init", "-q", "--bare", "-b", "main"]);
+
+    let seed = root.join("seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    run_git(&seed, &["init", "-q", "-b", "main"]);
+    run_git(&seed, &["config", "user.email", "test@example.com"]);
+    run_git(&seed, &["config", "user.name", "test"]);
+    std::fs::write(
+        seed.join("hello.sh"),
+        "#!/bin/sh\n# ---\n# about: Say hello\n# risk:  low\n# ---\necho hi\n",
+    )
+    .unwrap();
+    run_git(&seed, &["add", "-A"]);
+    run_git(&seed, &["commit", "-q", "-m", "init"]);
+    run_git(&seed, &["remote", "add", "origin", bare.to_str().unwrap()]);
+    run_git(&seed, &["push", "-q", "origin", "main"]);
+    format!("file://{}", bare.display())
+}
+
+#[test]
+fn get_clones_a_local_bare_fixture_with_kata_at_its_root() {
+    let home = tempfile::tempdir().unwrap();
+    let fixture_root = tempfile::tempdir().unwrap();
+    let url = bare_fixture_with_one_commit(fixture_root.path());
+
+    kadou_in(home.path())
+        .args(["get", &url, "--as", "team"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("team"));
+
+    assert!(
+        home.path()
+            .join(".config/kadou/kata/team/hello.sh")
+            .is_file()
+    );
+
+    kadou_in(home.path())
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("team/hello"));
+}
+
+#[test]
+fn get_refuses_as_mined() {
+    let home = tempfile::tempdir().unwrap();
+    let fixture_root = tempfile::tempdir().unwrap();
+    let url = bare_fixture_with_one_commit(fixture_root.path());
+
+    kadou_in(home.path())
+        .args(["get", &url, "--as", "mined"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("reserved"));
+    assert!(!home.path().join(".config/kadou/kata/mined").exists());
+}
+
+#[test]
+fn get_root_with_dotdot_is_refused() {
+    let home = tempfile::tempdir().unwrap();
+    let fixture_root = tempfile::tempdir().unwrap();
+    let url = bare_fixture_with_one_commit(fixture_root.path());
+
+    kadou_in(home.path())
+        .args(["get", &url, "--as", "team", "--root", "../etc"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("escapes"));
+    assert!(!home.path().join(".config/kadou/kata/team").exists());
+}
+
+#[test]
+fn get_refuses_an_existing_folder() {
+    let home = tempfile::tempdir().unwrap();
+    let fixture_root = tempfile::tempdir().unwrap();
+    let url = bare_fixture_with_one_commit(fixture_root.path());
+
+    kadou_in(home.path())
+        .args(["get", &url, "--as", "team"])
+        .assert()
+        .success();
+    kadou_in(home.path())
+        .args(["get", &url, "--as", "team"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn update_pulls_a_new_commit_from_the_fixture_remote() {
+    let home = tempfile::tempdir().unwrap();
+    let fixture_root = tempfile::tempdir().unwrap();
+    let url = bare_fixture_with_one_commit(fixture_root.path());
+    kadou_in(home.path())
+        .args(["get", &url, "--as", "team"])
+        .assert()
+        .success();
+
+    let bare = fixture_root.path().join("origin.git");
+    let other = fixture_root.path().join("other-checkout");
+    run_git(
+        fixture_root.path(),
+        &["clone", "-q", bare.to_str().unwrap(), other.to_str().unwrap()],
+    );
+    run_git(&other, &["config", "user.email", "test@example.com"]);
+    run_git(&other, &["config", "user.name", "test"]);
+    std::fs::write(other.join("second.txt"), "second").unwrap();
+    run_git(&other, &["add", "-A"]);
+    run_git(&other, &["commit", "-q", "-m", "second"]);
+    run_git(&other, &["push", "-q", "origin", "main"]);
+
+    kadou_in(home.path())
+        .args(["update", "team"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("updated team"));
+    assert!(
+        home.path()
+            .join(".config/kadou/kata/team/second.txt")
+            .is_file()
+    );
+}
+
+#[test]
+fn update_reports_and_skips_a_non_git_folder() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".config/kadou/kata/team")).unwrap();
+
+    kadou_in(home.path())
+        .args(["update", "team"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("team").and(predicate::str::contains("skipped")));
+}
+
+#[test]
+fn update_leaves_a_dirty_checkout_alone_with_a_sentence_saying_so() {
+    let home = tempfile::tempdir().unwrap();
+    let fixture_root = tempfile::tempdir().unwrap();
+    let url = bare_fixture_with_one_commit(fixture_root.path());
+    kadou_in(home.path())
+        .args(["get", &url, "--as", "team"])
+        .assert()
+        .success();
+    std::fs::write(
+        home.path()
+            .join(".config/kadou/kata/team/uncommitted.txt"),
+        "x",
+    )
+    .unwrap();
+
+    kadou_in(home.path())
+        .args(["update", "team"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("local changes"));
+}
+
+#[test]
+fn remove_refuses_starter() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .args(["run", "starter/hello", "--dry-run"])
+        .assert()
+        .success(); // materializes the starter kata
+
+    kadou_in(home.path())
+        .args(["remove", "starter", "--yes"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("reserved"));
+    assert!(
+        home.path()
+            .join(".config/kadou/kata/starter")
+            .is_dir()
+    );
+}
+
+#[test]
+fn remove_refuses_a_dirty_checkout_without_force() {
+    let home = tempfile::tempdir().unwrap();
+    let fixture_root = tempfile::tempdir().unwrap();
+    let url = bare_fixture_with_one_commit(fixture_root.path());
+    kadou_in(home.path())
+        .args(["get", &url, "--as", "team"])
+        .assert()
+        .success();
+    std::fs::write(
+        home.path()
+            .join(".config/kadou/kata/team/uncommitted.txt"),
+        "x",
+    )
+    .unwrap();
+
+    kadou_in(home.path())
+        .args(["remove", "team", "--yes"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("uncommitted"));
+    assert!(home.path().join(".config/kadou/kata/team").is_dir());
+
+    kadou_in(home.path())
+        .args(["remove", "team", "--yes", "--force"])
+        .assert()
+        .success();
+    assert!(!home.path().join(".config/kadou/kata/team").exists());
+}
+
+#[test]
+fn remove_without_yes_cancels_off_a_tty() {
+    let home = tempfile::tempdir().unwrap();
+    let fixture_root = tempfile::tempdir().unwrap();
+    let url = bare_fixture_with_one_commit(fixture_root.path());
+    kadou_in(home.path())
+        .args(["get", &url, "--as", "team"])
+        .assert()
+        .success();
+
+    kadou_in(home.path())
+        .args(["remove", "team"])
+        .write_stdin("")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("cancelled"));
+    assert!(home.path().join(".config/kadou/kata/team").is_dir());
+}
+
+/// Writes `<home>/.local/state/kadou/proposed/<folder>/<name>.sh` directly, the way
+/// `propose_kata` would have -- the CLI-only half of accept's coverage; the MCP round trip
+/// itself is covered in `kadou-mcp`'s own integration tests.
+fn write_proposed_draft(home: &Path, folder: &str, name: &str, source: &str) {
+    let path = home
+        .join(".local/state/kadou/proposed")
+        .join(folder)
+        .join(format!("{name}.sh"));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, source).unwrap();
+}
+
+#[test]
+fn accept_prints_the_diff_and_copies_into_a_user_folder_then_removes_the_draft() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".config/kadou/kata/ops")).unwrap();
+    write_proposed_draft(
+        home.path(),
+        "ops",
+        "hello-team",
+        "#!/bin/sh\n# ---\n# about: Say hello\n# risk:  low\n# ---\necho hi\n",
+    );
+
+    kadou_in(home.path())
+        .args(["accept", "ops/hello-team", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/dev/null"))
+        .stdout(predicate::str::contains("accepted ops/hello-team"));
+
+    assert!(
+        home.path()
+            .join(".config/kadou/kata/ops/hello-team.sh")
+            .is_file()
+    );
+    assert!(
+        !home
+            .path()
+            .join(".local/state/kadou/proposed/ops/hello-team.sh")
+            .exists(),
+        "the draft must be removed after accept"
+    );
+
+    kadou_in(home.path())
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ops/hello-team"));
+}
+
+#[test]
+fn accept_refuses_a_git_backed_target_folder() {
+    let home = tempfile::tempdir().unwrap();
+    let team_dir = home.path().join(".config/kadou/kata/team");
+    std::fs::create_dir_all(&team_dir).unwrap();
+    run_git(&team_dir, &["init", "-q"]);
+    write_proposed_draft(
+        home.path(),
+        "team",
+        "x",
+        "#!/bin/sh\n# ---\n# about: X\n# risk:  low\n# ---\necho hi\n",
+    );
+
+    kadou_in(home.path())
+        .args(["accept", "team/x", "--yes"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("git-backed"));
+    assert!(!team_dir.join("x.sh").exists());
+}
+
+#[test]
+fn accept_of_a_bad_header_draft_fails_with_check_style_diagnostics() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".config/kadou/kata/ops")).unwrap();
+    write_proposed_draft(
+        home.path(),
+        "ops",
+        "bad",
+        "#!/bin/sh\n# ---\n# risk:  mediun\n# ---\necho hi\n",
+    );
+
+    kadou_in(home.path())
+        .args(["accept", "ops/bad", "--yes"])
+        .assert()
+        .code(2)
+        .stderr(
+            predicate::str::contains("-->")
+                .and(predicate::str::contains("risk is one of low, medium, high, critical")),
+        );
+    assert!(!home.path().join(".config/kadou/kata/ops/bad.sh").exists());
+}
+
+#[test]
+fn accept_into_an_existing_folder_refused_when_it_is_git_backed_but_succeeds_into_another() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".config/kadou/kata/ops")).unwrap();
+    write_proposed_draft(
+        home.path(),
+        "sesami",
+        "argocd-sync",
+        "#!/bin/sh\n# ---\n# about: Sync\n# risk:  low\n# ---\necho hi\n",
+    );
+
+    kadou_in(home.path())
+        .args(["accept", "sesami/argocd-sync", "--into", "ops", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("accepted ops/argocd-sync"));
+
+    assert!(
+        home.path()
+            .join(".config/kadou/kata/ops/argocd-sync.sh")
+            .is_file()
+    );
+}
