@@ -74,4 +74,34 @@ mod tests {
         assert!(path.is_dir());
         assert_eq!(mode(&path), 0o700);
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_dir_0700_sets_mode_on_every_intermediate_it_creates() {
+        // B3/P1 (`docs/design/12-mvp-review.md` §2, §6): create_dir_all makes every
+        // intermediate component, but only the leaf was ever chmodded -- a and a/b were left
+        // at the process umask. history/ and history/logs/ are exactly this shape in
+        // `HistoryStore`: intermediates on the way to history/records and
+        // history/logs/<date>.
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("a/b/c");
+        ensure_dir_0700(&path).unwrap();
+        assert_eq!(mode(&path), 0o700, "leaf");
+        assert_eq!(mode(&root.path().join("a/b")), 0o700, "intermediate b");
+        assert_eq!(mode(&root.path().join("a")), 0o700, "intermediate a");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn ensure_dir_0700_never_touches_an_ancestor_it_did_not_create() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // The pre-existing tempdir root is not this call's to chmod -- only components it
+        // actually creates should change mode.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        ensure_dir_0700(&root.path().join("a")).unwrap();
+        assert_eq!(mode(root.path()), 0o755, "pre-existing ancestor untouched");
+        assert_eq!(mode(&root.path().join("a")), 0o700);
+    }
 }

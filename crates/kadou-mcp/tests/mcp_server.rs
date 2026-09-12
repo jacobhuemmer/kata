@@ -298,9 +298,17 @@ async fn pending_and_history_directories_are_0700() {
     .await;
     assert!(!is_error, "{value}");
 
+    // B3/P1/L1 (12-mvp-review §2, §6): ensure_dir_0700 must set 0700 on every directory
+    // component it creates, not only the leaf -- history/ and history/logs/ are
+    // intermediates create_dir_all makes along the way to history/records and
+    // history/logs/<date>, and were left at the process umask (0755) before this fix.
+    let history_dir = home.paths.state_dir.join("history");
+    assert_eq!(mode(&history_dir), 0o700);
+    let logs_root = home.paths.state_dir.join("history/logs");
+    assert_eq!(mode(&logs_root), 0o700);
+
     let records_dir = home.paths.state_dir.join("history/records");
     assert_eq!(mode(&records_dir), 0o700);
-    let logs_root = home.paths.state_dir.join("history/logs");
     let date_dir = std::fs::read_dir(&logs_root)
         .unwrap()
         .next()
