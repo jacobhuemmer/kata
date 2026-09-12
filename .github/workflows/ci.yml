@@ -77,28 +77,51 @@ jobs:
   # binary `tests/cli.rs` drives) — every other function in every crate, `kadou` and
   # `kadou-mine` included, is covered.
   #
-  # This job has never actually run under Actions — the repo isn't hosted on GitHub yet (see
-  # the note at the top of this file) — so its real CI wall-clock time is unverified. The
-  # local 2026-09-12 re-measurement took ~18 minutes at `-j 4` for 925 mutants; if the first
-  # real run on a GitHub-hosted macOS runner blows past ~40 minutes, shard with `cargo mutants
-  # --shard i/N` across a matrix rather than raising this timeout.
+  # Sharded 4 ways (Later-4, `docs/design/12-mvp-review.md` §5/§6): a full `--workspace` run
+  # measured 1592 mutants in 56 minutes at `-j 4` on an 18-core Mac, against a 60-minute wall
+  # at `-j 3` on a shared GitHub runner — not headroom, a coin flip. Each shard runs a quarter
+  # of the mutant list (`--shard i/4`, cargo-mutants' own partitioning, not a hand-rolled
+  # split) and uploads its own `mutants.out`; `mutants-floor` downloads all four and checks
+  # each crate's floor against the union — the same floors a single unsharded run would check,
+  # just computed from four smaller `caught.txt`/`missed.txt`/`timeout.txt` sets instead of one.
   mutants:
-    name: mutants
+    name: mutants (shard ${{ matrix.shard }}/4)
     runs-on: macos-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # 0-indexed: cargo-mutants requires shard k < n (`--shard 4/4` is a hard error).
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install cargo-mutants --version 27.1.0 --locked
-      - run: cargo mutants --workspace -j 3
-      - name: Enforce the per-crate caught-ratio floor
+      - run: cargo mutants --workspace -j 3 --shard ${{ matrix.shard }}/4
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-shard-${{ matrix.shard }}
+          path: mutants.out
+          if-no-files-found: error
+
+  mutants-floor:
+    name: mutants floor (merged)
+    needs: mutants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutants-shard-*
+          path: mutants-shards
+      - name: Enforce the per-crate caught-ratio floor across all four shards
         run: |
           set -euo pipefail
           check() {
             crate="$1"; min="$2"
-            caught=$(grep -c "crates/$crate/" mutants.out/caught.txt || true)
-            missed=$(grep -c "crates/$crate/" mutants.out/missed.txt || true)
-            timedout=$(grep -c "crates/$crate/" mutants.out/timeout.txt || true)
+            caught=$(cat mutants-shards/*/caught.txt 2>/dev/null | grep -c "crates/$crate/" || true)
+            missed=$(cat mutants-shards/*/missed.txt 2>/dev/null | grep -c "crates/$crate/" || true)
+            timedout=$(cat mutants-shards/*/timeout.txt 2>/dev/null | grep -c "crates/$crate/" || true)
             viable=$((caught + missed + timedout))
             if [ "$viable" -eq 0 ]; then
               echo "::error::no viable $crate mutants were generated; check .cargo/mutants.toml"
@@ -112,11 +135,7 @@ jobs:
           # Floors are each crate's own latest dated measurement in
           # docs/design/10-mutation-baseline.md, rounded down to the nearest 5%. Raise a floor
           # only after re-measuring a real improvement; never lower one just to make a red
-          # build pass. `kadou`'s floor is the §9 slice 8 measurement (306 mutants, 94.3%
-          # caught), superseding the earlier slice-B-refactor pass (92 mutants, 81.5%) once
-          # the ui/picker/frame/prompt modules landed with their own mutation-gap-closing
-          # tests. `kadou-mine` is measured for the first time here (§9 slice 9, 384 mutants,
-          # 278 caught / 351 viable = 79.2%).
+          # build pass.
           check kadou-core 85
           check kadou-exec 80
           check kadou-mcp 80
