@@ -168,4 +168,55 @@ mod tests {
         assert!(matches!(err, super::FolderError::ReservedName(_)), "{err:?}");
         assert!(!kata_dir.path().join("mined").exists());
     }
+
+    #[test]
+    fn get_folder_refuses_an_existing_folder() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(kata_dir.path().join("team")).unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let url = bare_fixture_url(fixture_root.path());
+
+        let err = super::get_folder(kata_dir.path(), &url, Some("team"), None, None).unwrap_err();
+        assert!(matches!(err, super::FolderError::AlreadyExists(_)), "{err:?}");
+    }
+
+    #[test]
+    fn get_folder_refuses_an_invalid_name() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let url = bare_fixture_url(fixture_root.path());
+
+        let err =
+            super::get_folder(kata_dir.path(), &url, Some("Team_Name"), None, None).unwrap_err();
+        assert!(matches!(err, super::FolderError::InvalidName(_)), "{err:?}");
+    }
+
+    #[test]
+    fn get_folder_defaults_the_folder_name_from_the_url() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let bare = bare_fixture_with_one_commit(fixture_root.path());
+        let url = format!("file://{}", bare.display());
+
+        let target = super::get_folder(kata_dir.path(), &url, None, None, None).unwrap();
+        assert_eq!(target, kata_dir.path().join("origin"));
+    }
+
+    #[test]
+    fn get_folder_with_a_ref_checks_out_the_named_branch() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let url = bare_fixture_url(fixture_root.path());
+
+        let target =
+            super::get_folder(kata_dir.path(), &url, Some("team"), Some("main"), None).unwrap();
+
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&target)
+            .args(["branch", "--show-current"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "main");
+    }
 }
