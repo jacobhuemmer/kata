@@ -110,6 +110,30 @@ async fn tools_list_over_the_wire_is_the_four_tools_in_order() {
 }
 
 #[tokio::test]
+async fn tools_list_wire_bytes_match_the_checked_in_schema() {
+    // Closes the join G5/invariant-1 names: schema.rs's own unit tests prove
+    // tools_list_bytes() equals docs/design/tools-list.json, and build_tools() is derived
+    // from the same tools_list_value() -- but nothing before this asserted that what rmcp
+    // actually serializes onto the wire, once a real client round-trips it, is still
+    // byte-identical to that schema (rmcp's own Tool/ListToolsResult (de)serialization is
+    // outside this crate's control).
+    let home = setup_sesami(|_| {});
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let result = client.list_tools(None).await.expect("list_tools");
+    let wire_value = serde_json::json!({ "tools": result.tools });
+    let wire_bytes = serde_json::to_vec(&wire_value).expect("serialize the wire value");
+
+    assert_eq!(
+        wire_bytes,
+        kadou_mcp::schema::tools_list_bytes(),
+        "the tools/list payload a real client receives over the wire must equal the \
+         byte-checked schema in docs/design/tools-list.json"
+    );
+}
+
+#[tokio::test]
 async fn list_kata_at_default_ceiling_returns_exactly_the_five_low_risk_sesami_ids() {
     let home = setup_sesami(|_| {}); // default: human medium, agent low
     let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
