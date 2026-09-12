@@ -842,6 +842,17 @@ parameters:
                 "checked 1 kata in sesami   0 errors  0 warnings",
             ));
 
+        // jenkins_url also has a header default, but a vault entry (§4.4) wins over it: this
+        // is the case the operator hits when `kadou import` writes a default= into every
+        // header and `kadou vault set jenkins_url` must not be a silent no-op (I-1).
+        kadou()
+            .env("KADOU_HOME", home.path())
+            .env_remove("HOME")
+            .args(["vault", "set", "jenkins_url", "--plain"])
+            .write_stdin("https://vault.example.com")
+            .assert()
+            .success();
+
         kadou()
             .env("KADOU_HOME", home.path())
             .env_remove("HOME")
@@ -849,7 +860,7 @@ parameters:
             .assert()
             .success()
             .stdout(predicate::str::contains(
-                "env_public: JENKINS_URL=https://ci.example.com",
+                "env_public: JENKINS_URL=https://vault.example.com",
             ))
             .stdout(predicate::str::contains("env_public: JENKINS_USER=ci-user"))
             .stdout(predicate::str::contains("secret_env_names: JENKINS_TOKEN"));
