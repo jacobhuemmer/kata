@@ -243,6 +243,25 @@ mod tests {
     }
 
     #[test]
+    fn propose_with_a_bad_risk_word_returns_the_same_text_kadou_check_prints() {
+        // §5.4: "a bad header is invalid_args with the same diagnostic text kadou check
+        // prints" -- not just the bare message, but the fix line and the location/caret
+        // rendering render_diagnostic produces (I-23).
+        let state_dir = tempfile::tempdir().unwrap();
+        let kata_dir = tempfile::tempdir().unwrap();
+        let source = "#!/bin/sh\n# ---\n# about: Bad risk\n# risk:  mediun\n# ---\necho hi\n";
+        let err = propose(state_dir.path(), kata_dir.path(), "sesami/bad", source).unwrap_err();
+        let ProposeError::BadHeader(text) = err else {
+            panic!("expected BadHeader, got {err:?}");
+        };
+        assert!(
+            text.contains("= risk is one of low, medium, high, critical"),
+            "{text}"
+        );
+        assert!(text.contains("-->"), "expected a --> location line: {text}");
+    }
+
+    #[test]
     fn propose_diffs_against_the_existing_accepted_kata() {
         let state_dir = tempfile::tempdir().unwrap();
         let kata_dir = tempfile::tempdir().unwrap();
