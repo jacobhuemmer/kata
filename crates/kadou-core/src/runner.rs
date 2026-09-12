@@ -31,19 +31,26 @@ pub struct KataContext {
 }
 
 /// Builds the `KADOU_*` context from a resolved [`Kata`] and the `kata/` root it was found
-/// under.
+/// under. For a project-local kata (id `./name`, §4.5), `kata_dir` is already that single
+/// project's own kata directory — there is no per-folder subdivision to join, unlike a
+/// library kata's `sesami/…` (`root` is the folder's own git checkout root).
 pub fn kata_context(kata_dir: &Path, kata: &Kata) -> KataContext {
     let dir = kata
         .path
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| kata_dir.to_path_buf());
-    let top_level = kata.id.split('/').next().unwrap_or(&kata.id);
+    let root = if kata.id.starts_with("./") {
+        kata_dir.to_path_buf()
+    } else {
+        let top_level = kata.id.split('/').next().unwrap_or(&kata.id);
+        kata_dir.join(top_level)
+    };
     KataContext {
         id: kata.id.clone(),
         file: kata.path.clone(),
         dir,
-        root: kata_dir.join(top_level),
+        root,
     }
 }
 
@@ -220,6 +227,9 @@ pub struct RunReport {
     pub duration_ms: u64,
     pub history_id: String,
     pub log_path: PathBuf,
+    /// The last non-empty output line, capped at 200 characters (§5.5's `summary` field) —
+    /// the same value written to the history record's own `output_summary`.
+    pub output_summary: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -292,6 +302,7 @@ pub fn finish(
         duration_ms,
         history_id: record.history_id,
         log_path: record.log_path,
+        output_summary: summary,
     })
 }
 
@@ -300,7 +311,10 @@ pub fn finish(
 /// approve` are both synchronous commands with no cancellation or `max_wait` race to run
 /// (§9 slice 3/6). MCP's detach-capable flow composes [`begin`] and [`finish`] itself instead,
 /// since it needs the record's `history_id`/`log_path` before the run is done.
-pub fn run_one_blocking(state_dir: &Path, req: &RunOneRequest<'_>) -> Result<RunReport, RunOneError> {
+pub fn run_one_blocking(
+    state_dir: &Path,
+    req: &RunOneRequest<'_>,
+) -> Result<RunReport, RunOneError> {
     let prepared = begin(state_dir, req)?;
     let exec_result = kadou_exec::run_blocking(prepared.spec);
     finish(&prepared.history_store, prepared.record, exec_result)
@@ -394,6 +408,17 @@ mod tests {
             "KADOU_ROOT".to_string(),
             kata_dir.join("starter").display().to_string()
         )));
+    }
+
+    #[test]
+    fn project_local_kata_context_root_has_no_trailing_dot_component() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_kata_dir = dir.path().join("myproject/kata");
+        std::fs::create_dir_all(&project_kata_dir).unwrap();
+        let kata = test_kata(project_kata_dir.join("deploy.sh"), "./deploy");
+
+        let ctx = kata_context(&project_kata_dir, &kata);
+        assert_eq!(ctx.root, project_kata_dir);
     }
 
     #[test]

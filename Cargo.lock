@@ -1252,6 +1252,7 @@ dependencies = [
  "kadou-mcp",
  "predicates",
  "rust-embed",
+ "serde_json",
  "similar 3.2.0",
  "tempfile",
  "tokio",

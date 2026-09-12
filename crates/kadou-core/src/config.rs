@@ -23,9 +23,8 @@ mod duration_toml {
 
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
         let raw = String::deserialize(deserializer)?;
-        humantime::parse_duration(&raw).map_err(|err| {
-            serde::de::Error::custom(format!("invalid duration `{raw}`: {err}"))
-        })
+        humantime::parse_duration(&raw)
+            .map_err(|err| serde::de::Error::custom(format!("invalid duration `{raw}`: {err}")))
     }
 }
 

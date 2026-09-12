@@ -20,4 +20,5 @@ toml_edit.workspace = true
 assert_cmd.workspace = true
 humantime.workspace = true
 predicates.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true

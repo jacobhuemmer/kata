@@ -170,6 +170,58 @@ fn run_real_fails_cleanly_on_a_missing_need() {
 }
 
 #[test]
+fn cli_run_redacts_a_secret_need_value_in_stdout_and_writes_it_nowhere_else() {
+    // R2/I-9: the CLI run path shares the same pipeline as MCP now, so a secret a kata echoes
+    // must come out of `kadou run`'s own stdout redacted, the same way it already was for MCP.
+    let home = tempfile::tempdir().unwrap();
+    let kata_dir = home.path().join(".config/kadou/kata/team");
+    std::fs::create_dir_all(&kata_dir).unwrap();
+    std::fs::write(
+        kata_dir.join("echo-secret.sh"),
+        "#!/bin/sh\n# ---\n# about: Echo a secret\n# risk:  low\n# needs: api_token\n# ---\necho \"token=$API_TOKEN\"\n",
+    )
+    .unwrap();
+
+    kadou_in(home.path())
+        .args(["vault", "set", "api_token"])
+        .write_stdin("not-a-real-secret1")
+        .assert()
+        .success();
+
+    kadou_in(home.path())
+        .args(["run", "team/echo-secret"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("****"))
+        .stdout(predicate::str::contains("not-a-real-secret1").not());
+}
+
+#[test]
+fn cli_run_writes_a_history_record_with_interface_cli() {
+    // R2/I-8: `kadou run` previously wrote no history record at all; it now shares the same
+    // runner as `kadou grant approve` and MCP's `run_kata`.
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .args(["run", "starter/hello"])
+        .assert()
+        .success();
+
+    let records_dir = home.path().join(".local/state/kadou/history/records");
+    let entries: Vec<_> = std::fs::read_dir(&records_dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(entries.len(), 1, "expected exactly one history record");
+
+    let text = std::fs::read_to_string(&entries[0]).unwrap();
+    let record: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(record["id"], "starter/hello");
+    assert_eq!(record["interface"], "cli");
+    assert_eq!(record["status"], "success");
+    assert!(record["log_path"].as_str().unwrap().ends_with(".log"));
+}
+
+#[test]
 fn show_prints_header_fields_resolved_args_env_names_path_and_sha256() {
     let home = tempfile::tempdir().unwrap();
     kadou_in(home.path())

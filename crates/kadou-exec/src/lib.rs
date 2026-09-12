@@ -223,12 +223,14 @@ pub async fn run(
     // `Stdio::piped()` above guarantees both are `Some` immediately after spawn; falling
     // through to `Wait` on the (unreachable in practice) `None` case keeps this fn panic-free
     // rather than asserting an invariant with `expect` (R6).
-    let stdout = child.stdout.take().ok_or_else(|| {
-        ExecError::Wait(std::io::Error::other("child stdout was not piped"))
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        ExecError::Wait(std::io::Error::other("child stderr was not piped"))
-    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ExecError::Wait(std::io::Error::other("child stdout was not piped")))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| ExecError::Wait(std::io::Error::other("child stderr was not piped")))?;
     let (tx, mut rx) = mpsc::unbounded_channel();
     let out_task = tokio::spawn(pump_lines(stdout, tx.clone()));
     let err_task = tokio::spawn(pump_lines(stderr, tx.clone()));

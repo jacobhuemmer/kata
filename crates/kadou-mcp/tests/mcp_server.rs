@@ -430,7 +430,7 @@ async fn mcp_never_writes_the_vault() {
 
 #[tokio::test]
 async fn max_wait_returns_running_with_a_pollable_log_path() {
-    let home = setup_sesami(|c| c.mcp.max_wait = "150ms".to_string());
+    let home = setup_sesami(|c| c.mcp.max_wait = std::time::Duration::from_millis(150));
     write_kata(
         &home.paths.kata_dir(),
         "team/slow.sh",
@@ -456,7 +456,7 @@ async fn max_wait_returns_running_with_a_pollable_log_path() {
 
 #[tokio::test]
 async fn the_server_wide_concurrency_limit_returns_busy() {
-    let home = setup_sesami(|c| c.mcp.max_wait = "100ms".to_string());
+    let home = setup_sesami(|c| c.mcp.max_wait = std::time::Duration::from_millis(100));
     write_kata(
         &home.paths.kata_dir(),
         "team/slow-a.sh",

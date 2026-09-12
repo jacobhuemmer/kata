@@ -5,7 +5,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use kadou_core::{Arg, ArgDefault, ArgType, Kata, LookupResult, RiskLevel};
 use serde_json::{Value, json};
@@ -13,10 +12,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::drafts;
 use crate::env;
-use crate::history::{self, FinishOutcome, HistoryRecord, HistoryStore};
+use crate::history::{self, HistoryRecord, HistoryStore};
 use crate::notify;
 use crate::pending::{self, PendingStore};
-use crate::redact;
 use crate::state::ServerState;
 use crate::visibility::{self, PROJECT_LOCAL_FOLDER_KEY};
 
@@ -458,46 +456,44 @@ fn draft_run_result(id: &str) -> (Value, bool) {
     )
 }
 
-/// Executes `run_kata`. `ct` is cancelled by the framework when `notifications/cancelled`
-/// arrives for this request (§6.1).
-pub async fn run_kata(
+/// A looked-up kata with its args/needs already resolved — everything before the risk/grant
+/// gate (§6.3). `Err` is a final result to return as-is: `draft`/`no_such_kata`/
+/// `invalid_args`, or `dry_run`'s own success shape (dry_run never reaches the gate at all).
+struct ResolvedRequest {
+    kata: Kata,
+    folder: String,
+    resolved_args: Vec<kadou_core::ResolvedVar>,
+    resolved_needs: Vec<kadou_core::ResolvedNeed>,
+}
+
+fn resolve_request(
     state: &ServerState,
     config: &kadou_core::Config,
-    mcp_client: Option<String>,
-    ct: CancellationToken,
-    args: RunArgs,
-) -> (Value, bool) {
-    let id = args.id.clone();
-
-    if drafts::is_draft_id(&id) {
-        return draft_run_result(&id);
+    args: &RunArgs,
+) -> Result<ResolvedRequest, (Value, bool)> {
+    let id = &args.id;
+    if drafts::is_draft_id(id) {
+        return Err(draft_run_result(id));
     }
-
-    let Some((kata, folder)) = resolve_visible(state, config, &id) else {
-        return no_such_kata(&id);
+    let Some((kata, folder)) = resolve_visible(state, config, id) else {
+        return Err(no_such_kata(id));
     };
 
-    let provided = match json_args_to_strings(&args.args) {
-        Ok(m) => m,
-        Err(bad_key) => {
-            return invalid_args_result(
-                &kata,
-                format!("arg `{bad_key}` must be a string, number, or boolean"),
-            );
-        }
-    };
-
-    let resolved_args = match kadou_core::resolve_args(&kata, &provided) {
-        Ok(v) => v,
-        Err(err) => return invalid_args_result(&kata, err.to_string()),
-    };
+    let provided = json_args_to_strings(&args.args).map_err(|bad_key| {
+        invalid_args_result(
+            &kata,
+            format!("arg `{bad_key}` must be a string, number, or boolean"),
+        )
+    })?;
+    let resolved_args = kadou_core::resolve_args(&kata, &provided)
+        .map_err(|err| invalid_args_result(&kata, err.to_string()))?;
 
     let vault = state.load_vault();
     let resolved_needs = kadou_core::resolve_needs(&kata, &vault);
 
     if args.dry_run {
-        let dry = kadou_exec::dry_run(&resolved_args, &resolved_needs);
-        return (
+        let dry = kadou_core::runner::dry_run(&resolved_args, &resolved_needs);
+        return Err((
             json!({
                 "status": "dry_run",
                 "id": kata.id,
@@ -506,61 +502,95 @@ pub async fn run_kata(
                 "secret_env_names": dry.secret_env_names,
             }),
             false,
-        );
+        ));
     }
 
+    Ok(ResolvedRequest {
+        kata,
+        folder,
+        resolved_args,
+        resolved_needs,
+    })
+}
+
+/// The risk/grant gate, the missing-needs check, and the per-id concurrency reservation
+/// (§6.3, §6.4, §6.1) — everything a resolved request must clear before it may spawn.
+fn gate(
+    state: &ServerState,
+    config: &kadou_core::Config,
+    req: &ResolvedRequest,
+    mcp_client: Option<String>,
+) -> Result<crate::concurrency::RunGuard, (Value, bool)> {
     // §6.3/§6.4: a *visible* high/critical kata still needs a human grant unless the agent's
     // own `[agent].allow` already covers it (bare id: any version; `id@sha256:...`: pinned to
-    // that exact file). `dry_run` above always bypasses this — it never executes anything.
-    if kata.risk >= RiskLevel::High {
-        let sha256 = kadou_core::file_sha256(&kata.path).unwrap_or_default();
-        if !allow_permits(&config.agent.allow, &kata.id, &sha256) {
-            return pending_grant_result(
+    // that exact file). `dry_run` never reaches this gate at all — it never executes anything.
+    if req.kata.risk >= RiskLevel::High {
+        let sha256 = kadou_core::file_sha256(&req.kata.path).unwrap_or_default();
+        if !allow_permits(&config.agent.allow, &req.kata.id, &sha256) {
+            return Err(pending_grant_result(
                 state,
                 config,
-                &kata,
-                &folder,
-                &resolved_args,
+                &req.kata,
+                &req.folder,
+                &req.resolved_args,
                 mcp_client,
                 &sha256,
-            );
+            ));
         }
     }
 
-    let missing: Vec<String> = resolved_needs
+    let missing: Vec<String> = req
+        .resolved_needs
         .iter()
         .filter(|n| n.value.is_none())
         .map(|n| n.name.clone())
         .collect();
     if !missing.is_empty() {
         let fix = format!("kadou vault set {}", missing[0]);
-        return (
+        return Err((
             json!({
                 "status": "error",
                 "error": "missing_needs",
                 "isError": true,
-                "id": kata.id,
+                "id": req.kata.id,
                 "needs_missing": missing,
                 "message": fix,
             }),
             true,
-        );
+        ));
     }
 
-    let Ok(guard) = state.concurrency.try_start(&kata.id) else {
-        return (
+    state.concurrency.try_start(&req.kata.id).map_err(|()| {
+        (
             json!({
                 "status": "error",
                 "error": "busy",
                 "isError": true,
-                "id": kata.id,
-                "message": format!("{} is already running, or the server is at its concurrency limit", kata.id),
+                "id": req.kata.id,
+                "message": format!("{} is already running, or the server is at its concurrency limit", req.kata.id),
             }),
             true,
-        );
-    };
+        )
+    })
+}
 
-    let kata_dir_root = if kata.id.starts_with("./") {
+/// Builds the env/spec/history record (`kadou_core::runner::begin`), spawns the exec, and
+/// races it against cancellation and `mcp.max_wait` (§6.1). `ct` is scoped to this request's
+/// own lifetime — it is only meaningful to race here, in the synchronous branch; once we
+/// detach (the `max_wait` branch below), the spawned kata keeps running on its own and `ct` is
+/// no longer watched (§6.1 "cancel via notifications/cancelled, stdio EOF, or exec.timeout").
+/// `cancel_tx` must stay alive for as long as the kata might still be running: dropping a
+/// oneshot `Sender` resolves the receiver's `.await` exactly like a real cancel signal, so
+/// letting it drop here would SIGTERM every detached run the instant this function returns.
+async fn spawn_and_await(
+    state: &ServerState,
+    config: &kadou_core::Config,
+    mcp_client: Option<String>,
+    ct: CancellationToken,
+    req: ResolvedRequest,
+    guard: crate::concurrency::RunGuard,
+) -> (Value, bool) {
+    let kata_dir_root = if req.kata.id.starts_with("./") {
         state
             .project_local_kata_dir
             .clone()
@@ -568,110 +598,69 @@ pub async fn run_kata(
     } else {
         state.paths.kata_dir()
     };
-    let mut ctx = kadou_exec::kata_context(&kata_dir_root, &kata);
-    if kata.id.starts_with("./")
-        && let Some(dir) = &state.project_local_kata_dir
-    {
-        ctx.root = dir.clone();
-    }
-
-    let mut env = env::build_mcp_env(std::env::vars(), &config.exec.pass_env);
-    env.extend(kadou_exec::context_env(&ctx));
-    let secret_values: Vec<String> = resolved_needs
-        .iter()
-        .filter(|n| n.secret)
-        .filter_map(|n| n.value.clone())
-        .collect();
-    let need_values: Vec<String> = resolved_needs
-        .iter()
-        .filter_map(|n| n.value.clone())
-        .collect();
-    for arg in &resolved_args {
-        env.push((arg.env_name.clone(), arg.value.clone()));
-    }
-    for need in &resolved_needs {
-        env.push((
-            need.env_name.clone(),
-            need.value.clone().expect("checked missing above"),
-        ));
-    }
-
-    let timeout = kadou_exec::effective_timeout(kata.timeout, &config.exec.timeout);
-    let spec = kadou_exec::RunSpec {
-        shebang: kata.shebang.clone(),
-        file: kata.path.clone(),
-        cwd: ctx.dir.clone(),
-        env,
-        timeout,
-        // `env` above is already the complete allowlisted MCP environment (§6.1) — the
-        // child must not also inherit this server process's own environment.
+    let base_env = env::build_mcp_env(std::env::vars(), &config.exec.pass_env);
+    let initiator = history::current_initiator();
+    let runner_req = kadou_core::runner::RunOneRequest {
+        kata: &req.kata,
+        folder: &req.folder,
+        resolved_args: &req.resolved_args,
+        resolved_needs: &req.resolved_needs,
+        kata_dir_root: &kata_dir_root,
+        interface: "mcp",
+        initiator: &initiator,
+        mcp_client: mcp_client.as_deref(),
+        base_env,
+        // `env` above is already the complete allowlisted MCP environment (§6.1) — the child
+        // must not also inherit this server process's own environment.
         env_clear: true,
+        config_exec_timeout: config.exec.timeout,
     };
 
-    let history_store = HistoryStore::new(&state.paths.state_dir);
-    let public_args: BTreeMap<String, String> = resolved_args
-        .iter()
-        .map(|a| (a.name.clone(), a.value.clone()))
-        .collect();
-    let record = match history_store.begin(
-        &kata.id,
-        &folder,
-        &public_args,
-        "mcp",
-        &history::current_initiator(),
-        mcp_client.as_deref(),
-    ) {
-        Ok(record) => record,
+    let prepared = match kadou_core::runner::begin(&state.paths.state_dir, &runner_req) {
+        Ok(p) => p,
         Err(err) => {
+            drop(guard);
             return (
-                json!({"status":"error","error":"internal","isError":true,"id":kata.id,"message":err.to_string()}),
+                json!({"status":"error","error":"internal","isError":true,"id":req.kata.id,"message":err.to_string()}),
                 true,
             );
         }
     };
+    let history_store = prepared.history_store;
+    let record = prepared.record;
 
     let max_output_lines = (config.mcp.max_output_lines as usize).clamp(1, 200);
-    let max_wait =
-        humantime::parse_duration(&config.mcp.max_wait).unwrap_or(Duration::from_secs(50));
+    let max_wait = config.mcp.max_wait;
 
     let (done_tx, mut done_rx) = tokio::sync::oneshot::channel();
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        let outcome = kadou_exec::run(spec, Some(cancel_rx)).await;
+        let outcome = kadou_exec::run(prepared.spec, Some(cancel_rx)).await;
         let _ = done_tx.send(outcome);
     });
 
-    // `ct` is scoped to this request's own lifetime — it is only meaningful to race here, in
-    // the synchronous branch; once we detach (the `max_wait` branch below), the spawned kata
-    // keeps running on its own and `ct` is no longer watched (§6.1 "cancel via
-    // notifications/cancelled, stdio EOF, or exec.timeout"). `cancel_tx` must stay alive for
-    // as long as the kata might still be running: dropping a oneshot `Sender` resolves the
-    // receiver's `.await` exactly like a real cancel signal, so letting it drop here would
-    // SIGTERM every detached run the instant this function returns.
     tokio::select! {
         result = &mut done_rx => {
             drop(cancel_tx);
-            let value = finish_run(&history_store, record, result, &secret_values, &need_values, max_output_lines);
+            let value = finish_and_shape(&history_store, record, result, max_output_lines);
             drop(guard);
             value
         }
         () = ct.cancelled() => {
             let _ = cancel_tx.send(());
             let result = done_rx.await;
-            let value = finish_run(&history_store, record, result, &secret_values, &need_values, max_output_lines);
+            let value = finish_and_shape(&history_store, record, result, max_output_lines);
             drop(guard);
             value
         }
         () = tokio::time::sleep(max_wait) => {
-            let running_id = kata.id.clone();
+            let running_id = req.kata.id.clone();
             let history_id = record.history_id.clone();
             let log_path = record.log_path.display().to_string();
-            let state_dir = state.paths.state_dir.clone();
             tokio::spawn(async move {
                 let _keep_alive = cancel_tx;
-                let history_store = HistoryStore::new(&state_dir);
                 let result = done_rx.await;
-                let _ = finish_run(&history_store, record, result, &secret_values, &need_values, max_output_lines);
+                let _ = finish_and_shape(&history_store, record, result, max_output_lines);
                 drop(guard);
             });
             (
@@ -685,6 +674,26 @@ pub async fn run_kata(
             )
         }
     }
+}
+
+/// Executes `run_kata`. `ct` is cancelled by the framework when `notifications/cancelled`
+/// arrives for this request (§6.1).
+pub async fn run_kata(
+    state: &ServerState,
+    config: &kadou_core::Config,
+    mcp_client: Option<String>,
+    ct: CancellationToken,
+    args: RunArgs,
+) -> (Value, bool) {
+    let req = match resolve_request(state, config, &args) {
+        Ok(req) => req,
+        Err(result) => return result,
+    };
+    let guard = match gate(state, config, &req, mcp_client.clone()) {
+        Ok(guard) => guard,
+        Err(result) => return result,
+    };
+    spawn_and_await(state, config, mcp_client, ct, req, guard).await
 }
 
 /// `true` when `id` is covered by an `[agent].allow` entry: a bare id (any version) or
@@ -785,91 +794,60 @@ fn pending_grant_result(
     )
 }
 
-type RunOutcomeResult = Result<kadou_exec::RunOutcome, kadou_exec::ExecError>;
-
-fn finish_run(
+/// Turns a completed exec result into the §5.5 wire shape: writes the terminal history record
+/// via `kadou_core::runner::finish` and applies MCP's own output-view truncation on top (§5.5
+/// default 50 lines/8192 bytes) — a CLI caller of the same shared `finish` wants the full
+/// output instead, so this shaping stays MCP-specific rather than living in `kadou-core`.
+fn finish_and_shape(
     history_store: &HistoryStore,
-    mut record: HistoryRecord,
-    result: Result<RunOutcomeResult, tokio::sync::oneshot::error::RecvError>,
-    secret_values: &[String],
-    need_values: &[String],
+    record: HistoryRecord,
+    result: Result<
+        Result<kadou_exec::RunOutcome, kadou_exec::ExecError>,
+        tokio::sync::oneshot::error::RecvError,
+    >,
     max_output_lines: usize,
 ) -> (Value, bool) {
-    let internal_failure = FinishOutcome {
-        status: "failed",
-        exit_code: None,
-        redacted_output: "",
-        output_lines: 0,
-        output_summary: "",
-        duration_ms: 0,
+    let id = record.id.clone();
+    let exec_result = match result {
+        Ok(exec_result) => exec_result,
+        Err(_) => Err(kadou_exec::ExecError::Wait(std::io::Error::other(
+            "the run task ended unexpectedly",
+        ))),
     };
-    let outcome = match result {
-        Ok(Ok(outcome)) => outcome,
-        Ok(Err(err)) => {
-            let _ = history_store.finish(&mut record, internal_failure);
-            return (
-                json!({"status":"error","error":"internal","isError":true,"id":record.id,"message":err.to_string()}),
-                true,
+
+    match kadou_core::runner::finish(history_store, record, exec_result) {
+        Ok(report) => {
+            let (view, output_lines, truncated) = truncate_output(&report.output, max_output_lines);
+            let (status_str, is_error) = match report.status {
+                kadou_exec::RunStatus::Success => ("success", false),
+                kadou_exec::RunStatus::Failed | kadou_exec::RunStatus::TimedOut => ("failed", true),
+                kadou_exec::RunStatus::Cancelled => ("cancelled", true),
+            };
+
+            let mut obj = serde_json::Map::new();
+            obj.insert("status".to_string(), json!(status_str));
+            obj.insert("id".to_string(), json!(report.id));
+            obj.insert("exit_code".to_string(), json!(report.exit_code));
+            obj.insert("duration_ms".to_string(), json!(report.duration_ms));
+            obj.insert("output_lines".to_string(), json!(output_lines));
+            obj.insert("output".to_string(), json!(view));
+            obj.insert("truncated".to_string(), json!(truncated));
+            obj.insert("summary".to_string(), json!(report.output_summary));
+            obj.insert(
+                "log_path".to_string(),
+                json!(report.log_path.display().to_string()),
             );
+            obj.insert("history_id".to_string(), json!(report.history_id));
+            if is_error {
+                obj.insert("isError".to_string(), json!(true));
+            }
+            (Value::Object(obj), is_error)
         }
-        Err(_) => {
-            let _ = history_store.finish(&mut record, internal_failure);
-            return (
-                json!({"status":"error","error":"internal","isError":true,"id":record.id,"message":"the run task ended unexpectedly"}),
-                true,
-            );
-        }
-    };
-
-    let full_output = outcome.output.join("\n");
-    let redacted_full = redact::redact_all(&full_output, secret_values, need_values);
-    let redacted_lines: Vec<String> = if redacted_full.is_empty() {
-        Vec::new()
-    } else {
-        redacted_full.split('\n').map(str::to_string).collect()
-    };
-
-    let (view, output_lines, truncated) = truncate_output(&redacted_lines, max_output_lines);
-    let summary = last_non_empty_line(&redacted_lines);
-    let duration_ms = u64::try_from(outcome.duration.as_millis()).unwrap_or(u64::MAX);
-
-    let (status_str, is_error) = match outcome.status {
-        kadou_exec::RunStatus::Success => ("success", false),
-        kadou_exec::RunStatus::Failed => ("failed", true),
-        kadou_exec::RunStatus::TimedOut => ("failed", true),
-        kadou_exec::RunStatus::Cancelled => ("cancelled", true),
-    };
-
-    let _ = history_store.finish(
-        &mut record,
-        FinishOutcome {
-            status: status_str,
-            exit_code: outcome.exit_code,
-            redacted_output: &redacted_full,
-            output_lines: redacted_lines.len(),
-            output_summary: &summary,
-            duration_ms,
-        },
-    );
-
-    let mut obj = serde_json::Map::new();
-    obj.insert("status".to_string(), json!(status_str));
-    obj.insert("id".to_string(), json!(record.id));
-    obj.insert("exit_code".to_string(), json!(outcome.exit_code));
-    obj.insert("duration_ms".to_string(), json!(duration_ms));
-    obj.insert("output_lines".to_string(), json!(output_lines));
-    obj.insert("output".to_string(), json!(view));
-    obj.insert("truncated".to_string(), json!(truncated));
-    obj.insert("summary".to_string(), json!(summary));
-    obj.insert(
-        "log_path".to_string(),
-        json!(record.log_path.display().to_string()),
-    );
-    obj.insert("history_id".to_string(), json!(record.history_id));
-    if is_error {
-        obj.insert("isError".to_string(), json!(true));
+        Err(err) => (
+            json!({"status":"error","error":"internal","isError":true,"id":id,"message":err.to_string()}),
+            true,
+        ),
     }
-    (Value::Object(obj), is_error)
 }
 
 /// Last **N** lines (§5.5 default 50, `mcp.max_output_lines`), then a hard cap of 8192 UTF-8
@@ -895,20 +873,6 @@ fn truncate_output(lines: &[String], max_lines: usize) -> (String, usize, bool) 
         truncated = true;
     }
     (joined, kept.len(), truncated)
-}
-
-fn last_non_empty_line(lines: &[String]) -> String {
-    let line = lines
-        .iter()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .cloned()
-        .unwrap_or_default();
-    if line.chars().count() > 200 {
-        line.chars().take(200).collect()
-    } else {
-        line
-    }
 }
 
 // ---------------------------------------------------------------------------

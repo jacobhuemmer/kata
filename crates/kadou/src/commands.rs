@@ -7,13 +7,13 @@ use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use kadou_core::history::current_initiator;
+use kadou_core::runner::{RunOneRequest, run_one_blocking};
 use kadou_core::{
     Config, GoVaultSource, KadouPaths, Kata, LastArgsStore, LookupResult, RiskLevel, Vault,
     VaultStore,
 };
-use kadou_mcp::history::{FinishOutcome, HistoryStore, current_initiator};
 use kadou_mcp::pending::{self, PendingRecord, PendingStore};
-use kadou_mcp::redact;
 
 use crate::confirm::{self, ConfirmOutcome};
 use crate::starter;
@@ -527,7 +527,7 @@ pub fn run_run(
     let mut resolved_needs = kadou_core::resolve_needs(&kata, &vault);
 
     if dry_run {
-        let result = kadou_exec::dry_run(&resolved_args, &resolved_needs);
+        let result = kadou_core::runner::dry_run(&resolved_args, &resolved_needs);
         println!("{}", kata.id);
         println!("env_names: {}", result.env_names.join(", "));
         if result.env_public.is_empty() {
@@ -594,35 +594,29 @@ pub fn run_run(
         }
     }
 
-    let ctx = kadou_exec::kata_context(&paths.kata_dir(), &kata);
-    let mut env = kadou_exec::context_env(&ctx);
-    for arg in &resolved_args {
-        env.push((arg.env_name.clone(), arg.value.clone()));
-    }
-    for need in &resolved_needs {
-        env.push((
-            need.env_name.clone(),
-            need.value.clone().expect("checked above"),
-        ));
-    }
-
-    let timeout = kadou_exec::effective_timeout(kata.timeout, &config.exec.timeout);
-    let spec = kadou_exec::RunSpec {
-        shebang: kata.shebang.clone(),
-        file: kata.path.clone(),
-        cwd: ctx.dir.clone(),
-        env,
-        timeout,
-        // CLI keeps the full parent environment — a human's own shell context (§6.1).
+    let folder = kata.id.split('/').next().unwrap_or(&kata.id).to_string();
+    let initiator = current_initiator();
+    let req = RunOneRequest {
+        kata: &kata,
+        folder: &folder,
+        resolved_args: &resolved_args,
+        resolved_needs: &resolved_needs,
+        kata_dir_root: &paths.kata_dir(),
+        interface: "cli",
+        initiator: &initiator,
+        mcp_client: None,
+        // CLI keeps the full parent environment (§6.1) — nothing extra to layer on top.
+        base_env: Vec::new(),
         env_clear: false,
+        config_exec_timeout: config.exec.timeout,
     };
 
-    match kadou_exec::run_blocking(spec) {
-        Ok(outcome) => {
-            for line in &outcome.output {
+    match run_one_blocking(&paths.state_dir, &req) {
+        Ok(report) => {
+            for line in &report.output {
                 println!("{line}");
             }
-            match outcome.status {
+            match report.status {
                 kadou_exec::RunStatus::Success => {
                     // Last-used args are a prefill convenience (§6.6 D5): args are never
                     // secret by construction, so writing them plainly is safe.
@@ -640,6 +634,7 @@ pub fn run_run(
                 }
                 kadou_exec::RunStatus::Failed => ExitCode::FAILURE,
                 kadou_exec::RunStatus::TimedOut => {
+                    let timeout = kadou_exec::effective_timeout(kata.timeout, config.exec.timeout);
                     eprintln!("error: {} timed out after {timeout:?}", kata.id);
                     ExitCode::FAILURE
                 }
@@ -1168,108 +1163,47 @@ pub fn run_grant_approve(pending_id: String, confirm_flag: Option<String>) -> Ex
     // Approval runs in the CLI's own full environment (§6.4 item 5 "Approval runs in the
     // human CLI's environment (full parent env, not the MCP server's allowlisted one)").
     let config = load_config(&paths);
-    let ctx = kadou_exec::kata_context(&paths.kata_dir(), &kata);
-    let mut env = kadou_exec::context_env(&ctx);
-    let secret_values: Vec<String> = resolved_needs
-        .iter()
-        .filter(|n| n.secret)
-        .filter_map(|n| n.value.clone())
-        .collect();
-    let need_values: Vec<String> = resolved_needs
-        .iter()
-        .filter_map(|n| n.value.clone())
-        .collect();
-    for arg in &resolved_args {
-        env.push((arg.env_name.clone(), arg.value.clone()));
-    }
-    for need in &resolved_needs {
-        env.push((
-            need.env_name.clone(),
-            need.value.clone().expect("checked above"),
-        ));
-    }
-
-    let timeout = kadou_exec::effective_timeout(kata.timeout, &config.exec.timeout);
-    let spec = kadou_exec::RunSpec {
-        shebang: kata.shebang.clone(),
-        file: kata.path.clone(),
-        cwd: ctx.dir.clone(),
-        env,
-        timeout,
+    let initiator = current_initiator();
+    let req = RunOneRequest {
+        kata: &kata,
+        folder: &record.folder,
+        resolved_args: &resolved_args,
+        resolved_needs: &resolved_needs,
+        kata_dir_root: &paths.kata_dir(),
+        interface: "cli",
+        initiator: &initiator,
+        mcp_client: None,
+        base_env: Vec::new(),
         env_clear: false,
+        config_exec_timeout: config.exec.timeout,
     };
 
-    let history_store = HistoryStore::new(&paths.state_dir);
-    let public_args: BTreeMap<String, String> = resolved_args
-        .iter()
-        .map(|a| (a.name.clone(), a.value.clone()))
-        .collect();
-    let mut hist_record = match history_store.begin(
-        &kata.id,
-        &record.folder,
-        &public_args,
-        "cli",
-        &current_initiator(),
-        None,
-    ) {
-        Ok(r) => r,
-        Err(err) => {
-            eprintln!("error: failed to start a history record: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    match kadou_exec::run_blocking(spec) {
-        Ok(outcome) => {
-            for line in &outcome.output {
+    match run_one_blocking(&paths.state_dir, &req) {
+        Ok(report) => {
+            for line in &report.output {
                 println!("{line}");
             }
-            let full_output = outcome.output.join("\n");
-            let redacted = redact::redact_all(&full_output, &secret_values, &need_values);
-            let output_lines = if redacted.is_empty() {
-                0
-            } else {
-                redacted.split('\n').count()
-            };
-            let summary = redacted
-                .split('\n')
-                .rev()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("")
-                .to_string();
-            let duration_ms = u64::try_from(outcome.duration.as_millis()).unwrap_or(u64::MAX);
-            let status_str = match outcome.status {
+            let status_str = match report.status {
                 kadou_exec::RunStatus::Success => "success",
                 kadou_exec::RunStatus::Failed | kadou_exec::RunStatus::TimedOut => "failed",
                 kadou_exec::RunStatus::Cancelled => "cancelled",
             };
 
-            let _ = history_store.finish(
-                &mut hist_record,
-                FinishOutcome {
-                    status: status_str,
-                    exit_code: outcome.exit_code,
-                    redacted_output: &redacted,
-                    output_lines,
-                    output_summary: &summary,
-                    duration_ms,
-                },
-            );
-
             // §6.4 item 5: "On success the pending record gains history_id, status, and
             // log_path, all readable via pending_path" — written back regardless of the run's
             // own outcome, so a failed approved run is still visible via `grant show`.
-            record.history_id = Some(hist_record.history_id.clone());
+            record.history_id = Some(report.history_id.clone());
             record.status = Some(status_str.to_string());
-            record.log_path = Some(hist_record.log_path.clone());
+            record.log_path = Some(report.log_path.clone());
             if let Err(err) = store.save(&record) {
                 eprintln!("warning: failed to update the pending record: {err}");
             }
 
-            match outcome.status {
+            match report.status {
                 kadou_exec::RunStatus::Success => ExitCode::SUCCESS,
                 kadou_exec::RunStatus::Failed => ExitCode::FAILURE,
                 kadou_exec::RunStatus::TimedOut => {
+                    let timeout = kadou_exec::effective_timeout(kata.timeout, config.exec.timeout);
                     eprintln!("error: {} timed out after {timeout:?}", kata.id);
                     ExitCode::FAILURE
                 }
@@ -1280,17 +1214,6 @@ pub fn run_grant_approve(pending_id: String, confirm_flag: Option<String>) -> Ex
             }
         }
         Err(err) => {
-            let _ = history_store.finish(
-                &mut hist_record,
-                FinishOutcome {
-                    status: "failed",
-                    exit_code: None,
-                    redacted_output: "",
-                    output_lines: 0,
-                    output_summary: "",
-                    duration_ms: 0,
-                },
-            );
             eprintln!("error: {err}");
             ExitCode::FAILURE
         }
