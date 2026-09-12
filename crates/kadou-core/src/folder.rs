@@ -383,4 +383,85 @@ mod tests {
         );
         assert!(!kata_dir.path().join("team").exists());
     }
+
+    #[test]
+    fn update_folder_reports_and_skips_a_non_git_folder() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(kata_dir.path().join("starter")).unwrap();
+
+        let outcome = super::update_folder(kata_dir.path(), "starter");
+        assert!(matches!(outcome, super::UpdateOutcome::NotGitBacked { .. }));
+    }
+
+    #[test]
+    fn update_folder_pulls_a_new_commit_from_the_fixture_remote() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let bare = bare_fixture_with_one_commit(fixture_root.path());
+        let url = format!("file://{}", bare.display());
+        super::get_folder(kata_dir.path(), &url, Some("team"), None, None).unwrap();
+
+        // Another contributor pushes a new commit to the same fixture remote.
+        let other = fixture_root.path().join("other-checkout");
+        super_clone(&bare, &other);
+        run(&other, &["config", "user.email", "test@example.com"]);
+        run(&other, &["config", "user.name", "test"]);
+        std::fs::write(other.join("second.txt"), "second").unwrap();
+        run(&other, &["add", "-A"]);
+        run(&other, &["commit", "-q", "-m", "second"]);
+        run(&other, &["push", "-q", "origin", "main"]);
+
+        let outcome = super::update_folder(kata_dir.path(), "team");
+        assert!(matches!(outcome, super::UpdateOutcome::Pulled { .. }));
+        assert!(kata_dir.path().join("team/second.txt").is_file());
+    }
+
+    fn super_clone(bare: &Path, dest: &Path) {
+        let status = std::process::Command::new("git")
+            .args(["clone", "-q", bare.to_str().unwrap(), dest.to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn update_folder_leaves_a_dirty_checkout_alone() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let url = bare_fixture_url(fixture_root.path());
+        let target = super::get_folder(kata_dir.path(), &url, Some("team"), None, None).unwrap();
+        std::fs::write(target.join("uncommitted.txt"), "x").unwrap();
+
+        let outcome = super::update_folder(kata_dir.path(), "team");
+        assert!(matches!(outcome, super::UpdateOutcome::Dirty { .. }));
+    }
+
+    #[test]
+    fn update_folder_fails_cleanly_for_an_unknown_folder() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        let outcome = super::update_folder(kata_dir.path(), "nope");
+        assert!(matches!(outcome, super::UpdateOutcome::Failed { .. }));
+    }
+
+    #[test]
+    fn update_all_covers_every_folder_and_skips_dot_directories() {
+        let kata_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(kata_dir.path().join("starter")).unwrap();
+        std::fs::create_dir_all(kata_dir.path().join(".checkouts/team")).unwrap();
+        let fixture_root = tempfile::tempdir().unwrap();
+        let url = bare_fixture_url(fixture_root.path());
+        super::get_folder(kata_dir.path(), &url, Some("team"), None, None).unwrap();
+
+        let outcomes = super::update_all(kata_dir.path());
+        let folders: Vec<&str> = outcomes
+            .iter()
+            .map(|o| match o {
+                super::UpdateOutcome::Pulled { folder }
+                | super::UpdateOutcome::NotGitBacked { folder }
+                | super::UpdateOutcome::Dirty { folder }
+                | super::UpdateOutcome::Failed { folder, .. } => folder.as_str(),
+            })
+            .collect();
+        assert_eq!(folders, vec!["starter", "team"]);
+    }
 }
