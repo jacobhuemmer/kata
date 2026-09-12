@@ -9,13 +9,20 @@ use kadou_core::{Arg, ArgDefault};
 /// value shown as a prompt's default. A header default always wins over a last-used value --
 /// D5 holds that an optional arg's header default is never shadowed by history.
 pub fn prefill(arg: &Arg, last_used: Option<&str>) -> Option<String> {
-    todo!()
+    match &arg.default {
+        Some(ArgDefault::Text(s)) => Some(s.clone()),
+        Some(ArgDefault::Int(i)) => Some(i.to_string()),
+        Some(ArgDefault::Bool(b)) => Some(b.to_string()),
+        Some(ArgDefault::Select(s)) => Some(s.clone()),
+        None => last_used.map(str::to_string),
+    }
 }
 
 /// `int` prompts reject non-digit input before `↵` (§7.3): an optional leading `-`, at least
 /// one digit, nothing else.
 pub fn is_valid_int(input: &str) -> bool {
-    todo!()
+    let digits = input.strip_prefix('-').unwrap_or(input);
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }
 
 #[cfg(test)]
