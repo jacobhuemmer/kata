@@ -54,6 +54,7 @@ struct SourceRef {
 #[derive(Debug, Serialize)]
 struct Meta {
     fingerprint: String,
+    slug: String,
     score: f64,
     freq: usize,
     unique_sessions: usize,
@@ -264,8 +265,10 @@ pub fn build_proposal(
         })
         .collect();
 
+    let slug = slug_from_first_step(steps.first().map(|s| s.template.as_str()).unwrap_or(""));
     let meta = Meta {
         fingerprint: cluster.fingerprint.clone(),
+        slug: slug.clone(),
         score,
         freq: cluster.freq(),
         unique_sessions: cluster.unique_sessions(),
@@ -279,7 +282,7 @@ pub fn build_proposal(
 
     Ok(Proposal {
         fingerprint: cluster.fingerprint.clone(),
-        slug: slug_from_first_step(steps.first().map(|s| s.template.as_str()).unwrap_or("")),
+        slug,
         kata_source,
         meta_json,
     })

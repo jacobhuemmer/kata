@@ -136,8 +136,13 @@ fn meta_json_carries_no_raw_command_text() {
     assert_eq!(value["unique_sessions"], 3);
     assert_eq!(value["unique_agents"], 2);
     assert_eq!(value["risk"], "medium");
-    assert!(!proposal.meta_json.contains("kubectl"));
-    assert!(!proposal.meta_json.contains("get pods"));
+    // `slug` (a short dashed identifier like "kubectl-get-pods", used to default `mine
+    // approve`'s target name) is expected to name the tool; what must never appear is the
+    // actual multi-word command text or its flags.
+    assert_eq!(value["slug"], "kubectl-get-pods");
+    assert!(!proposal.meta_json.contains("get pods -l"));
+    assert!(!proposal.meta_json.contains("--context"));
+    assert!(!proposal.meta_json.contains("--tail"));
 }
 
 #[test]
