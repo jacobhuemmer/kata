@@ -744,6 +744,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn collector_bounds_memory_for_a_script_that_prints_a_million_lines() {
+        // §5.5's own view is at most 200 lines (mcp.max_output_lines, clamped) over an
+        // 8192-byte cap (tools.rs MAX_OUTPUT_BYTES) -- the collector's in-memory Vec must not
+        // grow with a kata's real output. `seq`+`awk` generate the million lines as two child
+        // processes rather than a million shell-loop iterations, so the test stays fast.
+        let dir = tempfile::tempdir().unwrap();
+        let file = write_script(
+            dir.path(),
+            "kata.sh",
+            "#!/bin/sh\nseq 0 999999 | awk '{print \"line-\" $0}'\n",
+        );
+        let mut s = spec(Some("#!/bin/sh"), file, dir.path().to_path_buf());
+        s.timeout = Duration::from_secs(30);
+
+        let outcome = run(s, None).await.unwrap();
+        assert_eq!(outcome.status, RunStatus::Success);
+        assert!(
+            outcome.output.len() <= 10_000,
+            "collector must bound the collected lines, got {}",
+            outcome.output.len()
+        );
+
+        let last_50: Vec<&str> = outcome
+            .output
+            .iter()
+            .rev()
+            .take(50)
+            .map(String::as_str)
+            .collect();
+        let expected: Vec<String> = (999_950..1_000_000).rev().map(|i| format!("line-{i}")).collect();
+        let expected_refs: Vec<&str> = expected.iter().map(String::as_str).collect();
+        assert_eq!(last_50, expected_refs);
+    }
+
+    #[tokio::test]
     async fn log_sink_holds_already_redacted_partial_output_while_the_run_is_in_flight() {
         let dir = tempfile::tempdir().unwrap();
         let ready = dir.path().join("ready");
