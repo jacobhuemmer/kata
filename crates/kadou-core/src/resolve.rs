@@ -27,8 +27,11 @@ pub struct ResolvedVar {
 ///
 /// `secret` is the rule `describe_kata`'s `secret_env_names` uses (§6.5): a header default is
 /// always plain (`false`); a vault-supplied value carries the vault entry's own bit; a
-/// missing need is reported missing, not guessed secret, so `secret` is `false` there too —
-/// callers detect "missing" via `value.is_none()`, not via this field.
+/// missing need (no default, no vault entry) is fail-safe `secret: true` — it has no value to
+/// redact, but until a default or a vault entry says otherwise it is treated as the
+/// secret-capable kind, so a first-run agent never sees an unvaulted need reported plain
+/// (§4.4, §9 slice 3's Done line, D1). Callers still detect "missing" via `value.is_none()`,
+/// not via this field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedNeed {
     pub name: String,
@@ -300,7 +303,13 @@ mod tests {
     }
 
     #[test]
-    fn need_without_default_and_no_vault_entry_is_missing_not_guessed_secret() {
+    fn need_without_default_and_no_vault_entry_is_missing_and_fail_safe_secret() {
+        // §4.4/D1: an unresolved need (no header default, no vault entry) has no value to
+        // redact, but it is also the exact shape of a not-yet-vaulted secret — resolving it
+        // `secret: false` told a first-run agent `JENKINS_TOKEN` was an ordinary value before
+        // `kadou vault set` ever ran. Fail-safe: `secret` defaults to `true` here, so an
+        // unresolved need is only ever plain once something — a default or a vault entry —
+        // has actually said so.
         let k = kata(
             vec![],
             vec![Need {
@@ -309,10 +318,10 @@ mod tests {
             }],
         );
         let resolved = resolve_needs(&k, &Vault::default());
-        assert_eq!(resolved[0].value, None);
+        assert_eq!(resolved[0].value, None, "still missing, not guessed");
         assert!(
-            !resolved[0].secret,
-            "missing is reported missing, not guessed secret"
+            resolved[0].secret,
+            "unresolved is fail-safe secret until a default or vault entry says otherwise"
         );
     }
 

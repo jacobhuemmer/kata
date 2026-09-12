@@ -285,7 +285,7 @@ fn show_prints_header_fields_resolved_args_env_names_path_and_sha256() {
 
 #[test]
 #[allow(clippy::too_many_lines)] // table-driven cleanup is G2/R16, not this slice
-fn sesami_dry_run_reports_default_less_needs_as_missing_not_guessed_secret_without_a_vault() {
+fn sesami_dry_run_reports_default_less_needs_as_missing_and_fail_safe_secret_without_a_vault() {
     let home = tempfile::tempdir().unwrap();
     let src = home.path().join("catalog/src/cc4-aaa");
     std::fs::create_dir_all(&src).unwrap();
@@ -340,10 +340,12 @@ parameters:
 
     // Without any vault set up, jenkins_user and jenkins_token (no header default) are
     // `missing` — reported missing, not guessed secret (§4.4, §9 slice 4 replacing the
-    // slice-3 stopgap): they appear in `env_names` but in neither `env_public` nor
-    // `secret_env_names`. Only `kadou vault set` gives them a resolved value at all,
-    // and only then does their secret bit show up (see
-    // `needs_resolve_vault_before_default_and_dry_run_reflects_it`).
+    // slice-3 stopgap): they appear in `env_names` but never get a value in `env_public`.
+    // D1/B1: an unresolved need is fail-safe `secret: true` until a default or a vault entry
+    // says otherwise, so both show up in `secret_env_names` on a fresh install, before
+    // `kadou vault set` has ever run — which is exactly what §9 slice 3's Done line claims
+    // (see `needs_resolve_vault_before_default_and_dry_run_reflects_it` for the vault-wins
+    // case once an entry exists).
     kadou_in(home.path())
         .args(["run", "sesami/cc4-aaa", "--dry-run"])
         .assert()
@@ -351,7 +353,9 @@ parameters:
         .stdout(predicate::str::contains(
             "env_names: JENKINS_URL, JENKINS_USER, JENKINS_TOKEN, BRANCH",
         ))
-        .stdout(predicate::str::contains("secret_env_names: (none)"))
+        .stdout(predicate::str::contains(
+            "secret_env_names: JENKINS_USER, JENKINS_TOKEN",
+        ))
         .stdout(predicate::str::contains("env_public: BRANCH=dev"))
         .stdout(predicate::str::contains(
             "env_public: JENKINS_URL=https://ci.example.com",
