@@ -969,3 +969,128 @@ async fn propose_kata_over_mcp_then_kadou_accept_lands_it_in_the_library() {
         .collect();
     assert!(ids.contains(&"ops/hello-team"), "{ids:?}");
 }
+
+// -----------------------------------------------------------------------
+// kadou-mine's `mined/` drafts (docs/design/05-prd.md §6.8, §9 slice 9)
+//
+// kadou-mine has no MCP types of its own: everything below is `crates/kadou-mcp`'s existing,
+// unmodified `proposed`/`mined` draft handling (`drafts.rs`, `tools.rs`) exercised against a
+// file placed exactly where `kadou_mine::store::approve` places one -- `<state_dir>/mined/
+// <name>.sh` -- written directly here (not via `kadou mine`) so this crate's tests don't
+// depend on kadou-mine at all.
+// -----------------------------------------------------------------------
+
+const MINED_KATA: &str = "#!/bin/sh\n# ---\n# about: Mined automation: kubectl get pods\n# risk:  medium\n# args:\n#   context: text\n#   namespace: text\n# ---\nkubectl --context \"${CONTEXT}\" -n \"${NAMESPACE}\" get pods\n";
+
+#[tokio::test]
+async fn list_kata_with_folder_mined_or_include_drafts_lists_a_mined_draft_regardless_of_ceiling() {
+    let home = setup_sesami(|_| {});
+    write_kata(&home.paths.state_dir, "mined/k8s-pod-logs.sh", MINED_KATA);
+    // Default ceiling is `low` (§2 decision 5); the mined draft is `medium` and must still be
+    // listed once asked for by folder or include_drafts, unlike an ordinary above-ceiling kata.
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let (by_folder, is_error) =
+        call(&client, "list_kata", serde_json::json!({"folder": "mined"})).await;
+    assert!(!is_error, "{by_folder}");
+    let ids: Vec<&str> = by_folder["kata"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["mined/k8s-pod-logs"]);
+    assert_eq!(by_folder["kata"][0]["draft"], true);
+
+    let (by_include, is_error) = call(
+        &client,
+        "list_kata",
+        serde_json::json!({"include_drafts": true}),
+    )
+    .await;
+    assert!(!is_error, "{by_include}");
+    let ids: Vec<&str> = by_include["kata"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"mined/k8s-pod-logs"), "{ids:?}");
+
+    let (bare, is_error) = call(&client, "list_kata", serde_json::json!({})).await;
+    assert!(!is_error, "{bare}");
+    let ids: Vec<&str> = bare["kata"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        !ids.contains(&"mined/k8s-pod-logs"),
+        "a mined draft must not appear without include_drafts or folder=mined: {ids:?}"
+    );
+}
+
+#[tokio::test]
+async fn describe_kata_on_a_mined_draft_works_regardless_of_ceiling() {
+    let home = setup_sesami(|_| {});
+    write_kata(&home.paths.state_dir, "mined/k8s-pod-logs.sh", MINED_KATA);
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let (value, is_error) = call(
+        &client,
+        "describe_kata",
+        serde_json::json!({"id": "mined/k8s-pod-logs"}),
+    )
+    .await;
+    assert!(!is_error, "{value}");
+    assert_eq!(value["about"], "Mined automation: kubectl get pods");
+    assert_eq!(value["risk"], "medium");
+}
+
+#[tokio::test]
+async fn run_kata_on_a_mined_draft_fails_as_a_draft_even_with_a_high_ceiling() {
+    let home = setup_sesami(|_| {});
+    write_kata(&home.paths.state_dir, "mined/k8s-pod-logs.sh", MINED_KATA);
+    let state = ServerState::new(
+        home.paths.clone(),
+        Some(RiskLevel::Critical),
+        2,
+        &std::env::temp_dir(),
+    );
+    let client = spawn_server(state).await;
+
+    let (value, is_error) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({"id": "mined/k8s-pod-logs", "args": {"context": "x", "namespace": "y"}}),
+    )
+    .await;
+    assert!(is_error);
+    assert_eq!(value["error"], "draft");
+    assert!(value["message"].as_str().unwrap().contains("kadou accept"));
+}
+
+#[tokio::test]
+async fn tools_list_stays_four_tools_with_mine_installed() {
+    // §9 slice 9 "tools/list still 4 tools": kadou-mine adds zero MCP tools/resources/prompts
+    // (decision 15) -- this is the same wire snapshot the byte-identity test already covers,
+    // asserted again here from the mine-focused test file so a future PR touching kadou-mine
+    // can't silently grow the surface without a failure in this file too.
+    let home = setup_sesami(|_| {});
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let tools = client.list_tools(None).await.expect("tools/list succeeds");
+    let names: Vec<&str> = tools.tools.iter().map(|t| t.name.as_ref()).collect();
+    assert_eq!(
+        names,
+        vec!["list_kata", "describe_kata", "run_kata", "propose_kata"]
+    );
+    assert!(!names.contains(&"mine_list"));
+    assert!(!names.contains(&"mine_get"));
+    assert!(!names.contains(&"mine_run"));
+    assert!(!names.contains(&"mine_review"));
+}

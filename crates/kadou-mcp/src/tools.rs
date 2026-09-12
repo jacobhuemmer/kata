@@ -475,12 +475,20 @@ fn invalid_args_result(kata: &Kata, message: String) -> (Value, bool) {
 }
 
 fn draft_run_result(id: &str) -> (Value, bool) {
+    // `proposed/<folder>/<name>` accepts as `<folder>/<name>` (its own folder is already in
+    // the id); `mined/<name>` has no folder of its own, so `kadou accept` needs the `mined/`
+    // prefix kept to know which draft namespace to resolve (`docs/design/05-prd.md` §5.5's
+    // own worked example: `"kadou accept mined/k8s-pod-logs"`, not `"kadou accept
+    // k8s-pod-logs"`).
     let human = id
         .strip_prefix("proposed/")
         .map(|rest| format!("kadou accept {rest}"))
         .or_else(|| {
-            id.strip_prefix("mined/")
-                .map(|_| "kadou mine review".to_string())
+            if id.starts_with("mined/") {
+                Some(format!("kadou accept {id}"))
+            } else {
+                None
+            }
         })
         .unwrap_or_else(|| "kadou accept".to_string());
     (
