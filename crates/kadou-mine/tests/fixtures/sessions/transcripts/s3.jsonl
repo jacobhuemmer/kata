@@ -1,0 +1,2 @@
+{"type":"assistant","timestamp":"2026-09-09T00:00:00Z","tool_calls":[{"id":"1","name":"run_terminal_command","arguments":{"command":"kubectl --context eks-dev -n payments get pods -l app=api","description":"list pods"}}]}
+{"type":"assistant","timestamp":"2026-09-09T00:01:00Z","tool_calls":[{"id":"2","name":"run_terminal_command","arguments":{"command":"kubectl --context eks-dev -n payments logs deploy/api --tail=100","description":"tail logs"}}]}

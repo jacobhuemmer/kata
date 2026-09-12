@@ -15,6 +15,7 @@ pub mod extract;
 pub mod ingest;
 pub mod model;
 pub mod normalize;
+pub mod orchestrate;
 pub mod parse;
 pub mod propose;
 pub mod rank;

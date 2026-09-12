@@ -1,0 +1,2 @@
+{"timestamp":"2026-09-04T00:00:00Z","ordinal":1,"type":"response_item","payload":{"type":"item_completed","item":{"type":"CommandExecution","command":"kubectl --context eks-prod -n billing get pods -l app=api","parsed_cmd":[{"cmd":"kubectl"}]}}}
+{"timestamp":"2026-09-04T00:01:00Z","ordinal":2,"type":"response_item","payload":{"type":"item_completed","item":{"type":"CommandExecution","command":"kubectl --context eks-prod -n billing logs deploy/api --tail=200","parsed_cmd":[{"cmd":"kubectl"}]}}}
