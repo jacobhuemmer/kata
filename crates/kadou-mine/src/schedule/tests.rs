@@ -12,7 +12,10 @@ fn label_is_dev_kadou_mine_not_a_dops_legacy_name() {
 
 #[test]
 fn plist_names_the_binary_and_the_once_flag_at_0315() {
-    let xml = render_plist(Path::new("/usr/local/bin/kadou"), Path::new("/tmp/launchd.out.log"));
+    let xml = render_plist(
+        Path::new("/usr/local/bin/kadou"),
+        Path::new("/tmp/launchd.out.log"),
+    );
     assert!(xml.contains("<string>dev.kadou.mine</string>"));
     assert!(xml.contains("<string>/usr/local/bin/kadou</string>"));
     assert!(xml.contains("<string>mine</string>"));
