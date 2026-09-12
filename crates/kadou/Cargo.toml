@@ -15,6 +15,7 @@ rust-embed.workspace = true
 similar.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 toml_edit.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 assert_cmd.workspace = true

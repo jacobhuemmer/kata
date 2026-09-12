@@ -797,6 +797,17 @@ pub fn run_mcp_serve(
         return ExitCode::from(2);
     }
 
+    // Structured logs to stderr, never stdout (the stdio transport reserves stdout for the
+    // MCP protocol itself, §3.1) — the only channel a swallowed config/vault load failure
+    // (A6) has to reach a human.
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .init();
+
     let max_risk_flag = match max_risk.as_deref() {
         None => None,
         Some(s) => match parse_risk(s) {
