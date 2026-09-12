@@ -57,6 +57,30 @@ pub enum ProposeError {
     PathEscape,
     #[error("header error: {0}")]
     BadHeader(String),
+    #[error("invalid id `{id}`; expected folder/name segments matching {pattern}", pattern = schema::PROPOSE_ID_PATTERN)]
+    InvalidId { id: String },
+    #[error("source is {len} bytes, over the {cap} byte cap", cap = schema::PROPOSE_SOURCE_MAX_BYTES)]
+    SourceTooLarge { len: usize },
+}
+
+/// `true` when every `/`-separated segment of `id` matches the PRD §4.2 segment rule
+/// (`^[a-z0-9][a-z0-9-]*$`) and there are at least two segments -- exactly
+/// [`schema::PROPOSE_ID_PATTERN`], checked by hand rather than a regex crate.
+fn valid_propose_id(id: &str) -> bool {
+    if id.len() > schema::PROPOSE_ID_MAX_LEN {
+        return false;
+    }
+    let segments: Vec<&str> = id.split('/').collect();
+    segments.len() >= 2 && segments.iter().all(|s| valid_id_segment(s))
+}
+
+fn valid_id_segment(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 #[derive(Debug)]
@@ -79,23 +103,32 @@ fn render_diagnostics(diagnostics: &[Diagnostic]) -> String {
 }
 
 /// Writes `source` as a draft at `<state_dir>/proposed/<input_id>.sh`, strict-loading the
-/// header first (§6.7 "strict-loads the header at propose time"). `input_id` is the tool's
-/// `id` argument (already schema-validated: lowercase/digits/hyphens and `/` only, so a
-/// `..` path-traversal segment is structurally impossible — the canonicalization check below
-/// is defense in depth, §5.4).
+/// header first (§6.7 "strict-loads the header at propose time"). `rmcp` does not validate
+/// `inputSchema` server-side (I-13), so `input_id` and `source` are validated here against
+/// the exact same shape and size cap the schema declares (`schema::PROPOSE_ID_PATTERN`,
+/// `schema::PROPOSE_SOURCE_MAX_BYTES`) before anything is written — the schema alone is
+/// advisory to a client, not enforcement. The resolved parent directory is canonicalized and
+/// checked for containment under `proposed/` *before* the write, not after (§5.4).
 pub fn propose(
     state_dir: &Path,
     kata_dir: &Path,
     input_id: &str,
     source: &str,
 ) -> Result<ProposeOutcome, ProposeError> {
+    if source.len() > schema::PROPOSE_SOURCE_MAX_BYTES {
+        return Err(ProposeError::SourceTooLarge { len: source.len() });
+    }
+    if !valid_propose_id(input_id) {
+        return Err(ProposeError::InvalidId { id: input_id.to_string() });
+    }
+
     let (header, diagnostics) = kadou_core::parse_header(source);
     if header.is_none() {
         return Err(ProposeError::BadHeader(render_diagnostics(&diagnostics)));
     }
 
     let proposed_root = state_dir.join(PROPOSED_NS);
-    std::fs::create_dir_all(&proposed_root).map_err(|source| ProposeError::Write {
+    kadou_core::fsutil::ensure_dir_0700(&proposed_root).map_err(|source| ProposeError::Write {
         path: proposed_root.clone(),
         source,
     })?;
@@ -107,10 +140,18 @@ pub fn propose(
         })?;
 
     let target = proposed_root.join(format!("{input_id}.sh"));
-    if target
-        .parent()
-        .is_some_and(|p| !p.starts_with(&proposed_root))
-    {
+    let target_parent = target.parent().expect("target always has a parent");
+    kadou_core::fsutil::ensure_dir_0700(target_parent).map_err(|source| ProposeError::Write {
+        path: target_parent.to_path_buf(),
+        source,
+    })?;
+    let canonical_parent = target_parent
+        .canonicalize()
+        .map_err(|source| ProposeError::Write {
+            path: target_parent.to_path_buf(),
+            source,
+        })?;
+    if !canonical_parent.starts_with(&canonical_root) {
         return Err(ProposeError::PathEscape);
     }
 
@@ -120,19 +161,6 @@ pub fn propose(
             source: source_err,
         }
     })?;
-
-    // Defense in depth (§5.4): confirm the file we just wrote actually landed under the
-    // canonical proposed/ root.
-    let canonical_target = target
-        .canonicalize()
-        .map_err(|source| ProposeError::Write {
-            path: target.clone(),
-            source,
-        })?;
-    if !canonical_target.starts_with(&canonical_root) {
-        let _ = std::fs::remove_file(&target);
-        return Err(ProposeError::PathEscape);
-    }
 
     let existing = existing_kata_source(kata_dir, input_id);
     let label = format!("{input_id}.sh");
@@ -232,7 +260,7 @@ mod tests {
         let state_dir = tempfile::tempdir().unwrap();
         let kata_dir = tempfile::tempdir().unwrap();
         let err = propose(state_dir.path(), kata_dir.path(), "a/../../x", HELLO).unwrap_err();
-        assert!(matches!(err, ProposeError::InvalidId(_)), "{err:?}");
+        assert!(matches!(err, ProposeError::InvalidId { .. }), "{err:?}");
         assert!(!state_dir.path().join("x.sh").exists());
         assert!(!state_dir.path().parent().unwrap().join("x.sh").exists());
     }
@@ -246,7 +274,7 @@ mod tests {
             "a".repeat(schema::PROPOSE_SOURCE_MAX_BYTES)
         );
         let err = propose(state_dir.path(), kata_dir.path(), "sesami/big", &huge).unwrap_err();
-        assert!(matches!(err, ProposeError::SourceTooLarge(_)), "{err:?}");
+        assert!(matches!(err, ProposeError::SourceTooLarge { .. }), "{err:?}");
     }
 
     #[test]
@@ -254,7 +282,7 @@ mod tests {
         let state_dir = tempfile::tempdir().unwrap();
         let kata_dir = tempfile::tempdir().unwrap();
         let err = propose(state_dir.path(), kata_dir.path(), "Sesami/Bad", HELLO).unwrap_err();
-        assert!(matches!(err, ProposeError::InvalidId(_)), "{err:?}");
+        assert!(matches!(err, ProposeError::InvalidId { .. }), "{err:?}");
     }
 
     #[test]
