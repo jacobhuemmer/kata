@@ -69,43 +69,87 @@ fn help_lists_the_full_command_tree() {
     }
 }
 
+/// The non-interactive form every id-taking command with no id shares (§7.3): `assert_cmd`
+/// never gives the child a real TTY, so this exercises the exact sentence a human sees when
+/// piping/scripting `kadou run`/`show`/`edit` with no id.
+const NO_TERMINAL_TO_PICK: &str = "no kata id given and no terminal to pick one";
+
 #[test]
-fn bare_invocation_is_a_stub_not_a_crash() {
-    kadou()
+fn bare_invocation_piped_is_one_tab_separated_line_per_kata() {
+    // §7.2 "Piped, kadou prints one kata per line, tab-separated" -- assert_cmd's own stdout
+    // capture is never a real TTY, so a bare `kadou` under it always takes this path. The
+    // styled TTY frame itself is covered by ui::frame's insta snapshots plus the manual pty
+    // session (CLAUDE.md forced verification) -- assert_cmd cannot fake a real terminal.
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
         .assert()
-        .code(2)
-        .stderr(predicate::str::contains("not yet implemented"))
-        .stderr(predicate::str::contains("slice 8"));
+        .success()
+        .stdout(predicate::str::contains(
+            "starter/hello\tlow\tPrint a greeting\n",
+        ))
+        .stdout(predicate::str::contains(
+            "starter/disk-usage\tlow\tDisk usage of a directory\n",
+        ))
+        .stdout(predicate::str::contains(
+            "starter/git-status\tlow\tgit status -sb in a repo\n",
+        ))
+        .stdout(predicate::str::contains(
+            "starter/health\tlow\tResolve a host\n",
+        ))
+        .stdout(predicate::str::contains(
+            "starter/list-path\tlow\tList a directory\n",
+        ));
 }
 
 #[test]
-fn run_with_no_id_is_a_slice_8_stub() {
-    kadou()
+fn no_color_strips_the_bare_frame_to_plain_text() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains('\x1b').not());
+}
+
+#[test]
+fn run_with_no_id_and_no_terminal_exits_2() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
         .arg("run")
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("not yet implemented (slice 8)"));
+        .stderr(predicate::str::contains(NO_TERMINAL_TO_PICK));
 }
 
 #[test]
-fn run_ask_refuses_as_not_yet_implemented() {
-    // §7.3: "kadou run <id> --ask prompts for every arg" -- unimplemented until slice 8.
-    // Parsed-and-silently-dropped (I-19) is worse than an explicit refusal.
+fn run_ask_with_no_terminal_exits_2() {
+    // §7.3: `kadou run <id> --ask` prompts for every arg -- impossible off a TTY.
     let home = tempfile::tempdir().unwrap();
     kadou_in(home.path())
         .args(["run", "starter/hello", "--ask"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("not yet implemented (slice 8)"));
+        .stderr(predicate::str::contains("--ask needs a terminal"));
 }
 
 #[test]
-fn show_with_no_id_is_a_slice_8_stub() {
-    kadou()
+fn show_with_no_id_and_no_terminal_exits_2() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
         .arg("show")
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("not yet implemented (slice 8)"));
+        .stderr(predicate::str::contains(NO_TERMINAL_TO_PICK));
+}
+
+#[test]
+fn edit_with_no_id_and_no_terminal_exits_2() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .arg("edit")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(NO_TERMINAL_TO_PICK));
 }
 
 #[test]
@@ -1778,4 +1822,148 @@ fn accept_succeeds_but_fails_the_check_when_its_alias_collides_with_the_target_f
             .join(".local/state/kadou/proposed/ops/hello-team.sh")
             .exists()
     );
+}
+
+// ---------------------------------------------------------------------------
+// kadou new / edit / history / completion (§7.1, §7.3, §9 slice 8)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn new_writes_the_header_template_and_skips_the_editor_off_a_tty() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .env("EDITOR", "false")
+        .args(["new", "ops/hi"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wrote"));
+
+    let text = std::fs::read_to_string(home.path().join(".config/kadou/kata/ops/hi.sh")).unwrap();
+    assert!(text.contains("about: TODO: describe hi"));
+    assert!(text.contains("risk:  low"));
+    assert!(text.contains("main \"$@\""));
+}
+
+#[test]
+fn new_refuses_an_id_that_already_exists() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .env("EDITOR", "false")
+        .args(["new", "starter/hello"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("already exists"));
+}
+
+#[test]
+fn new_from_copies_an_existing_kata_source() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .env("EDITOR", "false")
+        .args(["new", "ops/hi2", "--from", "starter/hello"])
+        .assert()
+        .success();
+
+    let original =
+        std::fs::read_to_string(home.path().join(".config/kadou/kata/starter/hello.sh")).unwrap();
+    let copied =
+        std::fs::read_to_string(home.path().join(".config/kadou/kata/ops/hi2.sh")).unwrap();
+    assert_eq!(original, copied);
+}
+
+#[test]
+fn edit_with_an_id_opens_the_configured_editor() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .env("EDITOR", "true")
+        .args(["edit", "starter/hello"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn edit_of_an_unknown_kata_is_a_clean_error() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .env("EDITOR", "true")
+        .args(["edit", "starter/nope"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("no such kata"));
+}
+
+#[test]
+fn history_on_a_fresh_home_says_so() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .arg("history")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no run history"));
+}
+
+#[test]
+fn history_lists_a_run_and_the_json_form_is_valid_json() {
+    let home = tempfile::tempdir().unwrap();
+    kadou_in(home.path())
+        .args(["run", "starter/hello"])
+        .assert()
+        .success();
+
+    kadou_in(home.path())
+        .arg("history")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("starter/hello"))
+        .stdout(predicate::str::contains("success"));
+
+    let output = kadou_in(home.path())
+        .args(["history", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let records: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(records[0]["id"], "starter/hello");
+}
+
+#[test]
+fn completion_prints_a_bash_script() {
+    kadou()
+        .args(["completion", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("complete"));
+}
+
+#[test]
+fn run_off_a_tty_with_a_missing_required_arg_still_fails_cleanly_not_hangs() {
+    // §7.3's TTY prompt for a missing required arg must not fire off a TTY -- resolve_args's
+    // own MissingArg error is unchanged.
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".config/kadou/kata/ops")).unwrap();
+    std::fs::write(
+        home.path().join(".config/kadou/kata/ops/needs-arg.sh"),
+        "#!/bin/sh\n# ---\n# about: Needs an arg\n# risk:  low\n# args:\n#   branch: text\n# ---\necho \"${BRANCH}\"\n",
+    )
+    .unwrap();
+
+    kadou_in(home.path())
+        .args(["run", "ops/needs-arg"])
+        .write_stdin("")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "required arg `branch` has no value",
+        ));
+}
+
+#[test]
+fn completion_rejects_an_unknown_shell() {
+    kadou()
+        .args(["completion", "cobol"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("unknown shell"));
 }

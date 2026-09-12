@@ -49,8 +49,8 @@ pub fn filter<'a>(query: &str, candidates: &'a [PickCandidate]) -> Vec<&'a PickC
         }
     }
 
-    id_matches.sort_by(|a, b| b.0.cmp(&a.0));
-    about_matches.sort_by(|a, b| b.0.cmp(&a.0));
+    id_matches.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+    about_matches.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
     id_matches
         .into_iter()
         .chain(about_matches)

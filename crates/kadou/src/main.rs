@@ -17,6 +17,9 @@ mod ui;
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+    /// Force plain output even on a TTY (§7 rule 3; `NO_COLOR` does the same).
+    #[arg(long, global = true)]
+    plain: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -88,6 +91,8 @@ enum Command {
     History {
         #[arg(long)]
         limit: Option<u32>,
+        #[arg(long)]
+        json: bool,
     },
     /// Manage agent grants.
     Grant(GrantCommand),
@@ -229,15 +234,10 @@ enum McpAction {
 
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
+    let plain = cli.plain;
 
     match cli.command {
-        // Decision D6 (§7.4, §9 slice 6): the bare `kadou` frame is a stub until slice 8, but
-        // it still scans kata (the "1 folder · 5 kata" preview it'll print), so it still
-        // materializes the starter kata on a fresh home.
-        None => {
-            commands::materialize_starter_for_bare_invocation();
-            stub("kadou", 8, None)
-        }
+        None => commands::run_bare(plain),
         Some(Command::Version) => {
             println!("kadou {}", env!("CARGO_PKG_VERSION"));
             std::process::ExitCode::SUCCESS
@@ -246,35 +246,20 @@ fn main() -> std::process::ExitCode {
         Some(Command::Check {
             folder_or_path,
             verbose,
-        }) => commands::run_check(folder_or_path, verbose),
+        }) => commands::run_check(folder_or_path, verbose, plain),
         Some(Command::Import { dir, as_folder }) => commands::run_import(dir, as_folder),
-        Some(Command::Run(args)) => {
-            commands::run_run(args.id, args.kv, args.dry_run, args.confirm, args.ask)
-        }
-        Some(Command::Show { id }) => commands::run_show(id),
-        Some(Command::Vault(cmd)) => match cmd.action {
-            VaultAction::Set { name, plain } => commands::run_vault_set(name, plain),
-            VaultAction::List => commands::run_vault_list(),
-            VaultAction::Rm { name } => commands::run_vault_rm(name),
-        },
-        Some(Command::Grant(cmd)) => match cmd.action {
-            GrantAction::List => commands::run_grant_list(),
-            GrantAction::Show { pending_id } => commands::run_grant_show(pending_id),
-            GrantAction::Approve {
-                pending_id,
-                confirm,
-            } => commands::run_grant_approve(pending_id, confirm),
-            GrantAction::Deny { pending_id } => commands::run_grant_deny(pending_id),
-            GrantAction::Allow { id, any_version } => commands::run_grant_allow(id, any_version),
-        },
-        Some(Command::Mcp(cmd)) => match cmd.action {
-            McpAction::Serve {
-                transport,
-                bind,
-                max_risk,
-            } => commands::run_mcp_serve(transport, bind, max_risk),
-            McpAction::Schema { bytes } => commands::run_mcp_schema(bytes),
-        },
+        Some(Command::Run(args)) => commands::run_run(
+            args.id,
+            args.kv,
+            args.dry_run,
+            args.confirm,
+            args.ask,
+            plain,
+        ),
+        Some(Command::Show { id }) => commands::run_show(id, plain),
+        Some(Command::Vault(cmd)) => dispatch_vault(cmd.action),
+        Some(Command::Grant(cmd)) => dispatch_grant(cmd.action),
+        Some(Command::Mcp(cmd)) => dispatch_mcp(cmd.action),
         // A4: each still-stubbed variant names its own (label, slice) right in its own arm,
         // rather than in a second match that has to be kept in sync with this one by hand —
         // an already-dispatched variant added here would be a normal "duplicate match arm"
@@ -288,12 +273,44 @@ fn main() -> std::process::ExitCode {
         Some(Command::Update { folder }) => commands::run_update(folder),
         Some(Command::Remove { folder, yes, force }) => commands::run_remove(folder, yes, force),
         Some(Command::Accept { id, into, yes }) => commands::run_accept(id, into, yes),
-        Some(cmd @ Command::New { .. }) => stub("new", 8, Some(&cmd)),
-        Some(cmd @ Command::Edit { .. }) => stub("edit", 8, Some(&cmd)),
+        Some(Command::New { id, from }) => commands::run_new(id, from),
+        Some(Command::Edit { id }) => commands::run_edit(id, plain),
+        Some(Command::History { limit, json }) => commands::run_history(limit, json),
+        Some(Command::Completion { shell }) => commands::run_completion(&shell),
         Some(cmd @ Command::Trust { .. }) => stub("trust", 5, Some(&cmd)),
-        Some(cmd @ Command::History { .. }) => stub("history", 5, Some(&cmd)),
         Some(cmd @ Command::Mine(_)) => stub("mine", 9, Some(&cmd)),
-        Some(cmd @ Command::Completion { .. }) => stub("completion", 8, Some(&cmd)),
+    }
+}
+
+fn dispatch_vault(action: VaultAction) -> std::process::ExitCode {
+    match action {
+        VaultAction::Set { name, plain } => commands::run_vault_set(name, plain),
+        VaultAction::List => commands::run_vault_list(),
+        VaultAction::Rm { name } => commands::run_vault_rm(name),
+    }
+}
+
+fn dispatch_grant(action: GrantAction) -> std::process::ExitCode {
+    match action {
+        GrantAction::List => commands::run_grant_list(),
+        GrantAction::Show { pending_id } => commands::run_grant_show(pending_id),
+        GrantAction::Approve {
+            pending_id,
+            confirm,
+        } => commands::run_grant_approve(pending_id, confirm),
+        GrantAction::Deny { pending_id } => commands::run_grant_deny(pending_id),
+        GrantAction::Allow { id, any_version } => commands::run_grant_allow(id, any_version),
+    }
+}
+
+fn dispatch_mcp(action: McpAction) -> std::process::ExitCode {
+    match action {
+        McpAction::Serve {
+            transport,
+            bind,
+            max_risk,
+        } => commands::run_mcp_serve(transport, bind, max_risk),
+        McpAction::Schema { bytes } => commands::run_mcp_schema(bytes),
     }
 }
 

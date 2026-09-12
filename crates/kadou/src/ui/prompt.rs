@@ -47,10 +47,7 @@ mod tests {
     #[test]
     fn a_required_arg_falls_back_to_the_last_used_value() {
         let arg = arg_with_default(None);
-        assert_eq!(
-            prefill(&arg, Some("25.6.1.2")).as_deref(),
-            Some("25.6.1.2")
-        );
+        assert_eq!(prefill(&arg, Some("25.6.1.2")).as_deref(), Some("25.6.1.2"));
     }
 
     #[test]

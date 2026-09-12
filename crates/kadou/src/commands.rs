@@ -4,8 +4,10 @@
 
 use std::collections::BTreeMap;
 use std::io::IsTerminal as _;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{Duration, SystemTime};
 
 use kadou_core::history::current_initiator;
 use kadou_core::runner::{RunOneRequest, run_one_blocking};
@@ -17,6 +19,7 @@ use kadou_mcp::pending::{self, PendingRecord, PendingStore};
 
 use crate::confirm::{self, ConfirmOutcome};
 use crate::starter;
+use crate::ui;
 
 /// Resolves [`KadouPaths`] from the real process environment, printing a fatal error and
 /// exiting on failure. `KADOU_HOME` isolates every path for tests (§7.6).
@@ -100,11 +103,155 @@ fn materialize_starter(paths: &KadouPaths) {
     }
 }
 
-/// The bare `kadou` frame (a stub until slice 8) still scans kata for its preview, so it still
-/// needs decision D6's materialize-on-scan behavior; `main.rs` calls this before printing the
-/// stub message.
-pub fn materialize_starter_for_bare_invocation() {
-    materialize_starter(&resolve_paths());
+/// `styled` from injected TTY/`NO_COLOR`/`--plain` state -- the one call site every command
+/// that prints a frame goes through (`ui::style::use_color`'s own doc comment).
+fn styled_for_stdout(plain: bool) -> bool {
+    ui::style::use_color(
+        std::io::stdout().is_terminal(),
+        std::env::var_os("NO_COLOR").is_some(),
+        plain,
+    )
+}
+
+/// "4m ago"'s input: how long ago `rfc3339` was, saturating to zero on a clock skew or a
+/// malformed timestamp rather than erroring -- this is a display convenience (§7.2), never
+/// load-bearing.
+fn elapsed_since(rfc3339: &str) -> Duration {
+    humantime::parse_rfc3339(rfc3339)
+        .ok()
+        .and_then(|then| SystemTime::now().duration_since(then).ok())
+        .unwrap_or_default()
+}
+
+/// One folder's row for the bare frame: kata filtered to the human ceiling (§6.2 [CLI]), and
+/// health from `kadou check`'s own error count plus whether the folder is a git checkout
+/// (§9 slice 8 "folder health (git ✓ or ✗ N errors)").
+fn build_folder_row(
+    kata_dir: &Path,
+    name: &str,
+    ceiling: RiskLevel,
+    vault: &Vault,
+) -> ui::frame::FolderRow {
+    let error_count = kadou_core::check_folder(kata_dir, name, vault)
+        .map(|report| report.error_count())
+        .unwrap_or(0);
+    let git_backed = kadou_core::git::is_git_backed(&kata_dir.join(name));
+    let prefix = format!("{name}/");
+    let kata = match kadou_core::scan_folder(kata_dir, name) {
+        Ok(files) => files
+            .iter()
+            .filter_map(|file| {
+                let header = file.header.as_ref()?;
+                if header.risk > ceiling {
+                    return None;
+                }
+                Some(ui::frame::KataRow {
+                    name: file
+                        .id
+                        .strip_prefix(&prefix)
+                        .unwrap_or(&file.id)
+                        .to_string(),
+                    risk: header.risk,
+                    about: header.about.clone(),
+                })
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    ui::frame::FolderRow {
+        name: name.to_string(),
+        git_backed,
+        error_count,
+        kata,
+    }
+}
+
+/// The "needs you" grant rows: every still-outstanding pending record (§6.4 item 2), oldest
+/// first, the same order `kadou grant list` uses.
+fn build_grant_rows(paths: &KadouPaths) -> Vec<ui::frame::GrantRow> {
+    let store = PendingStore::new(&paths.state_dir);
+    let mut records: Vec<PendingRecord> = store
+        .list()
+        .into_iter()
+        .filter(PendingRecord::is_outstanding)
+        .collect();
+    records.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    records
+        .iter()
+        .map(|record| ui::frame::GrantRow {
+            short_id: pending::short_pending_id(&record.pending_id).to_string(),
+            kata_id: record.id.clone(),
+            args: render_args(&record.args),
+            client: record
+                .mcp_client
+                .clone()
+                .unwrap_or_else(|| "agent".to_string()),
+            elapsed: elapsed_since(&record.timestamp),
+        })
+        .collect()
+}
+
+/// The "needs you" draft rows: every waiting `proposed/`/`mined/` draft (§6.7). A proposed
+/// draft's fix line is `kadou accept <id>`; a mined draft has no folder of its own yet, so its
+/// fix line sends a human to `kadou mine review` instead (§7.2's own worked example).
+fn build_draft_rows(paths: &KadouPaths) -> Vec<ui::frame::DraftRow> {
+    kadou_mcp::scan_drafts(&paths.state_dir)
+        .into_iter()
+        .map(|draft| {
+            let action = match draft.id.strip_prefix("proposed/") {
+                Some(rest) => format!("kadou accept {rest}"),
+                None => "kadou mine review".to_string(),
+            };
+            ui::frame::DraftRow {
+                id: draft.id,
+                action,
+            }
+        })
+        .collect()
+}
+
+/// `kadou` with no arguments (§7.2, `09` §3.2, §9 slice 8): the library frame with folder
+/// health, the `needs you` block only when a grant or draft is waiting, and one kata per line
+/// tab-separated when piped.
+pub fn run_bare(plain: bool) -> ExitCode {
+    let paths = resolve_paths();
+    materialize_starter(&paths);
+    let config = load_config(&paths);
+    let vault = load_vault(&paths);
+    let kata_dir = paths.kata_dir();
+
+    let scanned = match kadou_core::scan_kata_dir(&kata_dir) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let folders = scanned
+        .iter()
+        .map(|(name, _)| {
+            let ceiling = kadou_core::visibility::human_ceiling(&config, name);
+            build_folder_row(&kata_dir, name, ceiling, &vault)
+        })
+        .collect();
+    let frame = ui::frame::BareFrame {
+        folders,
+        needs_you: ui::frame::NeedsYou {
+            grants: build_grant_rows(&paths),
+            drafts: build_draft_rows(&paths),
+        },
+    };
+
+    if !std::io::stdout().is_terminal() {
+        print!("{}", ui::frame::render_bare_piped(&frame));
+        return ExitCode::SUCCESS;
+    }
+    print!(
+        "{}",
+        ui::frame::render_bare(&frame, styled_for_stdout(plain))
+    );
+    ExitCode::SUCCESS
 }
 
 /// The human ceiling still applies regardless of the confirm protocol (§6.2, §6.3 "The human
@@ -312,19 +459,20 @@ pub fn run_list(query: Option<String>, folder: Option<String>, risk: Option<Stri
 /// `kadou check [folder|path] [-v]` — the loader (§4.7, decision 12). No argument checks
 /// every folder under `kata/`; a folder name checks just that folder; a filesystem path to
 /// a single kata file checks just that file.
-pub fn run_check(folder_or_path: Option<String>, verbose: bool) -> ExitCode {
+pub fn run_check(folder_or_path: Option<String>, verbose: bool, plain: bool) -> ExitCode {
     let paths = resolve_paths();
     materialize_starter(&paths);
     let kata_dir = paths.kata_dir();
     let display_root = paths.config_dir.clone();
     let vault = load_vault(&paths);
+    let styled = styled_for_stdout(plain);
 
     let Some(arg) = folder_or_path else {
-        return check_all(&kata_dir, &display_root, verbose, &vault);
+        return check_all(&kata_dir, &display_root, verbose, &vault, styled);
     };
 
     if kata_dir.join(&arg).is_dir() {
-        return check_one_folder(&kata_dir, &arg, &display_root, verbose, &vault);
+        return check_one_folder(&kata_dir, &arg, &display_root, verbose, &vault, styled);
     }
 
     let path = PathBuf::from(&arg);
@@ -337,7 +485,7 @@ pub fn run_check(folder_or_path: Option<String>, verbose: bool) -> ExitCode {
         let ok = report.is_ok();
         print!(
             "{}",
-            kadou_core::render_report(&report, &display_root, verbose)
+            colorized_report(&report, &display_root, verbose, styled)
         );
         return if ok {
             ExitCode::SUCCESS
@@ -351,14 +499,35 @@ pub fn run_check(folder_or_path: Option<String>, verbose: bool) -> ExitCode {
     ExitCode::from(2)
 }
 
-fn check_all(kata_dir: &Path, display_root: &Path, verbose: bool, vault: &Vault) -> ExitCode {
+/// `kadou check`'s diagnostics colors (§9 slice 8, `09` §3.5): `kadou_core::render_report`'s
+/// plain cargo-shaped text, recolored by severity when `styled` (never otherwise -- a script
+/// piping `kadou check` sees the exact bytes the loader produced).
+fn colorized_report(
+    report: &kadou_core::FolderReport,
+    display_root: &Path,
+    verbose: bool,
+    styled: bool,
+) -> String {
+    ui::frame::colorize_check_report(
+        &kadou_core::render_report(report, display_root, verbose),
+        styled,
+    )
+}
+
+fn check_all(
+    kata_dir: &Path,
+    display_root: &Path,
+    verbose: bool,
+    vault: &Vault,
+    styled: bool,
+) -> ExitCode {
     match kadou_core::check_all(kata_dir, vault) {
         Ok(mut report) => {
             for folder in &mut report.folders {
                 add_interpreter_warnings(folder);
                 print!(
                     "{}",
-                    kadou_core::render_report(folder, display_root, verbose)
+                    colorized_report(folder, display_root, verbose, styled)
                 );
             }
             if report.is_ok() {
@@ -380,13 +549,14 @@ fn check_one_folder(
     display_root: &Path,
     verbose: bool,
     vault: &Vault,
+    styled: bool,
 ) -> ExitCode {
     match kadou_core::check_folder(kata_dir, folder, vault) {
         Ok(mut report) => {
             add_interpreter_warnings(&mut report);
             print!(
                 "{}",
-                kadou_core::render_report(&report, display_root, verbose)
+                colorized_report(&report, display_root, verbose, styled)
             );
             if report.is_ok() {
                 ExitCode::SUCCESS
@@ -580,10 +750,13 @@ fn print_run_report_and_exit_code(
     resolved_args: &[kadou_core::ResolvedVar],
     config: &Config,
     state_dir: &Path,
+    styled: bool,
 ) -> ExitCode {
     for line in &report.output {
         println!("{line}");
     }
+    let history_short = pending::short_pending_id(&report.history_id);
+    let duration = Duration::from_millis(report.duration_ms);
     match report.status {
         kadou_exec::RunStatus::Success => {
             // Last-used args are a prefill convenience (§6.6 D5): args are never secret by
@@ -597,9 +770,26 @@ fn print_run_report_and_exit_code(
             {
                 eprintln!("warning: failed to save last-used args: {err}");
             }
+            print!(
+                "{}",
+                ui::frame::run_footer(&kata.id, true, 0, duration, history_short, styled)
+            );
             ExitCode::SUCCESS
         }
-        kadou_exec::RunStatus::Failed => ExitCode::FAILURE,
+        kadou_exec::RunStatus::Failed => {
+            print!(
+                "{}",
+                ui::frame::run_footer(
+                    &kata.id,
+                    false,
+                    report.exit_code.unwrap_or(1),
+                    duration,
+                    history_short,
+                    styled
+                )
+            );
+            ExitCode::FAILURE
+        }
         kadou_exec::RunStatus::TimedOut => {
             let timeout = kadou_exec::effective_timeout(kata.timeout, config.exec.timeout);
             eprintln!("error: {} timed out after {timeout:?}", kata.id);
@@ -622,13 +812,12 @@ struct RunPreparation {
     vault: Vault,
 }
 
-fn prepare_run(paths: &KadouPaths, id: &str, kv: &[String]) -> Result<RunPreparation, ExitCode> {
-    let provided = parse_kv(kv).map_err(|bad| {
-        eprintln!("error: invalid arg `{bad}`, expected key=value");
-        ExitCode::from(2)
-    })?;
-    let kata = find_kata_or_report(&paths.kata_dir(), id)?;
-    let resolved_args = kadou_core::resolve_args(&kata, &provided).map_err(|err| {
+fn prepare_run(
+    paths: &KadouPaths,
+    kata: Kata,
+    provided: &BTreeMap<String, String>,
+) -> Result<RunPreparation, ExitCode> {
+    let resolved_args = kadou_core::resolve_args(&kata, provided).map_err(|err| {
         eprintln!("error: {err}");
         ExitCode::from(2)
     })?;
@@ -649,15 +838,123 @@ fn prepare_run(paths: &KadouPaths, id: &str, kv: &[String]) -> Result<RunPrepara
 }
 
 /// The non-interactive replay line §6.3's confirm protocol prints on `NeedsConfirm`: the same
-/// invocation with `--confirm <id>` appended.
-fn build_replay_line(id: &str, kv: &[String]) -> String {
+/// invocation with `--confirm <id>` appended. Built from the final `provided` map (kv pairs
+/// plus anything a TTY prompt just filled in) so a replayed run carries everything the human
+/// just typed, not only what was on the original command line.
+fn build_replay_line(id: &str, provided: &BTreeMap<String, String>) -> String {
     let mut replay_line = format!("kadou run {id}");
-    for pair in kv {
-        replay_line.push(' ');
-        replay_line.push_str(pair);
+    for (name, value) in provided {
+        replay_line.push_str(&format!(" {name}={value}"));
     }
     replay_line.push_str(&format!(" --confirm {id}"));
     replay_line
+}
+
+fn int_validator(input: &str) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
+    if ui::prompt::is_valid_int(input) {
+        Ok(inquire::validator::Validation::Valid)
+    } else {
+        Ok(inquire::validator::Validation::Invalid(
+            "must be an integer".into(),
+        ))
+    }
+}
+
+/// The real `inquire` widget for one arg, chosen by its `ArgType` (§7.3 "A `bool` prompts
+/// `y/n`; an `int` rejects non-digits before `↵`; a `select` is a four-row picker").
+fn prompt_for_arg(
+    arg: &kadou_core::Arg,
+    prefill: Option<&str>,
+) -> Result<String, inquire::InquireError> {
+    use kadou_core::ArgType;
+    match &arg.ty {
+        ArgType::Bool => {
+            let default = prefill.and_then(|s| s.parse().ok()).unwrap_or(false);
+            inquire::Confirm::new(&arg.name)
+                .with_default(default)
+                .prompt()
+                .map(|value| value.to_string())
+        }
+        ArgType::Int => {
+            let mut text = inquire::Text::new(&arg.name).with_validator(int_validator);
+            if let Some(p) = prefill {
+                text = text.with_default(p);
+            }
+            text.prompt()
+        }
+        ArgType::Select { options } => {
+            let mut select = inquire::Select::new(&arg.name, options.clone());
+            if let Some(pos) = prefill.and_then(|p| options.iter().position(|o| o == p)) {
+                select = select.with_starting_cursor(pos);
+            }
+            select.prompt()
+        }
+        ArgType::Text => {
+            let mut text = inquire::Text::new(&arg.name);
+            if let Some(p) = prefill {
+                text = text.with_default(p);
+            }
+            text.prompt()
+        }
+    }
+}
+
+/// Prompts on a TTY for every arg named in `targets`, in header order, prefilled per D5
+/// (§6.6, §7.3): the header default when the arg has one, else the last-used value. A
+/// cancelled prompt (`esc`/Ctrl+c) is "cancelled", exit 130, same as every other interactive
+/// cancel in this CLI.
+fn prompt_for_args(
+    state_dir: &Path,
+    kata_id: &str,
+    targets: &[&kadou_core::Arg],
+    provided: &mut BTreeMap<String, String>,
+) -> Result<(), ExitCode> {
+    let last_used = LastArgsStore::new(state_dir).read(kata_id);
+    for arg in targets {
+        let prefill = ui::prompt::prefill(arg, last_used.get(&arg.name).map(String::as_str));
+        match prompt_for_arg(arg, prefill.as_deref()) {
+            Ok(value) => {
+                provided.insert(arg.name.clone(), value);
+            }
+            Err(_) => {
+                eprintln!("cancelled");
+                return Err(ExitCode::from(130));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `kadou run <id>`'s missing-required-arg prompts and `--ask`'s prompt-every-arg walk (§7.3):
+/// on a TTY, fills `provided` in place; off a TTY, `--ask` is a hard error (there is nothing to
+/// prompt with) while a missing required arg is left for `resolve_args`'s own `MissingArg`
+/// error to report, unchanged from before this slice.
+fn fill_args_interactively(
+    paths: &KadouPaths,
+    kata: &Kata,
+    provided: &mut BTreeMap<String, String>,
+    ask: bool,
+) -> Result<(), ExitCode> {
+    let targets: Vec<&kadou_core::Arg> = if ask {
+        kata.args.iter().collect()
+    } else {
+        kata.args
+            .iter()
+            .filter(|arg| arg.is_required() && !provided.contains_key(&arg.name))
+            .collect()
+    };
+    if targets.is_empty() {
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        if ask {
+            eprintln!("error: --ask needs a terminal");
+            eprintln!("  = kadou run {} [k=v...] [--dry-run]", kata.id);
+            return Err(ExitCode::from(2));
+        }
+        return Ok(());
+    }
+    prompt_for_args(&paths.state_dir, &kata.id, &targets, provided)
 }
 
 pub fn run_run(
@@ -666,24 +963,37 @@ pub fn run_run(
     dry_run: bool,
     confirm_flag: Option<String>,
     ask: bool,
+    plain: bool,
 ) -> ExitCode {
-    if ask {
-        eprintln!("error: 'run --ask' is not yet implemented (slice 8)");
-        eprintln!("  = kadou run <id> [k=v...] [--dry-run]");
-        return ExitCode::from(2);
-    }
+    let id = match id {
+        Some(id) => id,
+        None => match resolve_id_or_pick("run", plain) {
+            PickOutcome::Use(id) => id,
+            PickOutcome::Done(code) => return code,
+        },
+    };
 
-    let Some(id) = id else {
-        eprintln!("error: 'run' with no id is not yet implemented (slice 8)");
-        eprintln!("  = kadou run <id>, or kadou list");
-        return ExitCode::from(2);
+    let mut provided = match parse_kv(&kv) {
+        Ok(m) => m,
+        Err(bad) => {
+            eprintln!("error: invalid arg `{bad}`, expected key=value");
+            return ExitCode::from(2);
+        }
     };
 
     let paths = resolve_paths();
     materialize_starter(&paths);
     let config = load_config(&paths);
 
-    let mut prep = match prepare_run(&paths, &id, &kv) {
+    let kata = match find_kata_or_report(&paths.kata_dir(), &id) {
+        Ok(k) => k,
+        Err(code) => return code,
+    };
+    if let Err(code) = fill_args_interactively(&paths, &kata, &mut provided, ask) {
+        return code;
+    }
+
+    let mut prep = match prepare_run(&paths, kata, &provided) {
         Ok(p) => p,
         Err(code) => return code,
     };
@@ -697,7 +1007,7 @@ pub fn run_run(
     if let Err(code) = check_human_ceiling(&prep.kata, &config) {
         return code;
     }
-    let replay_line = build_replay_line(&id, &kv);
+    let replay_line = build_replay_line(&id, &provided);
     if let Err(code) = cli_confirm(&prep.kata, confirm_flag.as_deref(), &replay_line) {
         return code;
     }
@@ -706,6 +1016,34 @@ pub fn run_run(
         return code;
     }
 
+    execute_run(&paths, &config, &prep, plain)
+}
+
+/// The frame printed just before spawning (§9 slice 8, `09` §3.4): the resolved args and
+/// whether every need is satisfied, from the same data `run_one_cli` is about to use.
+fn run_frame_header(
+    kata: &Kata,
+    resolved_args: &[kadou_core::ResolvedVar],
+    resolved_needs: &[kadou_core::ResolvedNeed],
+    styled: bool,
+) -> String {
+    let args: Vec<(String, String)> = resolved_args
+        .iter()
+        .map(|arg| (arg.name.clone(), arg.value.clone()))
+        .collect();
+    let needs_satisfied = (!resolved_needs.is_empty())
+        .then(|| resolved_needs.iter().all(|need| need.value.is_some()));
+    ui::frame::run_header(&kata.id, kata.risk, &args, needs_satisfied, styled)
+}
+
+/// Prints the run header, spawns via `run_one_cli`, and prints the report/exit code -- the
+/// shared tail of `run_run` after every gate (ceiling, confirm, needs) has passed.
+fn execute_run(
+    paths: &KadouPaths,
+    config: &Config,
+    prep: &RunPreparation,
+    plain: bool,
+) -> ExitCode {
     let folder = prep
         .kata
         .id
@@ -713,9 +1051,20 @@ pub fn run_run(
         .next()
         .unwrap_or(&prep.kata.id)
         .to_string();
+    let styled = styled_for_stdout(plain);
+    print!(
+        "{}",
+        run_frame_header(
+            &prep.kata,
+            &prep.resolved_args,
+            &prep.resolved_needs,
+            styled
+        )
+    );
+
     match run_one_cli(
-        &paths,
-        &config,
+        paths,
+        config,
         &prep.kata,
         &folder,
         &prep.resolved_args,
@@ -726,8 +1075,9 @@ pub fn run_run(
             &report,
             &prep.kata,
             &prep.resolved_args,
-            &config,
+            config,
             &paths.state_dir,
+            styled,
         ),
         Err(err) => {
             eprintln!("error: {err}");
@@ -758,19 +1108,24 @@ fn fill_missing_needs_interactively(prep: &mut RunPreparation) -> Result<(), Exi
 }
 
 /// `kadou show <id>` (§9 slice 3 "`kadou show` printing the header fields, resolved args, env
-/// names, file path and sha256"). No picker for a missing id in this slice, same as `run`.
-pub fn run_show(id: Option<String>) -> ExitCode {
-    let Some(id) = id else {
-        eprintln!("error: 'show' with no id is not yet implemented (slice 8)");
-        eprintln!("  = kadou show <id>, or kadou list");
-        return ExitCode::from(2);
+/// names, file path and sha256"); no id opens the picker on a TTY (§7.3, §9 slice 8).
+pub fn run_show(id: Option<String>, plain: bool) -> ExitCode {
+    let id = match id {
+        Some(id) => id,
+        None => match resolve_id_or_pick("show", plain) {
+            PickOutcome::Use(id) => id,
+            PickOutcome::Done(code) => return code,
+        },
     };
+    show_kata_by_id(&id)
+}
 
+fn show_kata_by_id(id: &str) -> ExitCode {
     let paths = resolve_paths();
     materialize_starter(&paths);
     let config = load_config(&paths);
 
-    let kata = match find_kata_or_report(&paths.kata_dir(), &id) {
+    let kata = match find_kata_or_report(&paths.kata_dir(), id) {
         Ok(k) => k,
         Err(code) => return code,
     };
@@ -830,6 +1185,392 @@ pub fn run_show(id: Option<String>) -> ExitCode {
     println!();
     println!("env     {}", env_names.join(" "));
 
+    ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------------------
+// The inline picker glue (§7.3, `09` §3.3, §9 slice 8): the interactive raw-mode loop lives
+// here, over `ui::picker`'s pure filter/key/render functions -- see `ui::picker`'s own doc
+// comment for the split and why the loop itself is thin.
+// ---------------------------------------------------------------------------
+
+/// What opening the picker (or failing to) leaves the calling command to do.
+enum PickOutcome {
+    /// Continue the calling command with this id.
+    Use(String),
+    /// The picker already finished the whole command itself (showed, edited, or cancelled).
+    Done(ExitCode),
+}
+
+/// Every visible kata (§6.2 [CLI] human ceiling), the picker's candidate list (§7.3).
+fn build_pick_candidates(paths: &KadouPaths, config: &Config) -> Vec<ui::picker::PickCandidate> {
+    let scanned = kadou_core::scan_kata_dir(&paths.kata_dir()).unwrap_or_default();
+    let mut out = Vec::new();
+    for (name, files) in &scanned {
+        let ceiling = kadou_core::visibility::human_ceiling(config, name);
+        for file in files {
+            let Some(header) = &file.header else {
+                continue;
+            };
+            if header.risk > ceiling {
+                continue;
+            }
+            out.push(ui::picker::PickCandidate {
+                id: file.id.clone(),
+                about: header.about.clone(),
+                alias: header.alias.clone(),
+                risk: header.risk,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// `no id given and no terminal to pick one` (§7.3, `09` §3.6): the exact non-interactive form
+/// shared by `run`, `show`, and `edit`.
+fn no_terminal_to_pick(command: &str) -> ExitCode {
+    eprintln!("error: no kata id given and no terminal to pick one");
+    eprintln!("  = kadou {command} <id>, or kadou list");
+    ExitCode::from(2)
+}
+
+/// Opens the picker when both stdin and stdout are a real TTY, else the non-interactive error
+/// (§7.3). `command` names the calling command for the fix line and the picker's own header
+/// (`run which kata?`, `show which kata?`, `edit which kata?`).
+fn resolve_id_or_pick(command: &str, plain: bool) -> PickOutcome {
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        return PickOutcome::Done(no_terminal_to_pick(command));
+    }
+    let paths = resolve_paths();
+    materialize_starter(&paths);
+    let config = load_config(&paths);
+    let candidates = build_pick_candidates(&paths, &config);
+    let styled = styled_for_stdout(plain);
+
+    match run_picker_interactive(&paths, &candidates, command, styled) {
+        PickerOutcomeReal::Cancelled => {
+            eprintln!("cancelled");
+            PickOutcome::Done(ExitCode::from(130))
+        }
+        PickerOutcomeReal::Selected(id) => PickOutcome::Use(id),
+        PickerOutcomeReal::ShowFull(id) => PickOutcome::Done(show_kata_by_id(&id)),
+        PickerOutcomeReal::EditAndReturn(id) => PickOutcome::Done(edit_kata_by_id(&id)),
+    }
+}
+
+/// The real terminal outcome of one picker session -- [`ui::picker::PickerAction`] resolved
+/// against the candidate list it fired on.
+enum PickerOutcomeReal {
+    Cancelled,
+    Selected(String),
+    ShowFull(String),
+    EditAndReturn(String),
+}
+
+/// Maps one raw terminal key event to [`ui::picker::PickerKey`], `None` for a key the picker
+/// doesn't handle (function keys, mouse events, a key-release on a platform that reports one).
+fn map_key(key: crossterm::event::KeyEvent) -> Option<ui::picker::PickerKey> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    if key.kind != crossterm::event::KeyEventKind::Press {
+        return None;
+    }
+    match key.code {
+        KeyCode::Esc => Some(ui::picker::PickerKey::Escape),
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(ui::picker::PickerKey::Escape)
+        }
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(ui::picker::PickerKey::Up)
+        }
+        KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(ui::picker::PickerKey::Down)
+        }
+        KeyCode::Up => Some(ui::picker::PickerKey::Up),
+        KeyCode::Down => Some(ui::picker::PickerKey::Down),
+        KeyCode::Enter => Some(ui::picker::PickerKey::Enter),
+        KeyCode::Tab => Some(ui::picker::PickerKey::Tab),
+        KeyCode::Backspace => Some(ui::picker::PickerKey::Backspace),
+        KeyCode::Char(c) => Some(ui::picker::PickerKey::Char(c)),
+        _ => None,
+    }
+}
+
+/// The preview block for one candidate: needs/args summaries plus the file and its short
+/// sha256, the same fields `kadou show` prints (§7.3 "the highlighted kata's header shows
+/// below the list").
+fn build_preview(
+    kata_dir: &Path,
+    candidate: &ui::picker::PickCandidate,
+    vault: &Vault,
+) -> Option<ui::picker::Preview> {
+    let LookupResult::Found(kata) = kadou_core::find_kata(kata_dir, &candidate.id).ok()? else {
+        return None;
+    };
+    let needs = kadou_core::resolve_needs(&kata, vault)
+        .into_iter()
+        .map(|n| ui::picker::PreviewNeed {
+            name: n.name,
+            satisfied: n.value.is_some(),
+        })
+        .collect();
+    let args = kata
+        .args
+        .iter()
+        .map(|arg| {
+            let summary = if arg.is_required() {
+                "required".to_string()
+            } else {
+                "optional".to_string()
+            };
+            ui::picker::PreviewArg {
+                name: arg.name.clone(),
+                summary,
+            }
+        })
+        .collect();
+    let sha_short = kadou_core::file_sha256(&kata.path)
+        .map(|s| s.chars().take(12).collect())
+        .unwrap_or_default();
+    Some(ui::picker::Preview {
+        id: kata.id.clone(),
+        risk: kata.risk,
+        about: kata.about.clone(),
+        needs,
+        args,
+        file: kata.path.display().to_string(),
+        sha_short,
+    })
+}
+
+/// Renders one frame of the picker (list plus preview) into `out`, replacing `\n` with `\r\n`
+/// so it draws correctly in raw mode.
+fn render_picker_frame(
+    kata_dir: &Path,
+    vault: &Vault,
+    command: &str,
+    state: &ui::picker::PickerState,
+    matches: &[&ui::picker::PickCandidate],
+    styled: bool,
+) -> String {
+    let mut block = ui::picker::render_list(command, &state.query, matches, styled);
+    if let Some(top) = matches.first()
+        && let Some(preview) = build_preview(kata_dir, top, vault)
+    {
+        block.push_str(&ui::picker::render_preview(&preview, styled));
+    }
+    block.replace('\n', "\r\n")
+}
+
+/// The raw-mode event loop: draw, read one key, apply it, repeat. Deliberately thin -- every
+/// decision (filtering, ranking, key handling, rendering) is a pure, already-tested function
+/// in `ui::picker`; this function is real-terminal glue only, verified manually over a pty
+/// (`CLAUDE.md` forced verification), not by `cargo test`.
+fn run_picker_interactive(
+    paths: &KadouPaths,
+    candidates: &[ui::picker::PickCandidate],
+    command: &str,
+    styled: bool,
+) -> PickerOutcomeReal {
+    let vault = load_vault(paths);
+    let mut state = ui::picker::PickerState::default();
+    let mut stdout = std::io::stdout();
+    let _ = crossterm::terminal::enable_raw_mode();
+    let mut last_lines: u16 = 0;
+
+    let outcome = loop {
+        let matches = ui::picker::filter(&state.query, candidates);
+        clear_picker_frame(&mut stdout, last_lines);
+        let frame =
+            render_picker_frame(&paths.kata_dir(), &vault, command, &state, &matches, styled);
+        last_lines = u16::try_from(frame.lines().count()).unwrap_or(u16::MAX);
+        let _ = write!(stdout, "\r{frame}");
+        let _ = stdout.flush();
+
+        let Ok(crossterm::event::Event::Key(key)) = crossterm::event::read() else {
+            continue;
+        };
+        let Some(picker_key) = map_key(key) else {
+            continue;
+        };
+        match ui::picker::apply_key(&mut state, picker_key, matches.len()) {
+            ui::picker::PickerAction::Continue => {}
+            ui::picker::PickerAction::Select(i) => {
+                break PickerOutcomeReal::Selected(matches[i].id.clone());
+            }
+            ui::picker::PickerAction::ShowFull(i) => {
+                break PickerOutcomeReal::ShowFull(matches[i].id.clone());
+            }
+            ui::picker::PickerAction::EditAndReturn(i) => {
+                break PickerOutcomeReal::EditAndReturn(matches[i].id.clone());
+            }
+            ui::picker::PickerAction::Cancel => break PickerOutcomeReal::Cancelled,
+        }
+    };
+
+    clear_picker_frame(&mut stdout, last_lines);
+    let _ = stdout.flush();
+    let _ = crossterm::terminal::disable_raw_mode();
+    outcome
+}
+
+/// Moves the cursor back up over the picker's last drawn frame and clears each line, so the
+/// next draw (or the shell prompt, on exit) starts clean -- no alternate screen, no lost
+/// scrollback (§7 rule 6).
+fn clear_picker_frame(stdout: &mut std::io::Stdout, lines: u16) {
+    use crossterm::QueueableCommand as _;
+    for _ in 0..lines {
+        let _ = stdout.queue(crossterm::cursor::MoveUp(1));
+        let _ = stdout.queue(crossterm::terminal::Clear(
+            crossterm::terminal::ClearType::CurrentLine,
+        ));
+    }
+}
+
+/// `kadou edit <id>` opens the kata file in `$EDITOR`; no id opens the picker on a TTY (§7.1,
+/// §7.3, §9 slice 8).
+pub fn run_edit(id: Option<String>, plain: bool) -> ExitCode {
+    let id = match id {
+        Some(id) => id,
+        None => match resolve_id_or_pick("edit", plain) {
+            PickOutcome::Use(id) => id,
+            PickOutcome::Done(code) => return code,
+        },
+    };
+    edit_kata_by_id(&id)
+}
+
+fn edit_kata_by_id(id: &str) -> ExitCode {
+    let paths = resolve_paths();
+    materialize_starter(&paths);
+    let kata = match find_kata_or_report(&paths.kata_dir(), id) {
+        Ok(k) => k,
+        Err(code) => return code,
+    };
+    spawn_editor(&kata.path)
+}
+
+/// Opens `path` in `$EDITOR` (`vi` when unset), waiting for it to exit. A non-TTY caller has
+/// no business launching an interactive editor -- callers that need that check (`kadou new`)
+/// do it themselves before calling this.
+fn spawn_editor(path: &Path) -> ExitCode {
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    match std::process::Command::new(&editor).arg(path).status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(status) => {
+            eprintln!("error: {editor} exited with {status}");
+            ExitCode::FAILURE
+        }
+        Err(err) => {
+            eprintln!(
+                "error: failed to launch {editor} on {}: {err}",
+                path.display()
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The template `kadou new` writes for a fresh kata (`.claude/skills/create-kata/SKILL.md`'s
+/// own template, §4.3's six-key grammar): `about`/`risk` only, `set -eu`, a `main` function --
+/// the smallest header that passes `kadou check` unedited.
+fn new_kata_template(name: &str) -> String {
+    format!(
+        "#!/bin/sh\n# ---\n# about: TODO: describe {name}\n# risk:  low\n# ---\nset -eu\n\nmain() {{\n  echo \"TODO: implement {name}\"\n}}\n\nmain \"$@\"\n"
+    )
+}
+
+/// `kadou new <folder/name> [--from <id>]` (§7.1, §7.3, §9 slice 8): writes the header
+/// template (or a copy of `--from`'s source) and opens `$EDITOR`, skipping the editor off a
+/// TTY so scripting `kadou new` never blocks on an interactive program.
+pub fn run_new(id: String, from: Option<String>) -> ExitCode {
+    let paths = resolve_paths();
+    materialize_starter(&paths);
+    let kata_dir = paths.kata_dir();
+    let target = kata_dir.join(format!("{id}.sh"));
+
+    if target.exists() {
+        eprintln!("error: {id} already exists");
+        eprintln!("  = kadou edit {id}, or pick a different name");
+        return ExitCode::from(2);
+    }
+
+    let source = match from {
+        Some(from_id) => match find_kata_or_report(&kata_dir, &from_id) {
+            Ok(kata) => match std::fs::read_to_string(&kata.path) {
+                Ok(text) => text,
+                Err(err) => {
+                    eprintln!("error: failed to read {}: {err}", kata.path.display());
+                    return ExitCode::FAILURE;
+                }
+            },
+            Err(code) => return code,
+        },
+        None => {
+            let name = id.rsplit('/').next().unwrap_or(&id);
+            new_kata_template(name)
+        }
+    };
+
+    if let Some(parent) = target.parent()
+        && let Err(err) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("error: failed to create {}: {err}", parent.display());
+        return ExitCode::FAILURE;
+    }
+    if let Err(err) = std::fs::write(&target, source) {
+        eprintln!("error: failed to write {}: {err}", target.display());
+        return ExitCode::FAILURE;
+    }
+    println!("wrote {}", target.display());
+
+    if !std::io::stdin().is_terminal() {
+        return ExitCode::SUCCESS;
+    }
+    spawn_editor(&target)
+}
+
+/// `kadou history [--limit N] [--json]` (§7.1, §9 slice 8): the newest records, newest first.
+pub fn run_history(limit: Option<u32>, json: bool) -> ExitCode {
+    let paths = resolve_paths();
+    let store = kadou_core::history::HistoryStore::new(&paths.state_dir);
+    let limit = limit.unwrap_or(20) as usize;
+    let records = store.list_recent(limit);
+
+    if json {
+        match serde_json::to_string(&records) {
+            Ok(text) => println!("{text}"),
+            Err(err) => {
+                eprintln!("error: failed to serialize history: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    if records.is_empty() {
+        println!("no run history");
+        return ExitCode::SUCCESS;
+    }
+    for record in &records {
+        println!(
+            "{:<36} {:<28} {:<9} {} ({})",
+            record.history_id, record.id, record.status, record.start_time, record.interface
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// `kadou completion <shell>` (§7.1, §7.3, §9 slice 8) via `clap_complete`.
+pub fn run_completion(shell: &str) -> ExitCode {
+    let Ok(shell) = shell.parse::<clap_complete::Shell>() else {
+        eprintln!("error: unknown shell `{shell}`");
+        eprintln!("  = one of: bash, elvish, fish, powershell, zsh");
+        return ExitCode::from(2);
+    };
+    let mut cmd = <crate::Cli as clap::CommandFactory>::command();
+    let name = cmd.get_name().to_string();
+    clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
     ExitCode::SUCCESS
 }
 
@@ -1375,6 +2116,11 @@ pub fn run_grant_approve(pending_id: String, confirm_flag: Option<String>) -> Ex
     // Approval runs in the CLI's own full environment (§6.4 item 5 "Approval runs in the
     // human CLI's environment (full parent env, not the MCP server's allowlisted one)").
     let config = load_config(&paths);
+    let styled = styled_for_stdout(false);
+    print!(
+        "{}",
+        run_frame_header(&kata, &resolved_args, &resolved_needs, styled)
+    );
     match run_one_cli(
         &paths,
         &config,
@@ -1392,6 +2138,7 @@ pub fn run_grant_approve(pending_id: String, confirm_flag: Option<String>) -> Ex
                 &resolved_args,
                 &config,
                 &paths.state_dir,
+                styled,
             )
         }
         Err(err) => {

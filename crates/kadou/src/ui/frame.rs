@@ -219,7 +219,7 @@ pub fn render_bare(frame: &BareFrame, styled: bool) -> String {
     );
     if let Some(needs_you) = needs_you_header(&frame.needs_you) {
         out.push_str("                  ");
-        out.push_str(&needs_you);
+        out.push_str(&style::bold(&needs_you, styled));
     }
     out.push('\n');
 

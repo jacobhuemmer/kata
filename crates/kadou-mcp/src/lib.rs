@@ -15,7 +15,7 @@ pub mod state;
 mod tools;
 mod visibility;
 
-pub use drafts::{AcceptError, AcceptPreparation, apply_accept, prepare_accept};
+pub use drafts::{AcceptError, AcceptPreparation, apply_accept, prepare_accept, scan_drafts};
 pub use server::KadouMcpServer;
 pub use state::ServerState;
 
