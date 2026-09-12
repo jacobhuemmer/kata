@@ -12,6 +12,7 @@
 
 pub mod cluster;
 pub mod extract;
+pub mod ingest;
 pub mod model;
 pub mod normalize;
 pub mod parse;
