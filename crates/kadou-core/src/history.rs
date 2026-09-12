@@ -168,7 +168,16 @@ impl HistoryStore {
     /// than aborting the whole listing; a missing `records/` directory (a fresh home) lists as
     /// empty.
     pub fn list_recent(&self, limit: usize) -> Vec<HistoryRecord> {
-        todo!()
+        let mut records: Vec<HistoryRecord> = std::fs::read_dir(self.records_dir())
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .filter_map(|text| serde_json::from_str(&text).ok())
+            .collect();
+        records.sort_by(|a: &HistoryRecord, b: &HistoryRecord| b.start_time.cmp(&a.start_time));
+        records.truncate(limit);
+        records
     }
 }
 
