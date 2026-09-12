@@ -1,16 +1,20 @@
 //! Per-agent native-transcript parsers (`docs/design/06-session-mining.md` §1.5, §2.2). Each
-//! parser binds to the key paths sketched there and extracts only the shell-invocation shape
-//! (`Kind::Shell`); `Write`/`FileChange` script-file and fenced-script extraction (§2.3's
-//! other two kinds) are out of scope for this slice -- shell invocations are the dominant,
-//! highest-value source per the `06` §1 survey, and the fixture/pipeline tests below only
-//! need this kind to reproduce the §6.2 worked example.
+//! parser binds to the key paths sketched there. Claude extracts all three `06` §2.3 kinds:
+//! `Bash` tool calls (`Kind::Shell`), a `Write` whose path ends `.sh`/`.bash` (`Kind::
+//! ScriptFile`), and a fenced `sh`/`bash`/`shell` code block in an assistant `text` block
+//! (`Kind::ScriptFence`) -- the kind that decides whether a Claude session yields anything at
+//! all once shell-invocation retention is as thin as `06` §4.7 measures it. Codex/Grok/Cursor
+//! still extract only the shell-invocation shape: their §1.5 schema sketches show no `text`/
+//! file-write shape to bind a fence or script-file extractor to, and Codex alone already
+//! retains ~99% of its shell invocations (`06` §1.4), so this is a documented scope choice for
+//! this slice, not an oversight -- see the handoff.
 //!
 //! Every parser drops (never persists) `stdout`/`stderr`/`toolUseResult` -- it never even reads
 //! those keys -- matching `06` §2.3 "Drop: ... tool stdout/stderr".
 
 use serde_json::Value;
 
-use crate::model::{Agent, RawShellEvent};
+use crate::model::{Agent, EventKind, RawShellEvent};
 
 #[cfg(test)]
 mod tests;
@@ -23,19 +27,89 @@ fn line_when(value: &Value) -> String {
         .to_string()
 }
 
+/// `true` when `path` names a shell script by extension (`06` §2.3 "generated script file ...
+/// ending in .sh / .bash").
+fn is_shell_script_path(path: &str) -> bool {
+    path.ends_with(".sh") || path.ends_with(".bash")
+}
+
+/// Finds every fenced code block in `text` tagged `sh`/`bash`/`shell` and returns each one's
+/// raw body, one entry per fence (`06` §2.3 "fenced script: assistant markdown fences ...
+/// tagged sh/bash/shell"). The `>=3` command-line rule is `extract`'s job, not this parser's --
+/// this only recovers candidate fences for extraction to filter.
+fn fenced_scripts(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let Some(lang) = line.trim_start().strip_prefix("```") else {
+            continue;
+        };
+        if !matches!(
+            lang.trim().to_ascii_lowercase().as_str(),
+            "sh" | "bash" | "shell"
+        ) {
+            continue;
+        }
+        let mut body = String::new();
+        for inner in lines.by_ref() {
+            if inner.trim_start().starts_with("```") {
+                break;
+            }
+            if !body.is_empty() {
+                body.push('\n');
+            }
+            body.push_str(inner);
+        }
+        out.push(body);
+    }
+    out
+}
+
 fn claude_line(value: &Value, when: &str, out: &mut Vec<RawShellEvent>) {
     let Some(content) = value.pointer("/message/content").and_then(Value::as_array) else {
         return;
     };
     for item in content {
-        if item.get("type").and_then(Value::as_str) == Some("tool_use")
-            && item.get("name").and_then(Value::as_str) == Some("Bash")
+        let item_type = item.get("type").and_then(Value::as_str);
+        let name = item.get("name").and_then(Value::as_str);
+
+        if item_type == Some("tool_use")
+            && name == Some("Bash")
             && let Some(command) = item.pointer("/input/command").and_then(Value::as_str)
         {
             out.push(RawShellEvent {
                 command: command.to_string(),
                 when: when.to_string(),
+                kind: EventKind::Shell,
             });
+        }
+
+        if item_type == Some("tool_use") && name == Some("Write") {
+            let file_path = item
+                .pointer("/input/file_path")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if is_shell_script_path(file_path)
+                && let Some(body) = item.pointer("/input/content").and_then(Value::as_str)
+            {
+                out.push(RawShellEvent {
+                    command: body.to_string(),
+                    when: when.to_string(),
+                    kind: EventKind::ScriptFile,
+                });
+            }
+        }
+
+        if item_type == Some("text")
+            && let Some(text) = item.get("text").and_then(Value::as_str)
+        {
+            for body in fenced_scripts(text) {
+                out.push(RawShellEvent {
+                    command: body,
+                    when: when.to_string(),
+                    kind: EventKind::ScriptFence,
+                });
+            }
         }
     }
 }
@@ -50,6 +124,7 @@ fn codex_line(value: &Value, when: &str, out: &mut Vec<RawShellEvent>) {
         out.push(RawShellEvent {
             command: command.to_string(),
             when: when.to_string(),
+            kind: EventKind::Shell,
         });
     }
 }
@@ -65,6 +140,7 @@ fn grok_line(value: &Value, when: &str, out: &mut Vec<RawShellEvent>) {
             out.push(RawShellEvent {
                 command: command.to_string(),
                 when: when.to_string(),
+                kind: EventKind::Shell,
             });
         }
     }
@@ -82,6 +158,7 @@ fn cursor_line(value: &Value, when: &str, out: &mut Vec<RawShellEvent>) {
             out.push(RawShellEvent {
                 command: command.to_string(),
                 when: when.to_string(),
+                kind: EventKind::Shell,
             });
         }
     }

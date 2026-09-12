@@ -2,7 +2,7 @@
 //! Operates on one session's raw shell events; the caller (ingest/orchestration) calls this
 //! once per session.
 
-use crate::model::RawShellEvent;
+use crate::model::{EventKind, RawShellEvent};
 use crate::redact::RuleId;
 
 #[cfg(test)]
@@ -59,12 +59,48 @@ struct Building {
     last_when: String,
 }
 
+/// Splits a `ScriptFile`/`ScriptFence` event's whole script body into candidate command lines
+/// (`06` §2.3): strips a leading shebang and any blank or comment-only line. `#!/bin/sh` starts
+/// with `#`, so the one filter drops both the shebang and ordinary comments.
+fn script_command_lines(body: &str) -> Vec<String> {
+    body.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// A `ScriptFile`/`ScriptFence` event is already a self-contained multi-step sequence (`06`
+/// §2.3) -- unlike `Shell`, it is never grouped with neighboring events by time gap.
+/// `ScriptFence` additionally needs `>=3` resulting command lines (`06` §2.3's own fence rule,
+/// there to exclude a one- or two-line snippet that isn't really automation); `ScriptFile` has
+/// no such minimum. Returns `None` when the body has no usable command lines at all.
+fn script_event_sequence(event: &RawShellEvent) -> Option<RawSequence> {
+    let steps = script_command_lines(&event.command);
+    if steps.is_empty() {
+        return None;
+    }
+    if event.kind == EventKind::ScriptFence && steps.len() < 3 {
+        return None;
+    }
+    Some(RawSequence {
+        steps,
+        when: event.when.clone(),
+    })
+}
+
 /// Groups one session's raw shell events into sequences, drops noise-only single-step
 /// sequences, and drops any sequence containing an apparent secret in any step (`06` §2.3).
 pub fn extract_sequences(events: &[RawShellEvent]) -> Vec<RawSequence> {
     let mut building: Vec<Building> = Vec::new();
+    let mut script_sequences: Vec<RawSequence> = Vec::new();
 
     for event in events {
+        if event.kind != EventKind::Shell {
+            script_sequences.extend(script_event_sequence(event));
+            continue;
+        }
+
         let starts_new = match building.last() {
             Some(last) => seconds_between(&last.last_when, &event.when)
                 .is_none_or(|gap| gap >= SEQUENCE_GAP_SECONDS),
@@ -89,6 +125,7 @@ pub fn extract_sequences(events: &[RawShellEvent]) -> Vec<RawSequence> {
             steps: b.steps,
             when: b.first_when,
         })
+        .chain(script_sequences)
         .filter(|seq| !(seq.steps.len() == 1 && is_noise_command(&seq.steps[0])))
         .filter(|seq| !seq.steps.iter().any(|step| looks_like_a_secret(step)))
         .collect()
