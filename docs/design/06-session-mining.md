@@ -485,44 +485,36 @@ Do not hook `Stop`. The archive already learned that lesson.
 
 ### 3.3 Checkpoints
 
-```
-$DOPS_HOME/mine/state.json
-```
+**Amended (D3/D4, `docs/design/12-mvp-review.md` §3):** the original design below specified a
+separate `$DOPS_HOME/mine/state.json` crash-resume checkpoint (`index_offset` + `index_sha256`)
+plus a transcript-level `transcript_sha256` dedup on top of `checkpoints/processed.jsonl`'s own
+per-event `(path, bytes)` check. Neither ever got a caller: `processed.jsonl` alone already
+makes a run idempotent in practice (a second `mine run` against unchanged input does zero
+work), and a *third* checkpoint layered on top of it would only have to agree with the other
+two, never actually replacing either. `state.json`'s dead accessor (`MineHome::state_path`)
+and `ProcessedRecord.transcript_sha256`'s dead field have both been deleted rather than left to
+read as implemented features. `processed.jsonl` **is** the crash-resume checkpoint now: a
+killed run simply leaves some index rows unrecorded in it, and the next run re-reads
+`index.jsonl` from the top and skips every row already there. `clusters.json` was never
+written either -- `queue/<id>/meta.json` already carries each cluster's stats, so there is
+nothing left for a second file to hold.
 
-```json
-{
-  "version": 1,
-  "index_path": "$HOME/Documents/Sessions/index.jsonl",
-  "index_offset": 3846,
-  "index_sha256": "hex of file at last successful run",
-  "last_when": "ISO-8601",
-  "last_run": "ISO-8601",
-  "transcripts_seen": 1204,
-  "transcripts_missing": 2898,
-  "candidates_emitted": 86,
-  "clusters": 41
-}
-```
-
-Plus:
+Files actually written under `$DOPS_HOME/mine/`:
 
 | File | Role |
 |------|------|
-| `checkpoints/processed.jsonl` | `{event_path, bytes, transcript_sha256?, status}` |
-| `clusters.json` | fingerprint → cluster stats (no raw commands) |
-| `queue/<id>/` | drafts |
+| `checkpoints/processed.jsonl` | `{event_path, bytes, status}` -- the real checkpoint (see above) |
+| `queue/<id>/` | drafts (`meta.json` + `kata.sh`) |
 | `audit.jsonl` | review actions |
 | `redaction-failures.jsonl` | dropped candidates |
-
-Crash safety: write a new `state.json.tmp` and rename. A killed run resumes from `index_offset`. Re-reading a hashed transcript is a no-op.
+| `mine.lock` | held for the duration of one run (`06` §3.4 rule 4) |
 
 ### 3.4 Idempotency rules
 
 1. Same event path + bytes → skip.
-2. Same transcript sha256 → skip extract.
-3. Same cluster fingerprint already in `queue/` in any state, or in `audit.jsonl` as approved/rejected → do not re-queue.
-4. Rank/score may be recomputed in place on `meta.json` without creating a new proposal.
-5. LaunchAgent + manual overlap: a lockfile `$DOPS_HOME/mine/mine.lock` (flock). Second run exits 0 with `already running`.
+2. Same cluster fingerprint already in `queue/` in any state, or in `audit.jsonl` as approved/rejected → do not re-queue.
+3. Rank/score may be recomputed in place on `meta.json` without creating a new proposal.
+4. LaunchAgent + manual overlap: a lockfile `$DOPS_HOME/mine/mine.lock` (flock). Second run exits 0 with `already running`.
 
 ### 3.5 Resource bounds (per run)
 

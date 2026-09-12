@@ -83,7 +83,6 @@ fn processed_records_round_trip_and_detect_duplicates() {
         &ProcessedRecord {
             event_path: "a.md".to_string(),
             bytes: 100,
-            transcript_sha256: None,
             status: "ok".to_string(),
         },
     )

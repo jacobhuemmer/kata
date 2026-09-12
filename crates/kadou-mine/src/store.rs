@@ -85,7 +85,7 @@ fn io_err(action: &'static str, path: &Path, source: std::io::Error) -> StoreErr
 }
 
 /// Writes `queue/<fingerprint>/{meta.json,kata.sh}` (`06` §2.8, §3.3). Re-proposing the same
-/// fingerprint overwrites the prior draft in place (idempotency rule 4: rank/score may be
+/// fingerprint overwrites the prior draft in place (idempotency rule 3: rank/score may be
 /// recomputed without creating a new proposal).
 pub fn write_queue_entry(
     home: &MineHome,
@@ -104,7 +104,7 @@ pub fn write_queue_entry(
     Ok(())
 }
 
-/// Every fingerprint currently under `queue/`, regardless of review status (`06` §3.4 rule 3:
+/// Every fingerprint currently under `queue/`, regardless of review status (`06` §3.4 rule 2:
 /// "same cluster fingerprint already in `queue/` in any state ... do not re-queue").
 pub fn queued_fingerprints(home: &MineHome) -> Vec<String> {
     std::fs::read_dir(home.queue_dir())
@@ -203,7 +203,7 @@ pub enum ApproveError {
 /// Copies a queued draft's source into the `mined` staging namespace as `<name>.sh` and
 /// records `approved` in the audit log (`06` §2.9, §4.6; `docs/design/05-prd.md` §6.8
 /// "Approve copies the draft into the inactive `mined` staging area"). Refuses a fingerprint
-/// that was already approved or rejected (idempotency rule 3) rather than silently
+/// that was already approved or rejected (idempotency rule 2) rather than silently
 /// overwriting a human decision.
 ///
 /// `name` is checked against [`kadou_core::valid_id_segment`] *before* it is ever joined onto
@@ -272,7 +272,7 @@ pub fn skip(home: &MineHome, fingerprint: &str) -> Result<(), ApproveError> {
 }
 
 /// Records `rejected` with a reason; the fingerprint is banned from re-queueing until
-/// `--force` is used by a future run (`06` §2.9, §3.4 rule 3).
+/// `--force` is used by a future run (`06` §2.9, §3.4 rule 2).
 pub fn reject(home: &MineHome, fingerprint: &str, reason: &str) -> Result<(), ApproveError> {
     let rows = read_audit(home);
     if let Some(action) = latest_action(&rows, fingerprint)

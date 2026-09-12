@@ -54,15 +54,16 @@ pub fn read_transcript_path(event_markdown_path: &Path) -> Option<String> {
     None
 }
 
-/// One row of `checkpoints/processed.jsonl` (`06` §3.3): the idempotent unit is the event
-/// file's `(path, bytes)` (a mtime check would need a second stat syscall for no real gain
-/// here, since the archive never rewrites a finished event file in place).
+/// One row of `checkpoints/processed.jsonl` (`06` §3.3, as amended by D3/D4, `docs/design/
+/// 12-mvp-review.md` §3): the idempotent unit is the event file's `(path, bytes)` (a mtime
+/// check would need a second stat syscall for no real gain here, since the archive never
+/// rewrites a finished event file in place). This file -- not a separate `state.json` -- is
+/// the crash-resume checkpoint: a killed run simply leaves some rows unwritten, and the next
+/// run re-reads `index.jsonl` and skips every row already recorded here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessedRecord {
     pub event_path: String,
     pub bytes: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub transcript_sha256: Option<String>,
     /// `"ok"` or `"skip: transcript_missing"` (`06` §2.1 step 4).
     pub status: String,
 }

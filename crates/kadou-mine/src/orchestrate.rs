@@ -4,8 +4,13 @@
 //! Idempotency rule 1 (same event path + bytes -> skip, `06` §3.4) does almost all of the
 //! idempotency work by itself: a second run against unchanged input reads zero new
 //! transcripts, so it extracts zero new candidates and queues nothing new, without this
-//! module needing to merge new evidence into an existing `meta.json` (`06` §3.4 rule 4,
-//! deliberately not implemented this slice -- see the handoff's interpretation calls).
+//! module needing to merge new evidence into an existing `meta.json` (`06` §3.4 rule 3,
+//! deliberately not implemented -- there is nothing to merge new evidence *with* until a
+//! second run actually sees the same fingerprint again with different members, which
+//! `already_queued`'s own skip in `propose_ranked_clusters` currently forecloses; D3/D4,
+//! `docs/design/12-mvp-review.md` §3, amended `06` §3.3 to drop the separate `state.json`
+//! checkpoint and `transcript_sha256` dedup this module never populated -- `processed.jsonl`,
+//! not a second file, is the real crash-resume checkpoint).
 //!
 //! `ingest_row` streams each transcript with a `BufReader`, line by line, rather than reading
 //! the whole file into memory first: `06` §2.1 measured a real Codex store at ~2.8 GB, and
@@ -30,7 +35,7 @@ const MAX_WALL_TIME: Duration = Duration::from_secs(20 * 60);
 /// 2 GB (`06` §3.5), the default for [`MineConfig::max_bytes_scanned`].
 const DEFAULT_MAX_BYTES_SCANNED: u64 = 2 * 1024 * 1024 * 1024;
 /// A lock older than this is treated as an abandoned prior run, not a live one, and is
-/// reclaimed rather than blocking forever (`06` §3.4 rule 5).
+/// reclaimed rather than blocking forever (`06` §3.4 rule 4).
 const LOCK_STALE_AFTER: Duration = Duration::from_secs(25 * 60);
 
 pub struct MineConfig {
@@ -98,7 +103,7 @@ pub struct RunSummary {
 }
 
 /// `true` when a fresh lock is already held -- a concurrent run should exit immediately
-/// (`06` §3.4 rule 5). A stale lock (older than [`LOCK_STALE_AFTER`]) is reclaimed instead.
+/// (`06` §3.4 rule 4). A stale lock (older than [`LOCK_STALE_AFTER`]) is reclaimed instead.
 fn lock_is_held(home: &MineHome) -> bool {
     let Ok(metadata) = std::fs::metadata(home.lock_path()) else {
         return false;
@@ -294,7 +299,6 @@ impl IngestRun<'_> {
         let record = ingest::ProcessedRecord {
             event_path: row.path.clone(),
             bytes: row.bytes,
-            transcript_sha256: None,
             status: status.to_string(),
         };
         let _ = ingest::append_processed(self.home, &record);
@@ -410,7 +414,7 @@ fn propose_and_queue(
 }
 
 /// Ranks, cuts off, and proposes every cluster not already queued or decided (`06` §2.6-2.9,
-/// §3.4 rule 3). Returns how many were newly queued.
+/// §3.4 rule 2). Returns how many were newly queued.
 fn propose_ranked_clusters(
     config: &MineConfig,
     home: &MineHome,
