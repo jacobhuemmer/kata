@@ -118,53 +118,33 @@ fn row_from(id: &str, about: &str, risk: RiskLevel, alias: &[String], draft: boo
     }
 }
 
-pub fn list_kata(state: &ServerState, config: &kadou_core::Config, args: ListArgs) -> Value {
-    let mut rows: Vec<Row> = Vec::new();
-
-    if !matches!(
+/// The library scan (every folder under `kata/`), gated on the agent ceiling per folder —
+/// skipped entirely when `args.folder` names a draft namespace, since those never appear here.
+fn library_rows(state: &ServerState, config: &kadou_core::Config, args: &ListArgs) -> Vec<Row> {
+    let mut rows = Vec::new();
+    if matches!(
         args.folder.as_deref(),
         Some(drafts::PROPOSED_NS) | Some(drafts::MINED_NS)
-    ) && let Ok(scanned) = kadou_core::scan_kata_dir(&state.paths.kata_dir())
-    {
-        for (folder, files) in scanned {
-            if let Some(want) = &args.folder
-                && &folder != want
-            {
-                continue;
-            }
-            let ceiling = visibility::agent_ceiling(config, &folder, state.max_risk_flag);
-            for file in files {
-                let Some(header) = &file.header else { continue };
-                if !visibility::is_visible_risk(header.risk, ceiling) {
-                    continue;
-                }
-                rows.push(row_from(
-                    &file.id,
-                    &header.about,
-                    header.risk,
-                    &header.alias,
-                    false,
-                ));
-            }
-        }
+    ) {
+        return rows;
     }
-
-    if matches!(args.folder.as_deref(), None | Some("."))
-        && let Some(project_dir) = &state.project_local_kata_dir
-        && visibility::is_trusted(config, project_dir)
-        && let Some(parent) = project_dir.parent()
-        && let Ok(files) = kadou_core::scan_folder(parent, "kata")
-    {
-        let ceiling =
-            visibility::agent_ceiling(config, PROJECT_LOCAL_FOLDER_KEY, state.max_risk_flag);
+    let Ok(scanned) = kadou_core::scan_kata_dir(&state.paths.kata_dir()) else {
+        return rows;
+    };
+    for (folder, files) in scanned {
+        if let Some(want) = &args.folder
+            && &folder != want
+        {
+            continue;
+        }
+        let ceiling = visibility::agent_ceiling(config, &folder, state.max_risk_flag);
         for file in files {
             let Some(header) = &file.header else { continue };
             if !visibility::is_visible_risk(header.risk, ceiling) {
                 continue;
             }
-            let id = format!("./{}", file.id.strip_prefix("kata/").unwrap_or(&file.id));
             rows.push(row_from(
-                &id,
+                &file.id,
                 &header.about,
                 header.risk,
                 &header.alias,
@@ -172,31 +152,83 @@ pub fn list_kata(state: &ServerState, config: &kadou_core::Config, args: ListArg
             ));
         }
     }
+    rows
+}
 
-    if args.include_drafts
+/// The trusted project-local `kata/` folder discovered at server startup (§4.5), if any and
+/// if trusted — rewritten back to `./name` ids, exactly like `resolve_visible` does for a
+/// single lookup.
+fn project_local_rows(
+    state: &ServerState,
+    config: &kadou_core::Config,
+    args: &ListArgs,
+) -> Vec<Row> {
+    let mut rows = Vec::new();
+    if !matches!(args.folder.as_deref(), None | Some(".")) {
+        return rows;
+    }
+    let Some(project_dir) = &state.project_local_kata_dir else {
+        return rows;
+    };
+    if !visibility::is_trusted(config, project_dir) {
+        return rows;
+    }
+    let Some(parent) = project_dir.parent() else {
+        return rows;
+    };
+    let Ok(files) = kadou_core::scan_folder(parent, "kata") else {
+        return rows;
+    };
+    let ceiling = visibility::agent_ceiling(config, PROJECT_LOCAL_FOLDER_KEY, state.max_risk_flag);
+    for file in files {
+        let Some(header) = &file.header else { continue };
+        if !visibility::is_visible_risk(header.risk, ceiling) {
+            continue;
+        }
+        let id = format!("./{}", file.id.strip_prefix("kata/").unwrap_or(&file.id));
+        rows.push(row_from(
+            &id,
+            &header.about,
+            header.risk,
+            &header.alias,
+            false,
+        ));
+    }
+    rows
+}
+
+/// Draft kata (`proposed/`, `mined/`) — only scanned when asked for, either via
+/// `include_drafts` or by naming a draft namespace directly in `folder` (§5.4).
+fn draft_rows(state: &ServerState, args: &ListArgs) -> Vec<Row> {
+    let mut rows = Vec::new();
+    let wants_drafts = args.include_drafts
         || matches!(
             args.folder.as_deref(),
             Some(drafts::PROPOSED_NS) | Some(drafts::MINED_NS)
-        )
-    {
-        for file in drafts::scan_drafts(&state.paths.state_dir) {
-            let Some(header) = &file.header else { continue };
-            if let Some(want) = &args.folder {
-                let top = top_folder(&file.id);
-                if top != want {
-                    continue;
-                }
-            }
-            rows.push(row_from(
-                &file.id,
-                &header.about,
-                header.risk,
-                &header.alias,
-                true,
-            ));
-        }
+        );
+    if !wants_drafts {
+        return rows;
     }
+    for file in drafts::scan_drafts(&state.paths.state_dir) {
+        let Some(header) = &file.header else { continue };
+        if let Some(want) = &args.folder
+            && top_folder(&file.id) != want
+        {
+            continue;
+        }
+        rows.push(row_from(
+            &file.id,
+            &header.about,
+            header.risk,
+            &header.alias,
+            true,
+        ));
+    }
+    rows
+}
 
+/// Filters, sorts, dedupes, and pages `rows` into the §5.5 `list_kata` result shape.
+fn paginate(mut rows: Vec<Row>, args: &ListArgs) -> Value {
     if let Some(risk) = args.risk {
         rows.retain(|r| r.risk == risk);
     }
@@ -232,6 +264,13 @@ pub fn list_kata(state: &ServerState, config: &kadou_core::Config, args: ListArg
         "limit": args.limit,
         "truncated": truncated,
     })
+}
+
+pub fn list_kata(state: &ServerState, config: &kadou_core::Config, args: ListArgs) -> Value {
+    let mut rows = library_rows(state, config, &args);
+    rows.extend(project_local_rows(state, config, &args));
+    rows.extend(draft_rows(state, &args));
+    paginate(rows, &args)
 }
 
 // ---------------------------------------------------------------------------

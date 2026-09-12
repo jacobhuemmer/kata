@@ -95,28 +95,34 @@ pub fn looks_like_kata_candidate(source: &str) -> bool {
         .any(|line| line.trim_end() == "# ---")
 }
 
-/// Parses `source` per the closed six-key grammar. Returns `(Some(header), diagnostics)`
-/// when the header is valid (diagnostics may still hold warnings), or `(None,
-/// diagnostics)` when at least one error makes the header unusable (§4.7).
-pub fn parse_header(source: &str) -> (Option<ParsedHeader>, Vec<Diagnostic>) {
-    let mut diags = Vec::new();
+/// The header's structural frame: the source split into lines, the shebang (if any), and the
+/// opener/closer indices — everything [`scan_frame`] establishes before [`parse_keys`] can
+/// even start walking key lines.
+struct Frame<'a> {
+    lines: Vec<&'a str>,
+    shebang: Option<String>,
+    open_idx: usize,
+    close_idx: usize,
+}
 
+/// CRLF/empty-file guards, shebang detection, and the `# ---` opener/closer scan (§4.3):
+/// every line from the opener to the closer must start with `#`, must not contain a tab, and
+/// the whole block must fit in [`MAX_HEADER_LINES`].
+fn scan_frame(source: &str) -> Result<Frame<'_>, Vec<Diagnostic>> {
     if source.contains("\r\n") {
-        diags.push(
+        return Err(vec![
             Diagnostic::error(1, 1, 1, "CRLF line endings in header").with_fix("convert to LF"),
-        );
-        return (None, diags);
+        ]);
     }
 
     let lines: Vec<&str> = source.lines().collect();
     if lines.is_empty() {
-        diags.push(
+        return Err(vec![
             Diagnostic::error(1, 1, 1, "empty file: no header").with_fix(
                 "start the file with `# ---` within the first 3 lines, a closing `# ---`, and \
              `about:`/`risk:` in between",
             ),
-        );
-        return (None, diags);
+        ]);
     }
 
     let shebang = if lines[0].starts_with("#!") {
@@ -130,14 +136,11 @@ pub fn parse_header(source: &str) -> (Option<ParsedHeader>, Vec<Diagnostic>) {
         .take(3)
         .position(|line| line.trim_end() == "# ---");
     let Some(open_idx) = open_idx else {
-        diags.push(Diagnostic::error(1, 1, 1, "missing header").with_fix(
+        return Err(vec![Diagnostic::error(1, 1, 1, "missing header").with_fix(
             "open a header with a line containing only `# ---` within the first 3 lines",
-        ));
-        return (None, diags);
+        )]);
     };
 
-    // Structural scan: every line from the opener to the closer must start with `#`, must
-    // not contain a tab, and the whole block must fit in MAX_HEADER_LINES.
     let mut close_idx = None;
     let mut i = open_idx + 1;
     while i < lines.len() && i < open_idx + MAX_HEADER_LINES {
@@ -147,23 +150,21 @@ pub fn parse_header(source: &str) -> (Option<ParsedHeader>, Vec<Diagnostic>) {
             break;
         }
         if !line.starts_with('#') {
-            diags.push(
+            return Err(vec![
                 Diagnostic::error(i + 1, 1, line.chars().count().max(1), "header not closed")
                     .with_fix("every line until the closing `# ---` must start with `#`"),
-            );
-            return (None, diags);
+            ]);
         }
         if let Some(col) = line.find('\t') {
-            diags.push(
+            return Err(vec![
                 Diagnostic::error(i + 1, col + 1, 1, "tabs are not allowed in the header")
                     .with_fix("use spaces"),
-            );
-            return (None, diags);
+            ]);
         }
         i += 1;
     }
     let Some(close_idx) = close_idx else {
-        diags.push(
+        return Err(vec![
             Diagnostic::error(
                 open_idx + 1,
                 1,
@@ -171,10 +172,37 @@ pub fn parse_header(source: &str) -> (Option<ParsedHeader>, Vec<Diagnostic>) {
                 "header exceeds 64 lines or is never closed",
             )
             .with_fix("close the header with a line containing only `# ---`"),
-        );
-        return (None, diags);
+        ]);
     };
 
+    Ok(Frame {
+        lines,
+        shebang,
+        open_idx,
+        close_idx,
+    })
+}
+
+/// The six keys' parsed values, still carrying `about`/`risk`'s line numbers for
+/// [`finish`]'s required-key diagnostics.
+struct ParsedKeys {
+    about: Option<(String, usize)>,
+    risk: Option<(RiskLevel, usize)>,
+    needs: Vec<Need>,
+    args: Vec<Arg>,
+    alias: Vec<String>,
+    timeout: Option<Duration>,
+}
+
+/// Walks every line between the opener and closer, dispatching each top-level `key: value`
+/// line (and each indented `args:` continuation) into `ParsedKeys`, pushing a [`Diagnostic`]
+/// for every grammar violation along the way.
+fn parse_keys(
+    lines: &[&str],
+    open_idx: usize,
+    close_idx: usize,
+    diags: &mut Vec<Diagnostic>,
+) -> ParsedKeys {
     let mut about: Option<(String, usize)> = None;
     let mut risk: Option<(RiskLevel, usize)> = None;
     let mut needs: Vec<Need> = Vec::new();
@@ -364,7 +392,25 @@ pub fn parse_header(source: &str) -> (Option<ParsedHeader>, Vec<Diagnostic>) {
         }
     }
 
-    let about = match about {
+    ParsedKeys {
+        about,
+        risk,
+        needs,
+        args,
+        alias,
+        timeout,
+    }
+}
+
+/// The required-key checks (`about`/`risk`), the error/warning split, and notes extraction —
+/// everything after the key walk that turns `ParsedKeys` into the fn's own `(Option<
+/// ParsedHeader>, Vec<Diagnostic>)` return shape.
+fn finish(
+    keys: ParsedKeys,
+    frame: &Frame<'_>,
+    mut diags: Vec<Diagnostic>,
+) -> (Option<ParsedHeader>, Vec<Diagnostic>) {
+    let about = match keys.about {
         Some((text, line_no)) if text.chars().count() > MAX_ABOUT_CHARS => {
             diags.push(Diagnostic::error(
                 line_no,
@@ -380,18 +426,18 @@ pub fn parse_header(source: &str) -> (Option<ParsedHeader>, Vec<Diagnostic>) {
         Some((text, _)) => Some(text),
         None => {
             diags.push(
-                Diagnostic::error(open_idx + 1, 1, 5, "about is required")
+                Diagnostic::error(frame.open_idx + 1, 1, 5, "about is required")
                     .with_fix("add `# about: <one line, 1-120 chars>`"),
             );
             None
         }
     };
 
-    let risk = match risk {
+    let risk = match keys.risk {
         Some((r, _)) => Some(r),
         None => {
             diags.push(
-                Diagnostic::error(open_idx + 1, 1, 5, "risk is required")
+                Diagnostic::error(frame.open_idx + 1, 1, 5, "risk is required")
                     .with_fix("add `# risk:  low`, `medium`, `high`, or `critical`"),
             );
             None
@@ -410,21 +456,34 @@ pub fn parse_header(source: &str) -> (Option<ParsedHeader>, Vec<Diagnostic>) {
         return (None, diags);
     };
 
-    let notes = extract_notes(&lines, close_idx);
+    let notes = extract_notes(&frame.lines, frame.close_idx);
 
     (
         Some(ParsedHeader {
             about,
             risk,
-            needs,
-            args,
-            alias,
-            timeout,
+            needs: keys.needs,
+            args: keys.args,
+            alias: keys.alias,
+            timeout: keys.timeout,
             notes,
-            shebang,
+            shebang: frame.shebang.clone(),
         }),
         diags,
     )
+}
+
+/// Parses `source` per the closed six-key grammar. Returns `(Some(header), diagnostics)`
+/// when the header is valid (diagnostics may still hold warnings), or `(None,
+/// diagnostics)` when at least one error makes the header unusable (§4.7).
+pub fn parse_header(source: &str) -> (Option<ParsedHeader>, Vec<Diagnostic>) {
+    let frame = match scan_frame(source) {
+        Ok(frame) => frame,
+        Err(diags) => return (None, diags),
+    };
+    let mut diags = Vec::new();
+    let keys = parse_keys(&frame.lines, frame.open_idx, frame.close_idx, &mut diags);
+    finish(keys, &frame, diags)
 }
 
 /// Strips exactly one leading `#` and, if present, one following space. A block
@@ -464,6 +523,69 @@ pub(crate) fn is_valid_id_segment(segment: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Parses the `type[ options]` portion of an arg line into an [`ArgType`] (§4.3's four type
+/// grammars). `type_word` is `text`/`int`/`bool`/`select`; `type_rest` is anything after it on
+/// the same word-boundary (only meaningful for `select`'s `|`-joined options — the other three
+/// take no argument, so any `type_rest` there is itself the error, collapsing what were three
+/// near-identical "unexpected text after type" arms into one check, C9).
+fn parse_type(
+    type_word: &str,
+    type_rest: &str,
+    type_part: &str,
+    type_col: usize,
+    err: impl Fn(usize, usize, String) -> Diagnostic,
+) -> Result<ArgType, Diagnostic> {
+    let no_argument = |ty: ArgType| {
+        if type_rest.is_empty() {
+            Ok(ty)
+        } else {
+            Err(err(
+                type_col,
+                type_part.len(),
+                format!("unexpected text after type `{type_word}`: `{type_rest}`"),
+            ))
+        }
+    };
+
+    match type_word {
+        "text" => no_argument(ArgType::Text),
+        "int" => no_argument(ArgType::Int),
+        "bool" => no_argument(ArgType::Bool),
+        "select" => {
+            if type_rest.is_empty() {
+                return Err(err(
+                    type_col,
+                    type_word.len(),
+                    "select without options".to_string(),
+                )
+                .with_fix("list at least one option, e.g. `select a|b|c`".to_string()));
+            }
+            let options: Vec<String> = type_rest.split('|').map(|s| s.trim().to_string()).collect();
+            for opt in &options {
+                if opt.is_empty()
+                    || !opt
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "_.:/-".contains(c))
+                {
+                    return Err(err(
+                        type_col,
+                        type_rest.len(),
+                        format!("invalid select option `{opt}`"),
+                    )
+                    .with_fix("options match ^[A-Za-z0-9_.:/-]+$".to_string()));
+                }
+            }
+            Ok(ArgType::Select { options })
+        }
+        other => Err(err(
+            type_col,
+            type_word.len().max(1),
+            format!("unknown arg type `{other}`"),
+        )
+        .with_fix("use `text`".to_string())),
+    }
 }
 
 fn parse_arg_line(content: &str, line_no: usize, col_offset: usize) -> Result<Arg, Diagnostic> {
@@ -509,72 +631,7 @@ fn parse_arg_line(content: &str, line_no: usize, col_offset: usize) -> Result<Ar
     let type_rest = type_words.next().unwrap_or("").trim();
     let type_col = rest_col;
 
-    let ty = match type_word {
-        "text" => {
-            if !type_rest.is_empty() {
-                return Err(err(
-                    type_col,
-                    type_part.len(),
-                    format!("unexpected text after type `text`: `{type_rest}`"),
-                ));
-            }
-            ArgType::Text
-        }
-        "int" => {
-            if !type_rest.is_empty() {
-                return Err(err(
-                    type_col,
-                    type_part.len(),
-                    format!("unexpected text after type `int`: `{type_rest}`"),
-                ));
-            }
-            ArgType::Int
-        }
-        "bool" => {
-            if !type_rest.is_empty() {
-                return Err(err(
-                    type_col,
-                    type_part.len(),
-                    format!("unexpected text after type `bool`: `{type_rest}`"),
-                ));
-            }
-            ArgType::Bool
-        }
-        "select" => {
-            if type_rest.is_empty() {
-                return Err(err(
-                    type_col,
-                    type_word.len(),
-                    "select without options".to_string(),
-                )
-                .with_fix("list at least one option, e.g. `select a|b|c`".to_string()));
-            }
-            let options: Vec<String> = type_rest.split('|').map(|s| s.trim().to_string()).collect();
-            for opt in &options {
-                if opt.is_empty()
-                    || !opt
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || "_.:/-".contains(c))
-                {
-                    return Err(err(
-                        type_col,
-                        type_rest.len(),
-                        format!("invalid select option `{opt}`"),
-                    )
-                    .with_fix("options match ^[A-Za-z0-9_.:/-]+$".to_string()));
-                }
-            }
-            ArgType::Select { options }
-        }
-        other => {
-            return Err(err(
-                type_col,
-                type_word.len().max(1),
-                format!("unknown arg type `{other}`"),
-            )
-            .with_fix("use `text`".to_string()));
-        }
-    };
+    let ty = parse_type(type_word, type_rest, type_part, type_col, err)?;
 
     let default = match default_part {
         None => None,

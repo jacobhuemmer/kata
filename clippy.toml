@@ -1,0 +1,2 @@
+too-many-lines-threshold = 60   # dops's "a function fits on a screen" (docs/design/11-code-review.md §6)
+cognitive-complexity-threshold = 15
