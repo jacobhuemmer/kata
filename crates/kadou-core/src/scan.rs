@@ -319,6 +319,24 @@ mod tests {
     }
 
     #[test]
+    fn an_uppercase_or_underscored_file_name_is_a_check_error_with_a_kebab_case_fix() {
+        // PRD §4.2: id segments match ^[a-z0-9][a-z0-9-]*$; "Uppercase or underscore in a
+        // filename is a check error with a rename suggestion." (I-11, H3.)
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "kata/sesami/My_Kata.sh", HELLO);
+        let files = scan_folder(&dir.path().join("kata"), "sesami").unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].id, "sesami/My_Kata");
+        assert!(files[0].error_count() > 0, "{:?}", files[0].diagnostics);
+        let diag = &files[0].diagnostics[0];
+        assert!(diag.message.contains("My_Kata"), "{diag:?}");
+        assert!(
+            diag.fix.as_deref().unwrap().contains("my-kata"),
+            "{diag:?}"
+        );
+    }
+
+    #[test]
     fn missing_kata_dir_scans_as_empty() {
         let dir = tempfile::tempdir().unwrap();
         let folders = scan_kata_dir(&dir.path().join("kata")).unwrap();
