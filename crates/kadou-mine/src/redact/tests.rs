@@ -92,6 +92,18 @@ fn r7_public_docs_domain_is_left_unchanged() {
 }
 
 #[test]
+fn r7_a_subdomain_of_an_allowlisted_three_label_host_is_also_left_unchanged() {
+    // Exercises hostname_allowed's `ends_with` branch specifically (distinct from an exact
+    // match against the allowlist entry itself, already covered above).
+    let out = redact("see https://docs.pkg.go.dev/reference for reference");
+    assert_eq!(
+        out.text,
+        "see https://docs.pkg.go.dev/reference for reference"
+    );
+    assert!(!out.rules_hit.contains(&RuleId::Hostname));
+}
+
+#[test]
 fn r8_ipv4_becomes_ip() {
     let out = redact("ping 10.1.2.3 to check reachability");
     assert_eq!(out.text, "ping $IP to check reachability");
@@ -170,6 +182,16 @@ fn fail_closed_high_entropy_leak_is_detected_after_redaction() {
 fn ordinary_short_tokens_do_not_trigger_the_high_entropy_check() {
     let out = redact("kubectl --context $CONTEXT -n $NAMESPACE get pods -l app=$APP");
     assert!(!has_high_entropy_leak(&out.text), "{}", out.text);
+}
+
+#[test]
+fn a_blob_with_a_slash_on_either_side_is_absorbed_into_a_path_shaped_match() {
+    // `/` is itself in HIGH_ENTROPY's character class, so a leading or trailing slash joins
+    // the match rather than bounding it -- the whole thing (slash included) reads as
+    // path-shaped, not a bare secret, on either side.
+    let blob = "Zm9vYmFyYmF6cXV1eGNvcmdlZ3JhdWx0Z2FycGx5";
+    assert!(!has_high_entropy_leak(&format!("/{blob} trailing text")));
+    assert!(!has_high_entropy_leak(&format!("leading text {blob}/")));
 }
 
 #[test]

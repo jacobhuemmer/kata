@@ -364,10 +364,14 @@ pub fn redact_all(text: &str, extra_terms: &[String]) -> Redacted {
 /// secret after R1-R13 ran -- a run of 24+ base64/token-alphabet characters that is not part
 /// of a path. The caller drops the whole candidate when this is `true` (fail closed, `06`
 /// §4.1/§4.3).
+///
+/// `/` is itself one of the matched characters, so a real path (or a path-adjacent run like
+/// `$PATH_1/segment`) that is long enough to match at all is a *single* match that contains at
+/// least one `/` -- there is no separate "outside the match" delimiter to check. A bare secret
+/// blob, by contrast, essentially never contains a literal `/` in the fixtures this crate
+/// actually produces, so "the match contains a slash" is what "is a path" means here.
 pub fn has_high_entropy_leak(redacted_text: &str) -> bool {
-    HIGH_ENTROPY.find_iter(redacted_text).any(|m| {
-        let before = redacted_text[..m.start()].chars().next_back();
-        let after = redacted_text[m.end()..].chars().next();
-        before != Some('/') && after != Some('/')
-    })
+    HIGH_ENTROPY
+        .find_iter(redacted_text)
+        .any(|m| !m.as_str().contains('/'))
 }
