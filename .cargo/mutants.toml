@@ -2,17 +2,17 @@
 # CI ratchet this config feeds). Schema: `cargo mutants --emit-schema=config`, or
 # https://github.com/sourcefrog/cargo-mutants/blob/v27.1.0/src/config.rs.
 #
-# `crates/kadou` (the `kadou` bin) and `crates/kadou-mine` (empty stub, docs/design/05-prd.md
-# §9 slice 9) are excluded wholesale, not just their `main`/generated bits, because
-# `crates/kadou/src/main.rs` has unit tests that call `assert_cmd::Command::cargo_bin("kadou")`
-# from *inside the same bin target's own test harness*. `CARGO_BIN_EXE_kadou` is only set for
-# other targets in the package (integration tests, other bins) — never for a bin's own unit
-# tests — so `cargo test -p kadou` fails on a clean, unmutated checkout (see the doc's
-# "Known blocker" section). `--workspace` baselines with `cargo test --workspace`, so as long
-# as `kadou` is in the mutated-package set at all, the baseline aborts before any mutant runs,
-# taking kadou-core/-exec/-mcp down with it. Excluding it here is a scoping workaround, not a
-# fix: the doc's #1 recommended follow-up is moving those tests to `crates/kadou/tests/`.
-exclude_globs = ["crates/kadou/**", "crates/kadou-mine/**"]
+# `crates/kadou-mine` (empty stub, docs/design/05-prd.md §9 slice 9) is excluded wholesale --
+# nothing to mutate. `crates/kadou`'s former blanket exclusion (R15,
+# docs/design/10-mutation-baseline.md's "known blocker") is narrowed to just `fn main` itself:
+# the CLI's subprocess integration tests moved from `src/main.rs`'s own unit-test harness (where
+# `CARGO_BIN_EXE_kadou` was unreliable) to `crates/kadou/tests/cli.rs`, a real integration test
+# target, so the rest of the crate is now mutation-tested. `fn main` itself is still excluded:
+# it is never called during `cargo test` (only the built binary, exercised by `tests/cli.rs`,
+# calls it), so a mutant there can never be "caught" by any test -- that would be noise, not a
+# real coverage gap.
+exclude_globs = ["crates/kadou-mine/**"]
+exclude_re = ['^crates/kadou/src/main\.rs:.*replace main ->']
 
 # kadou-exec spawns real child processes and asserts on SIGTERM/SIGKILL timing (KILL_GRACE =
 # 5s in crates/kadou-exec/src/lib.rs); a mutant that breaks the kill path can let a `sleep 30`
