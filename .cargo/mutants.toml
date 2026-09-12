@@ -28,6 +28,13 @@ exclude_re = [
   '^crates/kadou/src/commands\.rs:.*prompt_for_arg ->',
   '^crates/kadou/src/commands\.rs:.*prompt_for_args ->',
   '^crates/kadou/src/commands\.rs:.*int_validator',
+  # Same reasoning, narrower: these two lines are the TTY gate itself
+  # (`resolve_id_or_pick`'s `stdin/stdout.is_terminal()` check) and the missing-required-arg
+  # filter that only changes `fill_args_interactively`'s outcome on the TTY branch --
+  # off a TTY (always true under `cargo test`), both the correct code and every mutant on
+  # these two lines produce the identical Ok(())/error outcome.
+  '^crates/kadou/src/commands\.rs:1242:',
+  '^crates/kadou/src/commands\.rs:943:',
 ]
 
 # kadou-exec spawns real child processes and asserts on SIGTERM/SIGKILL timing (KILL_GRACE =

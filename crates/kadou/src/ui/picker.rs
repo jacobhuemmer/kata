@@ -312,6 +312,9 @@ mod tests {
             long_gap, short_gap,
             "every row's ● must start at the same column"
         );
+        // Pins the exact `+3` gutter (not `*3` or any other arithmetic on the longest id's
+        // length): "sesami/a-very-long-id" is 21 characters.
+        assert_eq!(long_gap, 21 + 3);
     }
 
     #[test]
