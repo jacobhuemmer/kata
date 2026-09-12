@@ -162,6 +162,14 @@ impl HistoryStore {
         record.output_summary = Some(outcome.output_summary.to_string());
         self.write_record(record)
     }
+
+    /// The newest `limit` records, newest first (`docs/design/05-prd.md` §7.1 `kadou history
+    /// [--limit N]`, §9 slice 8). A record file that fails to read or parse is skipped rather
+    /// than aborting the whole listing; a missing `records/` directory (a fresh home) lists as
+    /// empty.
+    pub fn list_recent(&self, limit: usize) -> Vec<HistoryRecord> {
+        todo!()
+    }
 }
 
 /// The terminal fields [`HistoryStore::finish`] needs, bundled to keep the call site (and
@@ -254,5 +262,39 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap();
         assert_eq!(saved.status, "success");
         assert_eq!(saved.duration_ms, Some(42));
+    }
+
+    #[test]
+    fn list_recent_returns_newest_first_and_respects_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = HistoryStore::new(dir.path());
+        for i in 0..3 {
+            let mut record = store
+                .begin(
+                    &format!("starter/k{i}"),
+                    "starter",
+                    &BTreeMap::new(),
+                    "cli",
+                    "local",
+                    None,
+                )
+                .unwrap();
+            // Distinct start_time values, strictly increasing, so newest-first ordering is
+            // unambiguous regardless of how fast this loop runs.
+            record.start_time = format!("2026-01-01T00:00:0{i}Z");
+            store.write_record(&record).unwrap();
+        }
+
+        let recent = store.list_recent(2);
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].id, "starter/k2");
+        assert_eq!(recent[1].id, "starter/k1");
+    }
+
+    #[test]
+    fn list_recent_on_a_fresh_home_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = HistoryStore::new(dir.path());
+        assert!(store.list_recent(20).is_empty());
     }
 }
