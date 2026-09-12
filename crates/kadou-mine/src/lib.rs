@@ -10,6 +10,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod catalog;
 pub mod cluster;
 pub mod extract;
 pub mod ingest;

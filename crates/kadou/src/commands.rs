@@ -2376,6 +2376,7 @@ fn mine_config(
     config.redact_extra = load_redact_extra(&paths.config_dir);
     config.home_prefix = std::env::var("HOME").ok();
     config.since = since;
+    config.kata_dir = Some(paths.kata_dir());
     config
 }
 

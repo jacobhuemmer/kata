@@ -46,6 +46,11 @@ pub struct MineConfig {
     /// before this cutoff is skipped before it is even counted, exactly as if it did not
     /// exist for this run (D8, `docs/design/12-mvp-review.md` §3).
     pub since: Option<String>,
+    /// The library's `kata/` directory, used to check `06` §2.6's `catalog_penalty` (D6): does
+    /// an existing kata already cover a candidate's argv0+subcommand? `None` skips the check
+    /// (no conflict is ever reported), which is what a test with no library to check against
+    /// wants.
+    pub kata_dir: Option<PathBuf>,
 }
 
 impl MineConfig {
@@ -58,6 +63,7 @@ impl MineConfig {
             root_prefix: None,
             max_bytes_scanned: DEFAULT_MAX_BYTES_SCANNED,
             since: None,
+            kata_dir: None,
         }
     }
 }
@@ -356,7 +362,11 @@ fn propose_and_queue(
     cl: &Cluster,
     template_params: &TemplateParams,
 ) -> bool {
-    let score = rank::score(cl, SystemTime::now(), false);
+    let catalog_conflict = config
+        .kata_dir
+        .as_deref()
+        .is_some_and(|dir| crate::catalog::covers(dir, &cl.template));
+    let score = rank::score(cl, SystemTime::now(), catalog_conflict);
     let risk = default_risk_for(cl);
     let steps = steps_with_params(cl, template_params);
 
@@ -531,8 +541,7 @@ mod tests {
         // config.kata_dir rather than always assuming no conflict.
         let cluster = Cluster {
             fingerprint: "f".repeat(64),
-            template: "kubectl --context $CONTEXT -n $NAMESPACE get pods -l app=$APP"
-                .to_string(),
+            template: "kubectl --context $CONTEXT -n $NAMESPACE get pods -l app=$APP".to_string(),
             step_count: 1,
             members: vec![
                 cluster::Member {
