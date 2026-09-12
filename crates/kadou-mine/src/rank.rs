@@ -12,6 +12,12 @@ const RECENCY_HALF_LIFE_DAYS: f64 = 30.0;
 const SEQUENCE_BONUS_THRESHOLD: usize = 3;
 const SEQUENCE_BONUS: f64 = 1.3;
 const CATALOG_PENALTY: f64 = 0.1;
+/// `06` §2.6's cutoff floor: "and `score` above a floor". Deliberately low (D5, `docs/design/
+/// 12-mvp-review.md` §3) -- the review's own read is that a cluster clearing the session/freq
+/// bar "almost always clears any sane floor", so this exists to catch genuinely degenerate
+/// scores (an old cluster additionally hit by `catalog_penalty`), not to second-guess the
+/// session/freq bar itself.
+pub const MIN_SCORE: f64 = 0.01;
 
 /// Age of `cluster.last_seen` relative to `now`, in days. Unparseable timestamps (should not
 /// happen for a value this crate produced itself) are treated as maximally old rather than
@@ -49,9 +55,12 @@ pub fn score(cluster: &Cluster, now: SystemTime, catalog_conflict: bool) -> f64 
     freq_term * recency * unique_sessions * unique_agents * sequence_bonus * catalog_penalty
 }
 
-/// `unique_sessions >= 3` or (`freq >= 8` and `unique_sessions >= 2`) -- cross-session reuse is
-/// required; a noisy single session cannot mint a draft (`06` §2.6).
-pub fn passes_cutoff(cluster: &Cluster) -> bool {
+/// `unique_sessions >= 3` or (`freq >= 8` and `unique_sessions >= 2`), and `score` above
+/// [`MIN_SCORE`] (`06` §2.6). Cross-session reuse is required; a noisy single session cannot
+/// mint a draft, and a session/freq-passing cluster whose score has still been driven at or
+/// below the floor (typically by `catalog_penalty`) does not mint one either.
+pub fn passes_cutoff(cluster: &Cluster, score: f64) -> bool {
     let sessions = cluster.unique_sessions();
-    sessions >= 3 || (cluster.freq() >= 8 && sessions >= 2)
+    let clears_session_bar = sessions >= 3 || (cluster.freq() >= 8 && sessions >= 2);
+    clears_session_bar && score > MIN_SCORE
 }

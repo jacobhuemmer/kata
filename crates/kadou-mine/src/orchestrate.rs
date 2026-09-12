@@ -355,18 +355,27 @@ fn record_redaction_failure(home: &MineHome, fingerprint: &str) {
     let _ = kadou_core::fsutil::append_line_0600(&home.redaction_failures_path(), &line);
 }
 
-/// One passing cluster's propose-and-queue attempt: `true` if it was newly queued.
+/// `06` §2.6's score, with `catalog_penalty` resolved against `config.kata_dir` (D6). Computed
+/// once per cluster and shared between the cutoff check and the proposal itself (D5) so a
+/// catalog-conflict lookup never runs twice for the same cluster in one pass.
+fn cluster_score(config: &MineConfig, cl: &Cluster) -> f64 {
+    let catalog_conflict = config
+        .kata_dir
+        .as_deref()
+        .is_some_and(|dir| crate::catalog::covers(dir, &cl.template));
+    rank::score(cl, SystemTime::now(), catalog_conflict)
+}
+
+/// One passing cluster's propose-and-queue attempt: `true` if it was newly queued. `score` is
+/// [`cluster_score`]'s already-computed value -- the caller decided this cluster passes cutoff
+/// using the same number, so it is never recomputed here.
 fn propose_and_queue(
     config: &MineConfig,
     home: &MineHome,
     cl: &Cluster,
     template_params: &TemplateParams,
+    score: f64,
 ) -> bool {
-    let catalog_conflict = config
-        .kata_dir
-        .as_deref()
-        .is_some_and(|dir| crate::catalog::covers(dir, &cl.template));
-    let score = rank::score(cl, SystemTime::now(), catalog_conflict);
     let risk = default_risk_for(cl);
     let steps = steps_with_params(cl, template_params);
 
@@ -413,15 +422,18 @@ fn propose_ranked_clusters(
 
     clusters
         .iter()
-        .filter(|cl| rank::passes_cutoff(cl))
-        .filter(|cl| !already_queued.contains(&cl.fingerprint))
-        .filter(|cl| {
+        .filter_map(|cl| {
+            let score = cluster_score(config, cl);
+            rank::passes_cutoff(cl, score).then_some((cl, score))
+        })
+        .filter(|(cl, _)| !already_queued.contains(&cl.fingerprint))
+        .filter(|(cl, _)| {
             !matches!(
                 store::latest_action(&audit_rows, &cl.fingerprint).as_deref(),
                 Some("approved") | Some("rejected")
             )
         })
-        .filter(|cl| propose_and_queue(config, home, cl, template_params))
+        .filter(|(cl, score)| propose_and_queue(config, home, cl, template_params, *score))
         .count()
 }
 
@@ -533,48 +545,45 @@ mod tests {
         meta["score"].as_f64().unwrap()
     }
 
+    /// A cluster that clears the session/freq cutoff on its own, for tests that only care about
+    /// the score/catalog-conflict path.
+    fn three_session_kubectl_cluster() -> Cluster {
+        let member = |session: &str| cluster::Member {
+            agent: "codex".to_string(),
+            session_id: session.to_string(),
+            when: "2026-09-01T00:00:00Z".to_string(),
+        };
+        Cluster {
+            fingerprint: "f".repeat(64),
+            template: "kubectl --context $CONTEXT -n $NAMESPACE get pods -l app=$APP".to_string(),
+            step_count: 1,
+            members: vec![member("s1"), member("s2"), member("s3")],
+            first_seen: "2026-09-01T00:00:00Z".to_string(),
+            last_seen: "2026-09-01T00:00:00Z".to_string(),
+        }
+    }
+
     #[test]
     fn a_catalog_collision_penalizes_the_proposed_scores_meta_json() {
         // D6 (`docs/design/12-mvp-review.md` §3): rank::score's catalog_penalty already
         // existed but the one production call site hard-coded `false`, so it never fired.
         // This proves propose_and_queue now actually looks the candidate up against
         // config.kata_dir rather than always assuming no conflict.
-        let cluster = Cluster {
-            fingerprint: "f".repeat(64),
-            template: "kubectl --context $CONTEXT -n $NAMESPACE get pods -l app=$APP".to_string(),
-            step_count: 1,
-            members: vec![
-                cluster::Member {
-                    agent: "codex".to_string(),
-                    session_id: "s1".to_string(),
-                    when: "2026-09-01T00:00:00Z".to_string(),
-                },
-                cluster::Member {
-                    agent: "codex".to_string(),
-                    session_id: "s2".to_string(),
-                    when: "2026-09-01T00:00:00Z".to_string(),
-                },
-                cluster::Member {
-                    agent: "codex".to_string(),
-                    session_id: "s3".to_string(),
-                    when: "2026-09-01T00:00:00Z".to_string(),
-                },
-            ],
-            first_seen: "2026-09-01T00:00:00Z".to_string(),
-            last_seen: "2026-09-01T00:00:00Z".to_string(),
-        };
+        let cluster = three_session_kubectl_cluster();
         let template_params = TemplateParams::new();
 
         let without_dir = tempfile::tempdir().unwrap();
         let home_without = MineHome::new(without_dir.path());
         let config_without = MineConfig::new(PathBuf::new(), without_dir.path().to_path_buf());
+        let score_without = cluster_score(&config_without, &cluster);
         assert!(propose_and_queue(
             &config_without,
             &home_without,
             &cluster,
-            &template_params
+            &template_params,
+            score_without,
         ));
-        let score_without = meta_score(&home_without, &cluster.fingerprint);
+        let meta_score_without = meta_score(&home_without, &cluster.fingerprint);
 
         let with_dir = tempfile::tempdir().unwrap();
         let home_with = MineHome::new(with_dir.path());
@@ -587,17 +596,19 @@ mod tests {
         .unwrap();
         let mut config_with = MineConfig::new(PathBuf::new(), with_dir.path().to_path_buf());
         config_with.kata_dir = Some(kata_dir);
+        let score_with = cluster_score(&config_with, &cluster);
         assert!(propose_and_queue(
             &config_with,
             &home_with,
             &cluster,
-            &template_params
+            &template_params,
+            score_with,
         ));
-        let score_with = meta_score(&home_with, &cluster.fingerprint);
+        let meta_score_with = meta_score(&home_with, &cluster.fingerprint);
 
         assert!(
-            score_with < score_without / 5.0,
-            "{score_with} vs {score_without}"
+            meta_score_with < meta_score_without / 5.0,
+            "{meta_score_with} vs {meta_score_without}"
         );
     }
 
