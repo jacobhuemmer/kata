@@ -521,6 +521,76 @@ mod tests {
     }
 
     #[test]
+    fn humanize_ago_boundaries_round_down_to_the_next_bucket() {
+        // Pins the `<` (not `<=`) boundaries: exactly 60s/3600s/86400s already belongs to the
+        // next bucket up.
+        assert_eq!(humanize_ago(Duration::from_secs(59)), "just now");
+        assert_eq!(humanize_ago(Duration::from_secs(60)), "1m ago");
+        assert_eq!(humanize_ago(Duration::from_secs(60 * 60 - 1)), "59m ago");
+        assert_eq!(humanize_ago(Duration::from_secs(60 * 60)), "1h ago");
+        assert_eq!(
+            humanize_ago(Duration::from_secs(24 * 60 * 60 - 1)),
+            "23h ago"
+        );
+        assert_eq!(humanize_ago(Duration::from_secs(24 * 60 * 60)), "1d ago");
+    }
+
+    #[test]
+    fn needs_you_is_empty_requires_both_grants_and_drafts_empty() {
+        assert!(NeedsYou::default().is_empty());
+        let only_grants = NeedsYou {
+            grants: vec![GrantRow {
+                short_id: "a".to_string(),
+                kata_id: "x/y".to_string(),
+                args: String::new(),
+                client: "agent".to_string(),
+                elapsed: Duration::default(),
+            }],
+            drafts: Vec::new(),
+        };
+        assert!(!only_grants.is_empty());
+        let only_drafts = NeedsYou {
+            grants: Vec::new(),
+            drafts: vec![DraftRow {
+                id: "proposed/x/y".to_string(),
+                action: "kadou accept x/y".to_string(),
+            }],
+        };
+        assert!(!only_drafts.is_empty());
+    }
+
+    #[test]
+    fn only_a_broken_folders_kata_rows_are_dimmed() {
+        let kata = KataRow {
+            name: "hello".to_string(),
+            risk: RiskLevel::Low,
+            about: "Print a greeting".to_string(),
+        };
+        let healthy = FolderRow {
+            name: "starter".to_string(),
+            git_backed: false,
+            error_count: 0,
+            kata: vec![kata],
+        };
+        let broken = FolderRow {
+            error_count: 1,
+            ..healthy.clone()
+        };
+
+        let mut healthy_out = String::new();
+        push_folder_block(&mut healthy_out, &healthy, true);
+        let mut broken_out = String::new();
+        push_folder_block(&mut broken_out, &broken, true);
+
+        // Only the broken folder's row is wrapped in `style::muted`, so (styled) the two
+        // kata rows must differ -- and the dimmed one carries extra ANSI bytes.
+        let healthy_row = healthy_out.lines().nth(1).unwrap();
+        let broken_row = broken_out.lines().nth(1).unwrap();
+        assert_ne!(healthy_row, broken_row);
+        assert!(broken_row.len() > healthy_row.len());
+    }
+
+    #[test]
     fn run_header_snapshot_plain_and_styled() {
         let args = vec![
             ("version".to_string(), "25.6.1.2".to_string()),

@@ -2494,6 +2494,95 @@ mod tests {
     }
 
     #[test]
+    fn build_pick_candidates_includes_a_kata_exactly_at_the_ceiling() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_under(dir.path());
+        let kata_dir = paths.kata_dir();
+        std::fs::create_dir_all(kata_dir.join("ops")).unwrap();
+        std::fs::write(
+            kata_dir.join("ops/at-ceiling.sh"),
+            "#!/bin/sh\n# ---\n# about: At ceiling\n# risk:  medium\n# ---\necho hi\n",
+        )
+        .unwrap();
+
+        let candidates = build_pick_candidates(&paths, &Config::default());
+        assert_eq!(
+            candidates.len(),
+            1,
+            "medium is visible at the default medium ceiling"
+        );
+    }
+
+    #[test]
+    fn build_preview_returns_none_for_an_unknown_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let candidate = ui::picker::PickCandidate {
+            id: "ops/nope".to_string(),
+            about: "x".to_string(),
+            alias: Vec::new(),
+            risk: RiskLevel::Low,
+        };
+        assert!(build_preview(dir.path(), &candidate, &Vault::default()).is_none());
+    }
+
+    #[test]
+    fn build_preview_reports_needs_and_args_for_a_known_kata() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ops")).unwrap();
+        std::fs::write(
+            dir.path().join("ops/x.sh"),
+            "#!/bin/sh\n# ---\n# about: X\n# risk:  low\n# needs: token\n# args:\n#   name: text\n# ---\necho hi\n",
+        )
+        .unwrap();
+        let candidate = ui::picker::PickCandidate {
+            id: "ops/x".to_string(),
+            about: "X".to_string(),
+            alias: Vec::new(),
+            risk: RiskLevel::Low,
+        };
+
+        let preview = build_preview(dir.path(), &candidate, &Vault::default()).unwrap();
+        assert_eq!(preview.id, "ops/x");
+        assert_eq!(preview.needs.len(), 1);
+        assert!(!preview.needs[0].satisfied, "no vault entry for 'token'");
+        assert_eq!(preview.args.len(), 1);
+        assert_eq!(preview.args[0].summary, "required");
+    }
+
+    #[test]
+    fn render_picker_frame_appends_a_preview_only_when_there_is_a_top_match() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("ops")).unwrap();
+        std::fs::write(
+            dir.path().join("ops/x.sh"),
+            "#!/bin/sh\n# ---\n# about: X\n# risk:  low\n# ---\necho hi\n",
+        )
+        .unwrap();
+        let candidate = ui::picker::PickCandidate {
+            id: "ops/x".to_string(),
+            about: "X".to_string(),
+            alias: Vec::new(),
+            risk: RiskLevel::Low,
+        };
+        let state = ui::picker::PickerState::default();
+        let matches: Vec<&ui::picker::PickCandidate> = vec![&candidate];
+
+        let with_match = render_picker_frame(
+            dir.path(),
+            &Vault::default(),
+            "run",
+            &state,
+            &matches,
+            false,
+        );
+        assert!(with_match.contains("file"), "{with_match}");
+
+        let without_match =
+            render_picker_frame(dir.path(), &Vault::default(), "run", &state, &[], false);
+        assert!(!without_match.contains("file"));
+    }
+
+    #[test]
     fn build_grant_rows_includes_only_outstanding_records_oldest_first() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths_under(dir.path());

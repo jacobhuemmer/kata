@@ -299,6 +299,66 @@ mod tests {
     }
 
     #[test]
+    fn render_list_columns_align_to_the_longest_visible_id() {
+        let long = candidate("sesami/a-very-long-id", "About");
+        let short = candidate("a/x", "About");
+        let refs = vec![&long, &short];
+        let text = render_list("run", "", &refs, false);
+        let long_row = text.lines().nth(1).unwrap();
+        let short_row = text.lines().nth(2).unwrap();
+        let long_gap = long_row.find('●').unwrap() - long_row.find("sesami").unwrap();
+        let short_gap = short_row.find('●').unwrap() - short_row.find("a/x").unwrap();
+        assert_eq!(
+            long_gap, short_gap,
+            "every row's ● must start at the same column"
+        );
+    }
+
+    #[test]
+    fn render_preview_includes_needs_args_and_file() {
+        let preview = Preview {
+            id: "sesami/ses-deploy".to_string(),
+            risk: RiskLevel::Critical,
+            about: "Trigger the SES Deploy pipeline".to_string(),
+            needs: vec![PreviewNeed {
+                name: "jenkins_token".to_string(),
+                satisfied: false,
+            }],
+            args: vec![PreviewArg {
+                name: "version".to_string(),
+                summary: "required".to_string(),
+            }],
+            file: "kata/sesami/ses-deploy.sh".to_string(),
+            sha_short: "4b1c2d3e".to_string(),
+        };
+        let text = render_preview(&preview, false);
+        assert!(text.contains("sesami/ses-deploy"));
+        assert!(text.contains("jenkins_token"));
+        assert!(text.contains("✗ missing"));
+        assert!(text.contains("version"));
+        assert!(text.contains("required"));
+        assert!(text.contains("kata/sesami/ses-deploy.sh"));
+        assert!(text.contains("4b1c2d3e"));
+    }
+
+    #[test]
+    fn render_preview_marks_needs_satisfied_when_all_resolve() {
+        let preview = Preview {
+            id: "starter/hello".to_string(),
+            risk: RiskLevel::Low,
+            about: "Print a greeting".to_string(),
+            needs: vec![PreviewNeed {
+                name: "token".to_string(),
+                satisfied: true,
+            }],
+            args: Vec::new(),
+            file: "kata/starter/hello.sh".to_string(),
+            sha_short: "abc".to_string(),
+        };
+        assert!(render_preview(&preview, false).contains("✓ vault"));
+    }
+
+    #[test]
     fn typing_appends_to_the_query_and_resets_selection() {
         let mut state = PickerState {
             query: String::new(),
@@ -330,6 +390,28 @@ mod tests {
         assert_eq!(state.selected, 2, "up from 0 wraps to the last row");
         apply_key(&mut state, PickerKey::Down, 3);
         assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn arrows_and_tab_on_an_empty_list_never_index_into_it() {
+        // Pins the `match_count > 0` guards: with zero matches, Up/Down must not touch
+        // `selected` (a `% 0` would panic) and Tab must not fire ShowFull(0) on a
+        // candidate that doesn't exist.
+        let mut state = PickerState::default();
+        assert_eq!(
+            apply_key(&mut state, PickerKey::Up, 0),
+            PickerAction::Continue
+        );
+        assert_eq!(state.selected, 0);
+        assert_eq!(
+            apply_key(&mut state, PickerKey::Down, 0),
+            PickerAction::Continue
+        );
+        assert_eq!(state.selected, 0);
+        assert_eq!(
+            apply_key(&mut state, PickerKey::Tab, 0),
+            PickerAction::Continue
+        );
     }
 
     #[test]
