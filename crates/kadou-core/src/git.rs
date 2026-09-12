@@ -118,4 +118,42 @@ mod tests {
         let head = super::head(dir.path()).expect("git-backed dir has a HEAD");
         assert_eq!(head.len(), 40, "a full git sha is 40 hex chars: {head}");
     }
+
+    #[test]
+    fn has_local_changes_is_false_on_a_freshly_committed_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        std::fs::write(dir.path().join("x.txt"), "x").unwrap();
+        commit_all(dir.path(), "init");
+
+        assert!(!super::has_local_changes(dir.path()));
+    }
+
+    #[test]
+    fn has_local_changes_is_true_with_an_untracked_file() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        std::fs::write(dir.path().join("x.txt"), "x").unwrap();
+        commit_all(dir.path(), "init");
+
+        std::fs::write(dir.path().join("untracked.txt"), "y").unwrap();
+        assert!(super::has_local_changes(dir.path()));
+    }
+
+    #[test]
+    fn has_local_changes_is_true_with_a_modified_tracked_file() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        std::fs::write(dir.path().join("x.txt"), "x").unwrap();
+        commit_all(dir.path(), "init");
+
+        std::fs::write(dir.path().join("x.txt"), "changed").unwrap();
+        assert!(super::has_local_changes(dir.path()));
+    }
+
+    #[test]
+    fn has_local_changes_is_false_for_a_non_git_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!super::has_local_changes(dir.path()));
+    }
 }
