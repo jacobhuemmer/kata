@@ -231,6 +231,152 @@ fn existing_kata_source(kata_dir: &Path, input_id: &str) -> Option<String> {
     }
 }
 
+// -----------------------------------------------------------------------
+// kadou accept (§6.7, §9 slice 7)
+// -----------------------------------------------------------------------
+
+#[derive(Debug, thiserror::Error)]
+pub enum AcceptError {
+    #[error("no such draft `{0}`")]
+    DraftNotFound(String),
+    #[error("`kadou accept {0}` needs --into <folder>; a mined draft has no folder of its own")]
+    IntoRequired(String),
+    #[error("{0}")]
+    InvalidHeader(String),
+    #[error("no such folder `{0}`")]
+    NoSuchFolder(String),
+    #[error(
+        "{folder} is a git-backed folder; kadou accept only copies into a user-owned folder, never a git checkout"
+    )]
+    GitBackedTarget { folder: String },
+    #[error("failed to {action} {path}: {source}")]
+    Io {
+        action: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// The parts of an `accept` id: which draft namespace it names, the path (no extension) under
+/// that namespace's directory, the folder to default `--into` to (mined drafts have none), and
+/// the name the kata keeps once copied into its target folder.
+struct AcceptId {
+    namespace: &'static str,
+    draft_relpath: String,
+    default_folder: Option<String>,
+    own_name: String,
+}
+
+fn parse_accept_id(id: &str) -> Option<AcceptId> {
+    if !id.split('/').all(valid_id_segment) {
+        return None;
+    }
+    let (first, rest) = id.split_once('/')?;
+    if first == MINED_NS {
+        Some(AcceptId {
+            namespace: MINED_NS,
+            draft_relpath: rest.to_string(),
+            default_folder: None,
+            own_name: rest.to_string(),
+        })
+    } else {
+        Some(AcceptId {
+            namespace: PROPOSED_NS,
+            draft_relpath: id.to_string(),
+            default_folder: Some(first.to_string()),
+            own_name: rest.to_string(),
+        })
+    }
+}
+
+/// A prepared `kadou accept`: everything validated and diffed, nothing written yet — the CLI
+/// prints [`Self::diff`] and prompts `y/N` before calling [`apply_accept`].
+#[derive(Debug)]
+pub struct AcceptPreparation {
+    source: String,
+    pub draft_path: PathBuf,
+    pub target_path: PathBuf,
+    pub new_id: String,
+    pub diff: String,
+}
+
+/// `kadou accept <id> [--into <folder>]` (§6.7): resolves `id` to a draft under `proposed/`
+/// (the default, `id` itself being `folder/name`) or `mined/` (`id` is `mined/name`, which has
+/// no folder of its own and requires `into`), strict-loads its header, and refuses a target
+/// folder that doesn't exist or is a git checkout. Nothing is written yet.
+pub fn prepare_accept(
+    state_dir: &Path,
+    kata_dir: &Path,
+    id: &str,
+    into: Option<&str>,
+) -> Result<AcceptPreparation, AcceptError> {
+    let parsed = parse_accept_id(id).ok_or_else(|| AcceptError::DraftNotFound(id.to_string()))?;
+    let target_folder = into
+        .map(str::to_string)
+        .or(parsed.default_folder)
+        .ok_or_else(|| AcceptError::IntoRequired(id.to_string()))?;
+
+    let draft_path = state_dir
+        .join(parsed.namespace)
+        .join(format!("{}.sh", parsed.draft_relpath));
+    let source = std::fs::read_to_string(&draft_path)
+        .map_err(|_| AcceptError::DraftNotFound(id.to_string()))?;
+
+    let (header, diagnostics) = kadou_core::parse_header(&source);
+    if header.is_none() {
+        return Err(AcceptError::InvalidHeader(render_diagnostics(
+            id,
+            &source,
+            diagnostics,
+        )));
+    }
+
+    let target_dir = kata_dir.join(&target_folder);
+    if !target_dir.is_dir() {
+        return Err(AcceptError::NoSuchFolder(target_folder));
+    }
+    if kadou_core::git::is_git_backed(&target_dir) {
+        return Err(AcceptError::GitBackedTarget {
+            folder: target_folder,
+        });
+    }
+
+    let new_id = format!("{target_folder}/{}", parsed.own_name);
+    let target_path = kata_dir.join(format!("{new_id}.sh"));
+    let diff = render_diff(kata_dir, &new_id, &source);
+
+    Ok(AcceptPreparation {
+        source,
+        draft_path,
+        target_path,
+        new_id,
+        diff,
+    })
+}
+
+/// Copies the draft's source into its prepared target path and removes the draft (§6.7
+/// "after accept the draft file is removed").
+pub fn apply_accept(prep: &AcceptPreparation) -> Result<(), AcceptError> {
+    if let Some(parent) = prep.target_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| AcceptError::Io {
+            action: "create",
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    std::fs::write(&prep.target_path, &prep.source).map_err(|source| AcceptError::Io {
+        action: "write",
+        path: prep.target_path.clone(),
+        source,
+    })?;
+    std::fs::remove_file(&prep.draft_path).map_err(|source| AcceptError::Io {
+        action: "remove",
+        path: prep.draft_path.clone(),
+        source,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,8 +517,8 @@ mod tests {
         std::fs::create_dir_all(kata_dir.path().join("ops")).unwrap();
         propose(state_dir.path(), kata_dir.path(), "ops/hello-team", HELLO).unwrap();
 
-        let prep = prepare_accept(state_dir.path(), kata_dir.path(), "ops/hello-team", None)
-            .unwrap();
+        let prep =
+            prepare_accept(state_dir.path(), kata_dir.path(), "ops/hello-team", None).unwrap();
 
         assert_eq!(prep.new_id, "ops/hello-team");
         assert_eq!(prep.target_path, kata_dir.path().join("ops/hello-team.sh"));
@@ -386,15 +532,12 @@ mod tests {
         let kata_dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(kata_dir.path().join("ops")).unwrap();
         propose(state_dir.path(), kata_dir.path(), "ops/hello-team", HELLO).unwrap();
-        let prep = prepare_accept(state_dir.path(), kata_dir.path(), "ops/hello-team", None)
-            .unwrap();
+        let prep =
+            prepare_accept(state_dir.path(), kata_dir.path(), "ops/hello-team", None).unwrap();
 
         apply_accept(&prep).unwrap();
 
-        assert_eq!(
-            std::fs::read_to_string(&prep.target_path).unwrap(),
-            HELLO
-        );
+        assert_eq!(std::fs::read_to_string(&prep.target_path).unwrap(), HELLO);
         assert!(
             !prep.draft_path.exists(),
             "the draft must be gone after accept"
@@ -407,7 +550,13 @@ mod tests {
         let kata_dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(kata_dir.path().join("sesami")).unwrap();
         std::fs::create_dir_all(kata_dir.path().join("ops")).unwrap();
-        propose(state_dir.path(), kata_dir.path(), "sesami/argocd-sync", HELLO).unwrap();
+        propose(
+            state_dir.path(),
+            kata_dir.path(),
+            "sesami/argocd-sync",
+            HELLO,
+        )
+        .unwrap();
 
         let prep = prepare_accept(
             state_dir.path(),
@@ -430,8 +579,8 @@ mod tests {
         let changed = "#!/bin/sh\n# ---\n# about: Say hello loudly\n# risk:  low\n# ---\necho HI\n";
         propose(state_dir.path(), kata_dir.path(), "ops/hello-team", changed).unwrap();
 
-        let prep = prepare_accept(state_dir.path(), kata_dir.path(), "ops/hello-team", None)
-            .unwrap();
+        let prep =
+            prepare_accept(state_dir.path(), kata_dir.path(), "ops/hello-team", None).unwrap();
 
         assert!(!prep.diff.contains("/dev/null"));
         assert!(prep.diff.contains("-echo hi"));
