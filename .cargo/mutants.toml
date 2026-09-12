@@ -2,16 +2,16 @@
 # CI ratchet this config feeds). Schema: `cargo mutants --emit-schema=config`, or
 # https://github.com/sourcefrog/cargo-mutants/blob/v27.1.0/src/config.rs.
 #
-# `crates/kadou-mine` (empty stub, docs/design/05-prd.md §9 slice 9) is excluded wholesale --
-# nothing to mutate. `crates/kadou`'s former blanket exclusion (R15,
-# docs/design/10-mutation-baseline.md's "known blocker") is narrowed to just `fn main` itself:
-# the CLI's subprocess integration tests moved from `src/main.rs`'s own unit-test harness (where
-# `CARGO_BIN_EXE_kadou` was unreliable) to `crates/kadou/tests/cli.rs`, a real integration test
-# target, so the rest of the crate is now mutation-tested. `fn main` itself is still excluded:
-# it is never called during `cargo test` (only the built binary, exercised by `tests/cli.rs`,
-# calls it), so a mutant there can never be "caught" by any test -- that would be noise, not a
-# real coverage gap.
-exclude_globs = ["crates/kadou-mine/**"]
+# `crates/kadou`'s former blanket exclusion (R15, docs/design/10-mutation-baseline.md's "known
+# blocker") is narrowed to just `fn main` itself: the CLI's subprocess integration tests moved
+# from `src/main.rs`'s own unit-test harness (where `CARGO_BIN_EXE_kadou` was unreliable) to
+# `crates/kadou/tests/cli.rs`, a real integration test target, so the rest of the crate is now
+# mutation-tested. `fn main` itself is still excluded: it is never called during `cargo test`
+# (only the built binary, exercised by `tests/cli.rs`, calls it), so a mutant there can never be
+# "caught" by any test -- that would be noise, not a real coverage gap.
+#
+# `crates/kadou-mine` (§9 slice 9) is measured too as of 2026-09-12; nothing of its own is
+# excluded.
 exclude_re = [
   '^crates/kadou/src/main\.rs:.*replace main ->',
   # §9 slice 8: these run only over a real terminal (raw-mode key events, or an `inquire`

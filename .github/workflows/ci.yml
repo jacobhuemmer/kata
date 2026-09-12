@@ -73,10 +73,9 @@ jobs:
   # Mutation testing ratchet (docs/design/10-mutation-baseline.md has the measured baseline
   # and the exact commands). macOS only, like `test`/`msrv` above, since kadou-exec's process
   # tests are platform-sensitive and this exercises the same binaries. `.cargo/mutants.toml`
-  # excludes only the empty `kadou-mine` stub and `kadou`'s own `fn main` (never exercised by
-  # `cargo test`, only by the built binary `tests/cli.rs` drives) — every other function in
-  # every crate, `kadou` included, is covered now that R15 moved the CLI's subprocess tests
-  # into a real integration test target.
+  # excludes only `kadou`'s own `fn main` (never exercised by `cargo test`, only by the built
+  # binary `tests/cli.rs` drives) — every other function in every crate, `kadou` and
+  # `kadou-mine` included, is covered.
   #
   # This job has never actually run under Actions — the repo isn't hosted on GitHub yet (see
   # the note at the top of this file) — so its real CI wall-clock time is unverified. The
@@ -110,14 +109,16 @@ jobs:
             awk -v pct="$pct" -v min="$min" 'BEGIN { exit !(pct + 0 >= min) }' ||
               { echo "::error::$crate caught ratio ${pct}% is below the ${min}% floor"; exit 1; }
           }
-          # Floors are the 2026-09-12 re-measurement (docs/design/10-mutation-baseline.md's
-          # dated second section), rounded down to the nearest 5%. Raise a floor only after
-          # re-measuring a real improvement; never lower one just to make a red build pass.
-          # `kadou` is measured for the first time here -- `.cargo/mutants.toml` used to
-          # exclude the whole crate (its CLI subprocess tests couldn't run at all, see the
-          # doc's "Known blocker"); R15 moved them to a real integration test target, so the
-          # bin crate is now mutation-tested like everything else.
+          # Floors are each crate's own latest dated measurement in
+          # docs/design/10-mutation-baseline.md, rounded down to the nearest 5%. Raise a floor
+          # only after re-measuring a real improvement; never lower one just to make a red
+          # build pass. `kadou`'s floor is the §9 slice 8 measurement (306 mutants, 94.3%
+          # caught), superseding the earlier slice-B-refactor pass (92 mutants, 81.5%) once
+          # the ui/picker/frame/prompt modules landed with their own mutation-gap-closing
+          # tests. `kadou-mine` is measured for the first time here (§9 slice 9, 384 mutants,
+          # 278 caught / 351 viable = 79.2%).
           check kadou-core 85
           check kadou-exec 80
           check kadou-mcp 80
-          check kadou 80
+          check kadou 90
+          check kadou-mine 75

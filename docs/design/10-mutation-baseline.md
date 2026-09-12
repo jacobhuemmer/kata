@@ -351,3 +351,81 @@ top-10 and CI floor work — phase 1 (the `deny` set: `unwrap_used`, `expect_use
 `too_many_lines`, `cognitive_complexity`, `redundant_clone`, `cast_possible_truncation`,
 `cast_possible_wrap`, `cast_sign_loss`) is in place and enforced in CI, but `pedantic`/
 `nursery` at `warn` were not added. Left for a follow-up slice.
+
+## 2026-09-12 re-measurement (`kadou`, §9 slice 8 UI/picker/frame/prompt)
+
+Measured on `sd/dops/impl-08` after slice 8 landed the `ui` module (`frame`, `picker`,
+`prompt`, `style`) and its own mutation-gap-closing commits (bare-frame helpers, the picker's
+run-header glue, `spawn_editor`'s failure path, `render_list`'s exact gutter width). This
+supersedes the "slice B refactor" section above's `kadou` row (92 mutants, 75 caught, 17
+missed, 81.5%) for CI-floor purposes — that pass predates slice 8's UI code entirely, so its
+92-mutant count no longer reflects the crate.
+
+**306 mutants tested: 94.3% caught** (the exact `cargo mutants -p kadou` breakdown is carried
+in slice 8's own commit history and handoff, not repeated here — this line exists so the CI
+floor below has a citable, dated source). `.cargo/mutants.toml`'s `kadou` exclusions (picker
+event loop, raw-terminal/TTY-gated branches, `fn main`) are unchanged from the reasoning
+recorded in that file; see the slice 8 handoff for the manual pty (`expect`) transcripts that
+cover what `cargo test` structurally cannot reach.
+
+### CI floor
+
+Rounded down to the nearest 5%: `kadou` 94.3% → **90%** (up from the slice-B-refactor
+measurement's 80%).
+
+## 2026-09-12 measurement (`kadou-mine`, §9 slice 9 session mining)
+
+First measurement of `crates/kadou-mine` (`docs/design/06-session-mining.md`; previously an
+empty stub excluded from `.cargo/mutants.toml` entirely). Measured on `sd/dops/impl-09` with
+the same `cargo-mutants` v27.1.0 config, after implementing redact/normalize/cluster/rank/
+risk/parse/extract/propose/store/ingest/orchestrate/schedule and the end-to-end pipeline test
+against the synthetic fixture cluster.
+
+```
+cargo mutants -p kadou-mine -j 4
+```
+
+**384 mutants tested in ~5 minutes: 278 caught, 72 missed, 1 timeout, 33 unviable.**
+Caught ratio (of viable) = 278 / (278 + 72 + 1) = 278/351 = **79.2%**.
+
+One real correctness bug surfaced during this pass and was fixed before the final measurement:
+`redact.rs`'s R14 fail-closed high-entropy check compared the characters *outside* a matched
+span against `/`, but `/` is itself one of the characters `HIGH_ENTROPY`'s pattern matches —
+any real path (or a `$PATH_1/segment`) long enough to match at all always absorbs an adjacent
+slash into the match, so that outside-the-match comparison could structurally never fire. A
+benign long path segment was therefore always flagged as a fail-closed leak. Fixed to check
+whether the matched text itself contains a slash instead (`git log`: "R14's path guard checks
+the match itself, not its neighbors"), with two new tests pinning the corrected behavior.
+
+### Remaining misses, by module
+
+**`risk.rs` (10)** — `tool_risk`'s per-tool match guards (`has("apply")`, `has("push")`,
+`has("delete")`, the combined `has("log") || has("status") || has("diff")`, the `"mongo" |
+"mongosh"` arm, and two `||`-vs-`&&` swaps in the outer helper) are exercised by the existing
+table-driven tests only through their *outcome* (the resulting `RiskLevel`), not through a
+test that pins each individual guard failing independently — e.g. no test asserts that
+`has("apply")` alone, with every other guard held constant, is what selects `High`. Would need
+per-branch isolation tests; left for a follow-up given every existing risk-level assignment is
+already covered by at least one passing case.
+
+**`store.rs` (5)** — `state_path`/`redaction_failures_path` (2, accessors on `MineHome` this
+slice's code never calls — `state.json`/`redaction-failures.jsonl` are written by
+`orchestrate.rs` through ad hoc paths rather than these two methods, an inconsistency worth
+fixing in a follow-up so they're both used and asserted), `now_rfc3339`'s exact format (2,
+`append_audit`'s timestamp value is stored but no test parses it back and checks it round-
+trips as RFC3339), and `reject`'s already-decided guard's exact boolean shape (1, covered
+in outcome by `reject_records_a_reason_and_bans_future_approval`/`approving_twice_is_refused`
+but not by a test isolating `==`/`||` on that one line).
+
+**`orchestrate.rs` (14)** and **`normalize.rs`/`cluster.rs`/`propose.rs`/`schedule.rs` (1-5
+each)** — mostly arithmetic-constant mutants on bound/timeout constants
+(`MAX_WALL_TIME`/`MAX_BYTES_SCANNED`/`LOCK_STALE_AFTER`) and the lock file's own
+create/remove/staleness helpers, which the pipeline integration test's single-process,
+sub-second runs never exercise close to their real thresholds (a deliberately unexercised
+safety margin, not a logic gap the fixture can reach without mocking `SystemTime`), plus a
+handful of `+`/`*` swaps in per-byte/per-second unit-constant expressions and `RunSummary`
+field-deletion mutants that no test asserts the *absence* of a field on non-error paths.
+
+### CI floor
+
+Rounded down to the nearest 5%: `kadou-mine` **75%** (measured 79.2%).
