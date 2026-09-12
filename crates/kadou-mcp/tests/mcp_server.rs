@@ -453,6 +453,123 @@ async fn args_naming_a_need_is_invalid_args_not_a_shell_injection() {
     assert_eq!(value["error"], "invalid_args");
 }
 
+// B6/Later-10 (`docs/design/12-mvp-review.md` §5 "3. JSON number and bool args are never sent
+// over the wire"): deleting json_args_to_strings' Value::Number/Value::Bool arms failed no
+// test -- the schema explicitly permits int/bool/select args (`additionalProperties: true`,
+// schema.rs:78), and 86 of the Sesami folder's own args are booleans, so this is the shape a
+// real agent sends constantly. These four cases prove the wire-serialization table §6.1
+// specifies: int -> decimal text, bool -> "true"/"false", select -> the chosen option, plus
+// the three rejection paths.
+
+fn write_typed_args_kata(kata_dir: &Path) {
+    write_kata(
+        kata_dir,
+        "team/typed.sh",
+        "#!/bin/sh\n# ---\n# about: Typed args echo\n# risk:  low\n# args:\n#   count: int\n#   flag: bool\n#   mode: select dev|uat|prod\n#   name: text\n# ---\necho \"count=${COUNT} flag=${FLAG} mode=${MODE} name=${NAME}\"\n",
+    );
+}
+
+#[tokio::test]
+async fn typed_args_serialize_correctly_over_the_wire() {
+    let home = setup_sesami(|_| {});
+    write_typed_args_kata(&home.paths.kata_dir());
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let (value, is_error) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({
+            "id": "team/typed",
+            "args": {"count": 3, "flag": true, "mode": "uat", "name": "hi"},
+        }),
+    )
+    .await;
+    assert!(!is_error, "{value}");
+    assert_eq!(value["output"], "count=3 flag=true mode=uat name=hi");
+}
+
+#[tokio::test]
+async fn a_select_arg_outside_its_declared_options_is_invalid_args() {
+    let home = setup_sesami(|_| {});
+    write_typed_args_kata(&home.paths.kata_dir());
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let (value, is_error) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({
+            "id": "team/typed",
+            "args": {"count": 3, "flag": true, "mode": "nope", "name": "hi"},
+        }),
+    )
+    .await;
+    assert!(is_error);
+    assert_eq!(value["error"], "invalid_args");
+    assert!(
+        value["message"]
+            .as_str()
+            .unwrap()
+            .contains("not one of the declared options: dev, uat, prod"),
+        "{value}"
+    );
+}
+
+#[tokio::test]
+async fn a_non_string_non_number_non_bool_arg_value_is_invalid_args() {
+    let home = setup_sesami(|_| {});
+    write_typed_args_kata(&home.paths.kata_dir());
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let (value, is_error) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({
+            "id": "team/typed",
+            "args": {"count": 3, "flag": true, "mode": "uat", "name": {"a": 1}},
+        }),
+    )
+    .await;
+    assert!(is_error);
+    assert_eq!(value["error"], "invalid_args");
+    assert!(
+        value["message"]
+            .as_str()
+            .unwrap()
+            .contains("must be a string, number, or boolean"),
+        "{value}"
+    );
+}
+
+#[tokio::test]
+async fn a_non_integer_number_for_an_int_arg_is_invalid_args() {
+    let home = setup_sesami(|_| {});
+    write_typed_args_kata(&home.paths.kata_dir());
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let (value, is_error) = call(
+        &client,
+        "run_kata",
+        serde_json::json!({
+            "id": "team/typed",
+            "args": {"count": 3.5, "flag": true, "mode": "uat", "name": "hi"},
+        }),
+    )
+    .await;
+    assert!(is_error);
+    assert_eq!(value["error"], "invalid_args");
+    assert!(
+        value["message"]
+            .as_str()
+            .unwrap()
+            .contains("is not an integer"),
+        "{value}"
+    );
+}
+
 #[tokio::test]
 async fn mcp_never_writes_the_vault() {
     let home = setup_sesami(|_| {});
