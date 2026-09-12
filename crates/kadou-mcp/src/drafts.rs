@@ -243,8 +243,6 @@ pub enum AcceptError {
     IntoRequired(String),
     #[error("{0}")]
     InvalidHeader(String),
-    #[error("no such folder `{0}`")]
-    NoSuchFolder(String),
     #[error(
         "{folder} is a git-backed folder; kadou accept only copies into a user-owned folder, never a git checkout"
     )]
@@ -299,12 +297,17 @@ pub struct AcceptPreparation {
     pub target_path: PathBuf,
     pub new_id: String,
     pub diff: String,
+    /// `false` when the target folder does not exist yet -- [`apply_accept`] creates it, and
+    /// the CLI prints `created folder <name>` (§6.7, carried over from §9 slice 7: a
+    /// nonexistent folder cannot be a git checkout, so it is user-owned).
+    pub target_folder_exists: bool,
 }
 
 /// `kadou accept <id> [--into <folder>]` (§6.7): resolves `id` to a draft under `proposed/`
 /// (the default, `id` itself being `folder/name`) or `mined/` (`id` is `mined/name`, which has
 /// no folder of its own and requires `into`), strict-loads its header, and refuses a target
-/// folder that doesn't exist or is a git checkout. Nothing is written yet.
+/// folder that is a git checkout. An existing or new user-owned folder is accepted; a missing
+/// one is created by [`apply_accept`]. Nothing is written yet.
 pub fn prepare_accept(
     state_dir: &Path,
     kata_dir: &Path,
@@ -333,14 +336,15 @@ pub fn prepare_accept(
     }
 
     let target_dir = kata_dir.join(&target_folder);
-    if !target_dir.is_dir() {
-        return Err(AcceptError::NoSuchFolder(target_folder));
-    }
+    // A nonexistent folder cannot be a git checkout, so `is_git_backed` naturally returns
+    // `false` for it (its `canonicalize()` fails first) -- no separate existence check needed
+    // before this one.
     if kadou_core::git::is_git_backed(&target_dir) {
         return Err(AcceptError::GitBackedTarget {
             folder: target_folder,
         });
     }
+    let target_folder_exists = target_dir.is_dir();
 
     let new_id = format!("{target_folder}/{}", parsed.own_name);
     let target_path = kata_dir.join(format!("{new_id}.sh"));
@@ -352,6 +356,7 @@ pub fn prepare_accept(
         target_path,
         new_id,
         diff,
+        target_folder_exists,
     })
 }
 

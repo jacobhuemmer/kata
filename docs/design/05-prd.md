@@ -757,7 +757,7 @@ Record fields plus `initiator` (username if known, else `local`) and `mcp_client
 
 `propose_kata` writes `~/.local/state/kadou/proposed/<folder>/<name>.sh` and returns a unified diff. It does **not** register the kata and does **not** run (`03` §11 rule 1; `03` §9 rule 5). The server canonicalizes and contains the write path (§5.4), size-caps `source`, and strict-loads the header at propose time so a malformed draft is rejected immediately rather than at accept time.
 
-`kadou accept <id> [--into <folder>]` (default: the id's own folder) validates with the strict loader, **prints the diff and prompts `y/N`** (or `--yes`), and copies the file into an existing, **user-owned** folder under `~/.config/kadou/kata/`. **[shape, decision D]** Accept **refuses** a target that is a git-backed folder's working tree — copying an unreviewed draft straight into a `kadou get` checkout would blur "what git tracks" with "what a human approved," and the next `kadou update` could silently overwrite or orphan it. Say this once, here: **`propose_kata` results always point at a location that will land under a user-owned folder, never a git checkout, and `kadou accept` enforces it.**
+`kadou accept <id> [--into <folder>]` (default: the id's own folder) validates with the strict loader, **prints the diff and prompts `y/N`** (or `--yes`), and copies the file into an existing or new user-owned folder under `~/.config/kadou/kata/`. **[shape, decision D]** Accept **refuses** a target that is a git-backed folder's working tree — copying an unreviewed draft straight into a `kadou get` checkout would blur "what git tracks" with "what a human approved," and the next `kadou update` could silently overwrite or orphan it. Say this once, here: **`propose_kata` results always point at a location that will land under a user-owned folder, never a git checkout, and `kadou accept` enforces it.**
 
 The product never `git commit`s, `git push`es, or `kadou get`s an agent-invented URL.
 
@@ -1350,3 +1350,7 @@ Refactor slice A (`docs/design/11-code-review.md`, code review of `89a30c4`) res
 | I-16 | `dry_run` and the gates | §6.3 adds one sentence: `dry_run`/`--dry-run` is not subject to the confirm protocol, the grant gate, or the human ceiling — it never spawns and never resolves a secret value |
 | I-17 | `list_kata` aliases | §5.5 drops the claim that `aliases: []` is omitted-when-empty on a `list_kata` row — `aliases` is never printed there at all, by design (the per-connect-cost-sensitive payload); only `draft: false` is the omitted-when-unneeded field |
 | I-22 | Parser size budget | §4.3 restates "kadou's own ~200-line parser" as a design intent (small enough to audit in one sitting), not a line-count the 910-line, well-tested `header.rs` was always going to blow through |
+
+### Fourth revision — Slice 8 carry-over: accept creates a missing folder
+
+§6.7's `kadou accept` sentence now reads "an existing or new user-owned folder" (was "an existing, user-owned folder"): a nonexistent target folder cannot be a git checkout, so it is user-owned by construction, and `kadou accept` creates it (printing `created folder <name>`) instead of refusing with `no such folder`.

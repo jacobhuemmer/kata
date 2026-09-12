@@ -1561,9 +1561,14 @@ pub fn run_accept(id: String, into: Option<String>, yes: bool) -> ExitCode {
         }
     }
 
+    let target_folder_existed = prep.target_folder_exists;
     if let Err(err) = kadou_mcp::apply_accept(&prep) {
         eprintln!("error: {err}");
         return ExitCode::FAILURE;
+    }
+    if !target_folder_existed {
+        let folder = prep.new_id.split('/').next().unwrap_or(&prep.new_id);
+        println!("created folder {folder}");
     }
     println!("accepted {}", prep.new_id);
 
