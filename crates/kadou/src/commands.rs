@@ -1175,6 +1175,10 @@ pub fn run_grant_approve(pending_id: String, confirm_flag: Option<String>) -> Ex
         .filter(|n| n.secret)
         .filter_map(|n| n.value.clone())
         .collect();
+    let need_values: Vec<String> = resolved_needs
+        .iter()
+        .filter_map(|n| n.value.clone())
+        .collect();
     for arg in &resolved_args {
         env.push((arg.env_name.clone(), arg.value.clone()));
     }
@@ -1221,7 +1225,7 @@ pub fn run_grant_approve(pending_id: String, confirm_flag: Option<String>) -> Ex
                 println!("{line}");
             }
             let full_output = outcome.output.join("\n");
-            let redacted = redact::redact_all(&full_output, &secret_values);
+            let redacted = redact::redact_all(&full_output, &secret_values, &need_values);
             let output_lines = if redacted.is_empty() {
                 0
             } else {

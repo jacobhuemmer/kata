@@ -3,12 +3,8 @@
 //! same already-redacted text.
 //!
 //! §6.6 lists four encodings to redact per secret value: the literal value, its standard
-//! base64 encoding, base64 of `user:value`, and its URL-encoded form. This implementation
-//! covers the literal value, standard base64, and URL-encoding; the `user:value` (HTTP
-//! basic-auth) combination is not implemented, since a need has no generic paired
-//! "username" field to combine it with outside a Jenkins-specific convention — noted as an
-//! interpretation gap in the handoff. A minimum length of 8 characters (§6.6) keeps short
-//! values from shredding unrelated output.
+//! base64 encoding, base64 of `user:value`, and its URL-encoded form. A minimum length of 8
+//! characters keeps short values from shredding unrelated output.
 
 use base64::Engine as _;
 
@@ -16,8 +12,13 @@ const MIN_SECRET_LEN: usize = 8;
 const REDACTED: &str = "****";
 
 /// Replaces every occurrence of every secret in `secrets` (and its base64/URL-encoded forms)
-/// with `****`, in `text`.
-pub fn redact_all(text: &str, secrets: &[String]) -> String {
+/// with `****`, plus every `base64("a:b")` HTTP-basic-auth pairing over ordered pairs drawn
+/// from `need_values` (§6.6's fourth encoding, I-18) — a kata doing
+/// `curl -u "$JENKINS_USER:$JENKINS_TOKEN"` with `curl -v` echoes exactly this pairing.
+/// `need_values` is every resolved need's value, secret or not: the plain half of a pairing
+/// (e.g. `jenkins_user`) is never redacted on its own, only as part of the combined pairing —
+/// no generic "username" concept is needed, just the cross product.
+pub fn redact_all(text: &str, secrets: &[String], need_values: &[String]) -> String {
     let mut out = text.to_string();
     for secret in secrets {
         if secret.chars().count() < MIN_SECRET_LEN {
@@ -28,6 +29,28 @@ pub fn redact_all(text: &str, secrets: &[String]) -> String {
                 continue;
             }
             out = out.replace(&variant, REDACTED);
+        }
+    }
+    for pair in basic_auth_variants(need_values) {
+        out = out.replace(&pair, REDACTED);
+    }
+    out
+}
+
+/// `base64("a:b")` for every ordered pair of distinct values in `values` whose combined
+/// `"a:b"` is at least [`MIN_SECRET_LEN`] characters.
+fn basic_auth_variants(values: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in values {
+        for b in values {
+            if a == b {
+                continue;
+            }
+            let pair = format!("{a}:{b}");
+            if pair.chars().count() < MIN_SECRET_LEN {
+                continue;
+            }
+            out.push(base64::engine::general_purpose::STANDARD.encode(pair.as_bytes()));
         }
     }
     out
@@ -62,13 +85,13 @@ mod tests {
 
     #[test]
     fn redacts_the_literal_secret_value() {
-        let out = redact_all("token=hunter2ok", &["hunter2ok".to_string()]);
+        let out = redact_all("token=hunter2ok", &["hunter2ok".to_string()], &[]);
         assert_eq!(out, "token=****");
     }
 
     #[test]
     fn short_values_are_never_redacted() {
-        let out = redact_all("port=8080", &["8080".to_string()]);
+        let out = redact_all("port=8080", &["8080".to_string()], &[]);
         assert_eq!(out, "port=8080");
     }
 
@@ -78,7 +101,7 @@ mod tests {
         let b64 = base64::engine::general_purpose::STANDARD.encode(secret.as_bytes());
         let url = percent_encode(secret);
         let text = format!("raw={secret} b64={b64} url={url}");
-        let out = redact_all(&text, &[secret.to_string()]);
+        let out = redact_all(&text, &[secret.to_string()], &[]);
         assert_eq!(out, "raw=**** b64=**** url=****");
     }
 
@@ -87,6 +110,7 @@ mod tests {
         let out = redact_all(
             "a=secretvalue1 b=secretvalue2",
             &["secretvalue1".to_string(), "secretvalue2".to_string()],
+            &[],
         );
         assert_eq!(out, "a=**** b=****");
     }
@@ -100,8 +124,8 @@ mod tests {
         // values.
         let user = "ci-user".to_string();
         let token = "hunter2-token".to_string();
-        let basic = base64::engine::general_purpose::STANDARD
-            .encode(format!("{user}:{token}").as_bytes());
+        let basic =
+            base64::engine::general_purpose::STANDARD.encode(format!("{user}:{token}").as_bytes());
         let text = format!("Authorization: Basic {basic}");
         let out = redact_all(&text, &[token.clone()], &[user, token]);
         assert_eq!(out, "Authorization: Basic ****");

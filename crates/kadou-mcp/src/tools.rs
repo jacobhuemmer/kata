@@ -582,6 +582,10 @@ pub async fn run_kata(
         .filter(|n| n.secret)
         .filter_map(|n| n.value.clone())
         .collect();
+    let need_values: Vec<String> = resolved_needs
+        .iter()
+        .filter_map(|n| n.value.clone())
+        .collect();
     for arg in &resolved_args {
         env.push((arg.env_name.clone(), arg.value.clone()));
     }
@@ -647,14 +651,14 @@ pub async fn run_kata(
     tokio::select! {
         result = &mut done_rx => {
             drop(cancel_tx);
-            let value = finish_run(&history_store, record, result, &secret_values, max_output_lines);
+            let value = finish_run(&history_store, record, result, &secret_values, &need_values, max_output_lines);
             drop(guard);
             value
         }
         () = ct.cancelled() => {
             let _ = cancel_tx.send(());
             let result = done_rx.await;
-            let value = finish_run(&history_store, record, result, &secret_values, max_output_lines);
+            let value = finish_run(&history_store, record, result, &secret_values, &need_values, max_output_lines);
             drop(guard);
             value
         }
@@ -667,7 +671,7 @@ pub async fn run_kata(
                 let _keep_alive = cancel_tx;
                 let history_store = HistoryStore::new(&state_dir);
                 let result = done_rx.await;
-                let _ = finish_run(&history_store, record, result, &secret_values, max_output_lines);
+                let _ = finish_run(&history_store, record, result, &secret_values, &need_values, max_output_lines);
                 drop(guard);
             });
             (
@@ -788,6 +792,7 @@ fn finish_run(
     mut record: HistoryRecord,
     result: Result<RunOutcomeResult, tokio::sync::oneshot::error::RecvError>,
     secret_values: &[String],
+    need_values: &[String],
     max_output_lines: usize,
 ) -> (Value, bool) {
     let internal_failure = FinishOutcome {
@@ -817,7 +822,7 @@ fn finish_run(
     };
 
     let full_output = outcome.output.join("\n");
-    let redacted_full = redact::redact_all(&full_output, secret_values);
+    let redacted_full = redact::redact_all(&full_output, secret_values, need_values);
     let redacted_lines: Vec<String> = if redacted_full.is_empty() {
         Vec::new()
     } else {
