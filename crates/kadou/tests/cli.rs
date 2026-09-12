@@ -240,6 +240,7 @@ fn show_prints_header_fields_resolved_args_env_names_path_and_sha256() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // table-driven cleanup is G2/R16, not this slice
 fn sesami_dry_run_reports_default_less_needs_as_missing_not_guessed_secret_without_a_vault() {
     let home = tempfile::tempdir().unwrap();
     let src = home.path().join("catalog/src/cc4-aaa");
@@ -520,6 +521,7 @@ fn vault_set_plain_and_secret_round_trip_via_stdin_never_argv() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // table-driven cleanup is G2/R16, not this slice
 fn needs_resolve_vault_before_default_and_dry_run_reflects_it() {
     let home = tempfile::tempdir().unwrap();
     let src = home.path().join("catalog/src/cc4-aaa");
@@ -1189,7 +1191,7 @@ fn grant_allow_any_version_pins_to_nothing() {
         .success();
 
     let config = kadou_core::Config::load(&home.path().join(".config/kadou/kadou.toml")).unwrap();
-    assert_eq!(config.agent.allow, vec![id.clone()]);
+    assert_eq!(config.agent.allow, vec![id]);
 }
 
 #[test]

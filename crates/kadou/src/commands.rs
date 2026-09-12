@@ -354,7 +354,7 @@ pub fn run_check(folder_or_path: Option<String>, verbose: bool) -> ExitCode {
     if path.is_file() {
         let file = kadou_core::check_path(&path);
         let report = kadou_core::FolderReport {
-            folder: arg.clone(),
+            folder: arg,
             files: vec![file],
         };
         let ok = report.is_ok();
@@ -725,22 +725,8 @@ pub fn run_run(
         return code;
     }
 
-    let missing_needs: Vec<String> = prep
-        .resolved_needs
-        .iter()
-        .filter(|n| n.value.is_none())
-        .map(|n| n.name.clone())
-        .collect();
-    if !missing_needs.is_empty() {
-        prep.resolved_needs = match resolve_missing_needs_interactively(
-            &prep.kata,
-            &prep.vault_store_handle,
-            &mut prep.vault,
-            &missing_needs,
-        ) {
-            Ok(needs) => needs,
-            Err(code) => return code,
-        };
+    if let Err(code) = fill_missing_needs_interactively(&mut prep) {
+        return code;
     }
 
     let folder = prep
@@ -771,6 +757,27 @@ pub fn run_run(
             ExitCode::FAILURE
         }
     }
+}
+
+/// Re-resolves `prep.resolved_needs` after prompting for any missing ones, if there are any
+/// (a no-op otherwise) — the shared tail of `run_run`'s missing-needs handling.
+fn fill_missing_needs_interactively(prep: &mut RunPreparation) -> Result<(), ExitCode> {
+    let missing_needs: Vec<String> = prep
+        .resolved_needs
+        .iter()
+        .filter(|n| n.value.is_none())
+        .map(|n| n.name.clone())
+        .collect();
+    if missing_needs.is_empty() {
+        return Ok(());
+    }
+    prep.resolved_needs = resolve_missing_needs_interactively(
+        &prep.kata,
+        &prep.vault_store_handle,
+        &mut prep.vault,
+        &missing_needs,
+    )?;
+    Ok(())
 }
 
 /// `kadou show <id>` (§9 slice 3 "`kadou show` printing the header fields, resolved args, env

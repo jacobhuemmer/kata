@@ -127,15 +127,19 @@ fn parse_list_args(arguments: &serde_json::Map<String, serde_json::Value>) -> to
             .get("risk")
             .and_then(|v| v.as_str())
             .and_then(parse_risk),
+        // §5.5's schema caps `limit` at 200 and `offset` has no declared upper bound, but
+        // either is attacker/agent-influenced JSON input — a saturating conversion rather
+        // than `as usize` keeps a huge value from silently truncating on a 32-bit target
+        // instead of just paging oddly (deny(cast_possible_truncation)).
         limit: arguments
             .get("limit")
             .and_then(serde_json::Value::as_u64)
-            .map(|n| n as usize)
+            .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
             .unwrap_or(50),
         offset: arguments
             .get("offset")
             .and_then(serde_json::Value::as_u64)
-            .map(|n| n as usize)
+            .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
             .unwrap_or(0),
         include_drafts: arguments
             .get("include_drafts")

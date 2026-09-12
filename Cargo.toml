@@ -16,6 +16,21 @@ members = [
 unwrap_used = "deny"
 expect_used = "deny"
 
+# The direct ratchet for B1-B6 (R7, §6): every non-test function in the tree is under
+# clippy.toml's 60-line/15-complexity thresholds except schema.rs's tools_list_value, which
+# carries its own documented #[allow] (it's the wire-contract JSON literal, not decomposable
+# without moving lines around a value that must stay reviewable as one block). Three test
+# functions are still over 60 lines; #[allow] locally at each until G2's table-driven pass.
+too_many_lines = "deny"
+cognitive_complexity = "deny"
+
+# Real, already-fixed findings (redundant_clone C1-adjacent sites, and the two
+# attacker/signal-influenced numeric casts A5/§6 calls out) — deny so they can't return.
+redundant_clone = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

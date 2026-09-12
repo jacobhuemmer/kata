@@ -383,7 +383,9 @@ async fn terminate(pid: Option<u32>, child: &mut Child) {
         let _ = child.kill().await;
         return;
     };
-    let pgid = Pid::from_raw(pid as i32);
+    // Real PIDs never approach i32::MAX; a saturating fallback keeps this conversion
+    // panic-free without changing behavior for any PID the OS could actually hand out.
+    let pgid = Pid::from_raw(i32::try_from(pid).unwrap_or(i32::MAX));
     let _ = signal::killpg(pgid, Signal::SIGTERM);
     if tokio::time::timeout(KILL_GRACE, child.wait())
         .await

@@ -556,6 +556,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // table-driven cleanup is G2/R16, not this slice
     fn converts_a_simple_wrapper_with_globals_and_bool_coercion() {
         let dir = tempfile::tempdir().unwrap();
         write(

@@ -137,7 +137,7 @@ fn write_draft_contained(
     // panic-free even if that construction ever changes (R6).
     let Some(target_parent) = target.parent() else {
         return Err(ProposeError::Write {
-            path: target.clone(),
+            path: target,
             source: std::io::Error::other("target path has no parent directory"),
         });
     };
