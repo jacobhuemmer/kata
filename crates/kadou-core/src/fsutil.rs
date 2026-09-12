@@ -11,7 +11,7 @@ use std::path::Path;
 pub fn write_atomic_0600(path: &Path, contents: &[u8]) -> io::Result<()> {
     let dir = match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => {
-            std::fs::create_dir_all(parent)?;
+            ensure_dir_0700(parent)?;
             parent
         }
         _ => Path::new("."),
