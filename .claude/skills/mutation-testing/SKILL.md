@@ -11,11 +11,17 @@ kadou's code and checks whether the test suite catches them. A surviving
 mutant means a test exists but doesn't actually assert the thing it looks
 like it asserts.
 
-**Status in this workspace:** no `.cargo/mutants.toml` exists yet and
-`cargo-mutants` is not yet wired into CI (`.github/workflows/ci.yml` has
-`fmt`/`clippy`/`test`/`msrv`/`deny`, no `mutants` job). Run it locally per
-this skill on any slice touching safety-relevant logic; add a per-crate
-config when a crate's baseline is established enough to gate on.
+**Status in this workspace:** `.cargo/mutants.toml` exists and `mutants`
+is a sharded CI job with a per-crate floor (`docs/design/10-mutation-baseline.md`).
+This is one tool among several (CLAUDE.md "Choosing verification depth") —
+not a mandatory full run on every slice. Prefer `--in-diff` locally; a
+bare `-p <crate>` or workspace-wide run is a periodic sweep, run when a
+crate's baseline is stale or the slice is large enough to warrant one, not
+reflexively re-run to re-confirm a floor a previous slice already cleared.
+The one non-negotiable bar for any slice is a live probe of the real
+binary against every new or changed use case — mutation testing tells you
+whether your *tests* would catch a regression; it does not by itself show
+the feature works.
 
 ## Install
 

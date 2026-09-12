@@ -71,10 +71,40 @@ cargo mutants                                   # where a crate has a mutants co
 ```
 
 These mirror `.github/workflows/ci.yml` (`fmt`, `clippy`, `test` on macOS +
-Linux, `msrv`, `deny`, and now `mutants` — a per-crate mutation-score
-ratchet). Also run `cargo mutants` locally per the `mutation-testing`
-skill when a slice touches security-relevant logic (visibility,
-redaction, vault, header parsing).
+Linux, `msrv`, `deny`, and `mutants` — a per-crate mutation-score ratchet).
+The five CI-mirroring commands are unconditional; they gate the merge
+regardless of what else you run.
+
+### Choosing verification depth (Mason, 2026-09-12)
+
+The commands above are the floor, not the whole job. The bar for calling a
+slice done is a **live probe of the real binary** for every new or changed
+use case — build it, run it against a realistic isolated home (`KADOU_HOME`
+pointed at a scratch directory), and read the actual output, not a mock or
+a unit assertion standing in for it. A behavior a reviewer can't watch work
+against the real binary isn't verified yet.
+
+Beyond that floor, pick verification tools by judgment, not by checklist:
+
+- **Mutation testing** (`cargo mutants`) — prefer `--in-diff` against what
+  changed over a bare `-p <crate>` or workspace-wide run; the latter are a
+  periodic sweep, not a per-slice requirement (see `mutation-testing`
+  skill). Reach for it on security-relevant logic (visibility, redaction,
+  vault, header parsing) or when a test's assertion looks weaker than its
+  name claims.
+- **CRAP-style risk targeting** — when deciding *where* to spend limited
+  test-writing time, weight complexity against existing coverage rather
+  than treating every function as equally worth a mutation pass; a small,
+  well-covered function rarely needs the same scrutiny as a large,
+  branchy, thinly-tested one.
+- **Dependency/integration testing** — `cargo deny` (license/advisory) is
+  unconditional; reach further (an unused/outdated-dependency check, or a
+  test that exercises a real crate boundary — e.g. the actual MCP wire
+  format, not a mocked client) when the change crosses a crate boundary or
+  touches a dependency.
+
+State which tools you used and why in the commit or handoff; do not run a
+full mutation sweep just because a previous slice did.
 
 ## Small conventional commits
 
