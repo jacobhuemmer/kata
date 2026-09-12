@@ -63,7 +63,11 @@ fn extracts_the_transcript_path_from_event_markdown() {
 fn a_markdown_file_without_a_transcript_line_returns_none() {
     let dir = tempfile::tempdir().unwrap();
     let md_path = dir.path().join("event.md");
-    std::fs::write(&md_path, "# Agent session archive\n\n- **When:** 2026-09-01T00:00:00Z\n").unwrap();
+    std::fs::write(
+        &md_path,
+        "# Agent session archive\n\n- **When:** 2026-09-01T00:00:00Z\n",
+    )
+    .unwrap();
 
     assert!(read_transcript_path(&md_path).is_none());
 }
