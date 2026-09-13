@@ -56,7 +56,7 @@ Token figures for *today* are schema-replay, not a live MCP wire trace (`01` §6
 
 | Metric | Today (Sesami 32-kata folder) | kadou target | Why |
 |---|---|---|---|
-| **Tokens per connect** (`tools/list` only — `resources/list` and `prompts/list` are not called; §5.1) | ~8 800 (`01` §6.1: 33 940-byte `tools/list` ≈ 8 500 tokens @ 4 chars) | **≤ 800 tokens**, stretch **≤ 500**. CI gate: compact `tools/list` ≤ **2 800 bytes** (`07` B1). The measured payload is `docs/design/tools-list.json`: **2 028 compact bytes ≈ 507 tokens @ 4 B/token, ≈ 579 @ 3.5 B/token.** Both under budget with ~772 bytes of headroom — smaller than the first revision's 2 330 bytes because `propose_kata`'s schema shrank from six properties to two (`08` §6.2). | Four constant meta-tools, hand-authored `inputSchema` (§5.4). GitHub MCP's 93-tool ~55k dump is the failure mode (`02` §5, §7.1). |
+| **Tokens per connect** (`tools/list` only — `resources/list` and `prompts/list` are not called; §5.1) | ~8 800 (`01` §6.1: 33 940-byte `tools/list` ≈ 8 500 tokens @ 4 chars) | **≤ 800 tokens**, stretch **≤ 500**. CI gate: compact `tools/list` ≤ **2 800 bytes** (`07` B1). The measured payload is `docs/design/tools-list.json`: **2 144 compact bytes ≈ 536 tokens @ 4 B/token, ≈ 612 @ 3.5 B/token.** Both under budget with ~656 bytes of headroom — smaller than the first revision's 2 330 bytes because `propose_kata`'s schema shrank from six properties to two (`08` §6.2). | Four constant meta-tools, hand-authored `inputSchema` (§5.4). GitHub MCP's 93-tool ~55k dump is the failure mode (`02` §5, §7.1). |
 | **Tokens per run** (tool result body) | Last 50 lines, unstructured-ish JSON (`01` §4.11, `internal/mcp/tools.go`) | **≤ 1 500 tokens** typical (last **50** lines + exit code + duration_ms + log_path + history_id), **compact JSON, not pretty-printed** (`07` §3.3). Hard cap **8 192** output UTF-8 bytes before truncation notice | Server-side truncate; full log on disk, and the fresh-tier log is a plain-text file an agent's own tools can read (`07` B3). |
 | **Time to first kata after install** | curl installer, then `dops init`, then empty-or-hello-world (`03` §3 dops-today) | **≤ 60 s** wall clock from `curl \| sh` to `kadou` showing the starter folder on a warm network. **≤ 10 s** from a completed install to the first `kadou` frame / first `list_kata` on a local SSD (`09` §3.2 — there is no TUI frame to wait for) | Install = ready (`03` §3). Empty folder is a product bug (`03` §9 rule 6). |
 | **Connect cost vs library size** | Linear: 32 runbooks ~8.5k tokens; SPEC's 370 pipelines extrapolate ~98k (`01` §6.2 item 4) | **O(1)** in kata count. 32 and 370 pay the same `tools/list` | Meta-tools (`02` §1.5, mise MCP in `02` §2.3). |
@@ -349,7 +349,7 @@ Server name: `kadou`. Version: `CARGO_PKG_VERSION`. Transport: **stdio default**
 
 ### 5.2 Progressive disclosure
 
-1. **Connect:** four tool schemas (budget ≤ 2 800 bytes compact / ≤ 800 tokens; measured 2 028 B / ~507 tok).
+1. **Connect:** four tool schemas (budget ≤ 2 800 bytes compact / ≤ 800 tokens; measured 2 144 B / ~536 tok).
 2. **`list_kata`:** id, about, risk. Filterable by `query`, `folder`, `risk`, `include_drafts`. No schemas (`03` §8 rules 2 and 5).
 3. **`describe_kata`:** `args` JSON Schema generated from the header (so the two cannot drift), `needs`, `needs_missing`, `source` (header first, capped at **16 KiB** with `source_truncated: true` past the cap — an agent pays for the schema once, as prose it can read, and once as `args` JSON Schema it can validate against), `file`, `sha256`, `files` (sibling helpers a kata references, e.g. Sesami's `scripts/trigger-pipeline.sh`, so an agent can read a shared helper with its own file tools). This is layer 2.
 4. **`run_kata`:** execute; result is last N lines + metadata. Source is **not** in the result (`03` §8 rule 4).
@@ -364,11 +364,11 @@ MCP tool annotations (`readOnlyHint` on `list_kata`/`describe_kata`; `destructiv
 
 ### 5.4 Tool input schemas (JSON Schema draft 2020-12)
 
-These are the **exact, hand-authored** `inputSchema` objects served on the wire. The full `tools/list` payload, byte-for-byte, is checked in at `docs/design/tools-list.json` and covered by an `insta` snapshot test (§3.1). Compact size: **2 028 bytes** (≈ 507 tokens @ 4 B/token, ≈ 579 @ 3.5 B/token) — under the 2 800-byte CI gate with ~772 bytes to spare. `additionalProperties: false` on every root; no `$schema`, `$id`, or `title`.
+These are the **exact, hand-authored** `inputSchema` objects served on the wire. The full `tools/list` payload, byte-for-byte, is checked in at `docs/design/tools-list.json` and covered by an `insta` snapshot test (§3.1). Compact size: **2 144 bytes** (≈ 536 tokens @ 4 B/token, ≈ 612 @ 3.5 B/token) — under the 2 800-byte CI gate with ~656 bytes to spare. `additionalProperties: false` on every root; no `$schema`, `$id`, or `title`.
 
 #### `list_kata`
 
-Description: `Search kata (reviewed scripts) visible to this agent. Returns id, about, risk. No schemas.`
+Description: `kadou is a DevOps script library of kata (reviewed scripts). Search here before kubectl, helm, git, or unittest one-offs. Returns id, about, risk. No schemas.`
 
 ```json
 {
@@ -407,7 +407,7 @@ Description: `One kata: args schema, needs, risk, source. Read it before run_kat
 
 #### `run_kata`
 
-Description: `Run one kata with args. Secrets come from the vault as needs; never pass them. Above your grant it returns pending_grant.`
+Description: `Run a kadou kata. Prefer this over a one-off shell when list_kata found a match. Secrets are needs from the vault, never args. Above your grant it returns pending_grant.`
 
 ```json
 {
@@ -1220,7 +1220,7 @@ Retrieved from `https://crates.io/api/v1/crates/<name>` on **2026-09-11**. User-
 11. `kadou check` is the loader; per-folder failure isolation — `01` §9 Q12; `07` B9; `08` §6.2.
 12. Official `rmcp` 3.3.0; `serde-yaml-ng` on the import path only; `etcetera` not `directories`; `keyring-core` not bare `keyring`; **[shape]** `ratatui` removed, picker/prompt/styled-output crates added — `07` B10, B12; `09` §3.7.
 13. Starter kata embedded with non-`PATH`-colliding arg names; install = ready — `03` §2–3; `07` B6.
-14. Token budgets: ≤2 800 compact bytes / ≤800 tokens connect (measured: **2 028 B / ~507 tok**), ≤1 500 typical run, ≤60s to first kata — `07` B1; `08` §6.2 (payload shrank further from the first revision's 2 330 B).
+14. Token budgets: ≤2 800 compact bytes / ≤800 tokens connect (measured: **2 144 B / ~536 tok**), ≤1 500 typical run, ≤60s to first kata — `07` B1; `08` §6.2 (payload shrank further from the first revision's 2 330 B).
 15. Session mining is `kadou-mine` + `kadou mine`, not four MCP tools; drafts are single-file headers in the reserved, non-configurable staging areas `mined`/`proposed`, list/describe-only regardless of ceiling, until a human runs `kadou accept` — `06` §5 vs `03` §8; `07` B14; `08` §6.2.
 16. **[new, shape]** Kata is one file with a closed-grammar header; folders are namespaces; no registry — `08` §1, §11.
 17. **[new, tui]** Human review is told, not housed: `approve` in results, desktop notification, `needs you` block — `09` §4, §6.2 §11.

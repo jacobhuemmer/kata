@@ -856,7 +856,7 @@ fn mcp_schema_prints_the_tools_list_and_byte_count() {
         .stdout(predicate::str::contains("\"describe_kata\""))
         .stdout(predicate::str::contains("\"run_kata\""))
         .stdout(predicate::str::contains("\"propose_kata\""))
-        .stdout(predicate::str::contains("bytes: 2028"));
+        .stdout(predicate::str::contains("bytes: 2144"));
 }
 
 // -----------------------------------------------------------------------

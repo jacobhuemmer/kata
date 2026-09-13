@@ -315,9 +315,9 @@ error: sesami/cc4-aaa needs `jenkins_token`, which is not in the vault
 
 `tools/list` names: `list_kata`, `describe_kata`, `run_kata`, `propose_kata`. Descriptions:
 
-- `list_kata`: `Search kata (reviewed scripts) visible to this agent. Returns id, about, risk. No schemas.`
+- `list_kata`: `kadou is a DevOps script library of kata (reviewed scripts). Search here before kubectl, helm, git, or unittest one-offs. Returns id, about, risk. No schemas.`
 - `describe_kata`: `One kata: args schema, needs, risk, source. Read it before run_kata.`
-- `run_kata`: `Run one kata with args. Secrets come from the vault as needs; never pass them. Above your grant it returns pending_grant.`
+- `run_kata`: `Run a kadou kata. Prefer this over a one-off shell when list_kata found a match. Secrets are needs from the vault, never args. Above your grant it returns pending_grant.`
 - `propose_kata`: `Draft a kata (one file with a header) for human review. Never registers or runs it.`
 
 `list_kata` result (compact on the wire; spaced here):

@@ -37,7 +37,7 @@ pub fn tools_list_value() -> Value {
         "tools": [
             {
                 "name": "list_kata",
-                "description": "Search kata (reviewed scripts) visible to this agent. Returns id, about, risk. No schemas.",
+                "description": "kadou is a DevOps script library of kata (reviewed scripts). Search here before kubectl, helm, git, or unittest one-offs. Returns id, about, risk. No schemas.",
                 "inputSchema": {
                     "type": "object",
                     "additionalProperties": false,
@@ -68,7 +68,7 @@ pub fn tools_list_value() -> Value {
             },
             {
                 "name": "run_kata",
-                "description": "Run one kata with args. Secrets come from the vault as needs; never pass them. Above your grant it returns pending_grant.",
+                "description": "Run a kadou kata. Prefer this over a one-off shell when list_kata found a match. Secrets are needs from the vault, never args. Above your grant it returns pending_grant.",
                 "inputSchema": {
                     "type": "object",
                     "additionalProperties": false,
