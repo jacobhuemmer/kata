@@ -16,8 +16,9 @@ repeatable ops.
 
 Before `kubectl`, `helm`, `git status`/`diff`/`log`/`fetch`, `python3 -m
 unittest`, or Jenkins-shaped shell: **`list_kata`** with a short `query`
-(`pods`, `helm`, `git`, `unittest`, `trouble`). Do not dump the whole
-library.
+(`pods`, `helm`, `git`, `unittest`, `trouble`, `jenkins`). Do not dump
+the whole library. For Jenkins, run `jenkins-jobs` (optional `query=`)
+before guessing a job path, then `jenkins-log`.
 
 ## How to call
 
