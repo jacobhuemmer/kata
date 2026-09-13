@@ -40,47 +40,52 @@ enum Command {
     },
     /// Open a kata in $EDITOR.
     Edit { id: Option<String> },
-    /// Validate every header in a folder (or a single path).
+    /// Validate kata headers (or a single path).
     Check {
+        #[arg(value_name = "ID_OR_PATH")]
         folder_or_path: Option<String>,
         #[arg(short = 'v', long)]
         verbose: bool,
     },
-    /// Clone a folder from git.
+    /// Clone a team's kata from git.
     Get {
         url: String,
-        #[arg(long = "as", value_name = "FOLDER")]
+        #[arg(long = "as", value_name = "NAME")]
         as_folder: Option<String>,
         #[arg(long = "ref", value_name = "REF")]
         git_ref: Option<String>,
         #[arg(long, value_name = "SUB")]
         root: Option<String>,
     },
-    /// Pull a folder's git remote (every folder if none is given).
-    Update { folder: Option<String> },
-    /// Remove a folder.
+    /// Pull git remotes for installed kata.
+    Update {
+        #[arg(value_name = "NAME")]
+        folder: Option<String>,
+    },
+    /// Uninstall kata by id prefix (starter, sesami, …).
     Remove {
+        #[arg(value_name = "NAME")]
         folder: String,
         #[arg(long)]
         yes: bool,
         #[arg(long)]
         force: bool,
     },
-    /// Convert an old dops catalog into a folder.
+    /// Convert an old dops catalog into kata.
     Import {
         dir: String,
-        #[arg(long = "as", value_name = "FOLDER")]
+        #[arg(long = "as", value_name = "NAME")]
         as_folder: String,
     },
-    /// Accept a proposed or mined draft into a folder.
+    /// Accept a proposed or mined draft.
     Accept {
         id: String,
-        #[arg(long, value_name = "FOLDER")]
+        #[arg(long, value_name = "NAME")]
         into: Option<String>,
         #[arg(long)]
         yes: bool,
     },
-    /// Trust (or untrust) the project-local `./kata/` folder.
+    /// Trust (or untrust) project-local `./kata/`.
     Trust {
         #[arg(long)]
         forget: bool,
@@ -121,7 +126,8 @@ struct RunArgs {
 #[derive(Debug, Args)]
 struct ListArgs {
     query: Option<String>,
-    #[arg(long, value_name = "F")]
+    /// Restrict to one id prefix (`starter`, `sesami`, …).
+    #[arg(long = "prefix", alias = "folder", value_name = "NAME")]
     folder: Option<String>,
     #[arg(long, value_name = "R")]
     risk: Option<String>,

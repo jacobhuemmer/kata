@@ -195,8 +195,8 @@ fn push_footer(out: &mut String, frame: &BareFrame) {
     out.push('\n');
     if is_starter_only(frame) {
         out.push_str(" run     kadou run                 pick one, or:  kadou run starter/hello\n");
-        out.push_str(" new     kadou new <folder/name>   write a kata and open it\n");
-        out.push_str(" team    kadou get <git-url>       add your team's kata as a folder\n");
+        out.push_str(" new     kadou new <id>            write a kata and open it\n");
+        out.push_str(" team    kadou get <git-url>       add your team's kata\n");
         out.push_str(" agents  kadou mcp serve\n");
     } else {
         out.push_str(" run  kadou run   ·   help  kadou --help\n");
@@ -205,18 +205,12 @@ fn push_footer(out: &mut String, frame: &BareFrame) {
 
 /// The bare `kadou` frame on a TTY (§7.2, `09` §3.2).
 pub fn render_bare(frame: &BareFrame, styled: bool) -> String {
-    let folder_word = if frame.folders.len() == 1 {
-        "folder"
-    } else {
-        "folders"
-    };
     // "kata" (per docs/design/04-naming.md) is invariant under pluralization, unlike
-    // "folder"/"grant"/"draft" -- the PRD's own examples show both "5 kata" and "37 kata".
+    // "grant"/"draft" -- the PRD's own examples show both "5 kata" and "37 kata".
     let mut out = format!(
-        " {} {}   {} {folder_word} · {} kata",
+        " {} {}   {} kata",
         style::brand_mark(styled),
         style::bold("kadou", styled),
-        frame.folders.len(),
         frame.kata_count()
     );
     if let Some(needs_you) = needs_you_header(&frame.needs_you) {

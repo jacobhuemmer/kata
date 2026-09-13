@@ -1,6 +1,6 @@
 ---
 name: use-kata
-description: "Use kadou's DevOps script library (kata) instead of inventing kubectl, helm, git, unittest, or OKE one-offs. Call list_kata first. Triggers on: kubectl, helm, CrashLoop, OKE, git status, unittest, Jenkins, DevOps, list_kata, run_kata, kadou."
+description: "Use kadou's DevOps script library (kata) instead of inventing kubectl, helm, git, unittest, or OKE one-offs. Call list_kata first. Triggers on: kata, kadou, scripts, runbooks, dojo, starter, kubectl, helm, CrashLoop, OKE, git status, unittest, Jenkins, DevOps, list_kata, run_kata."
 user-invocable: true
 ---
 
@@ -11,6 +11,25 @@ a closed header. The MCP tools are `list_kata`, `describe_kata`,
 `run_kata`, and `propose_kata`. Prefer those over a one-off shell when
 the work is cluster triage, Helm, git snapshot, unittest, or other
 repeatable ops.
+
+## What people say (same library)
+
+If they say **kata**, **kadou**, **scripts**, **script library**, **runbooks**,
+**dojo**, or **starter**, they mean this library. `list_kata` is the look.
+
+| They say | You do |
+|---|---|
+| "look at my kata" / "what's in kadou" | `list_kata` `{}` |
+| "look at my scripts" / "script library" | `list_kata` `{}` |
+| "look at my runbooks" | `list_kata` `{}` (legacy dops word) |
+| "starter" / "starter dojo" / "the starter set" | `list_kata` `{ "query": "starter" }` |
+| "sesami scripts" / "the sesami dojo" | `list_kata` `{ "query": "sesami" }` |
+| "jenkins jobs" / "what's in CI" | `list_kata` `{ "query": "jenkins" }` then `jenkins-jobs` |
+| "what's on the cluster" / "k8s" / "OKE" | `list_kata` `{ "query": "k8s" }` then `k8s-list` |
+| "run the pod triage" / "CrashLoop" | `k8s-trouble` after `k8s-list` has a context |
+| "git status of this repo" | `git-snapshot` if `list_kata` `{ "query": "git" }` matches |
+
+Then `describe_kata` → `run_kata`. CLI: `kadou --plain list`, `kadou run <id>`.
 
 ## When to look
 
