@@ -69,6 +69,22 @@ fn help_lists_the_full_command_tree() {
     }
 }
 
+#[test]
+fn help_does_not_say_folder() {
+    kadou()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("folder").not())
+        .stdout(predicate::str::contains("Folder").not());
+    kadou()
+        .args(["list", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("folder").not())
+        .stdout(predicate::str::contains("Folder").not());
+}
+
 /// The non-interactive form every id-taking command with no id shares (§7.3): `assert_cmd`
 /// never gives the child a real TTY, so this exercises the exact sentence a human sees when
 /// piping/scripting `kadou run`/`show`/`edit` with no id.

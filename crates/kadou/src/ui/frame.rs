@@ -418,6 +418,10 @@ mod tests {
         };
         let text = render_bare(&frame, false);
         insta::assert_snapshot!("bare_frame_first_run_plain", text);
+        assert!(
+            !text.to_ascii_lowercase().contains("folder"),
+            "bare kadou must not say folder: {text}"
+        );
     }
 
     #[test]
@@ -475,6 +479,10 @@ mod tests {
         assert!(text.contains(" run  kadou run   ·   help  kadou --help"));
         assert!(!text.contains("agents  kadou mcp serve"));
         insta::assert_snapshot!("bare_frame_needs_you_plain", text);
+        assert!(
+            !text.to_ascii_lowercase().contains("folder"),
+            "bare kadou must not say folder: {text}"
+        );
     }
 
     #[test]
