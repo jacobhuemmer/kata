@@ -14,9 +14,9 @@ because it's on disk (`docs/design/05-prd.md` §1.1, decision 16).
 ## Where a Kata Lives
 
 ```
-~/.config/kadou/kata/<folder>/<name>.sh          # single-file form
-~/.config/kadou/kata/<folder>/<name>/kata.sh      # multi-file form, plus lib/ tests/ etc.
-./kata/<name>.sh                                  # project-local (agent-invisible until `kadou trust`)
+~/.config/kata/catalog/<folder>/<name>.sh          # single-file form
+~/.config/kata/catalog/<folder>/<name>/kata.sh      # multi-file form, plus lib/ tests/ etc.
+./kata/<name>.sh                                  # project-local (agent-invisible until `kata trust`)
 ```
 
 The id is the path under `kata/` without the extension: `sesami/cc4-aaa`,
@@ -27,11 +27,11 @@ nothing "registers" it.
 
 YAML-in-comment, closed grammar, parsed by kadou's own bespoke parser (not
 a general YAML library — `08-shape-review.md` §3.1). All six keys are
-lowercase, any order; unknown keys are a `kadou check` error.
+lowercase, any order; unknown keys are a `kata check` error.
 
 | Key | Required | Value | Notes |
 |---|---|---|---|
-| `about` | yes | one line, 1–120 chars | the description everywhere: list, `kadou show`, MCP |
+| `about` | yes | one line, 1–120 chars | the description everywhere: list, `kata show`, MCP |
 | `risk` | yes | `low` `medium` `high` `critical` | four words, no scores |
 | `needs` | no | space-separated vault names; `name=default` allowed | secrets and vault-backed values only — never settable by an agent |
 | `args` | no | block of arg lines, two-space indent | what an agent *may* set via `run_kata` |
@@ -81,7 +81,7 @@ resolved from the vault or is `missing_needs` at run time.
 # args:
 #   branch: text = main   # branch to deploy
 # ---
-# Optional notes paragraph shown by `kadou show`, not required.
+# Optional notes paragraph shown by `kata show`, not required.
 set -eu
 
 BRANCH="${BRANCH:-main}"
@@ -103,7 +103,7 @@ everything, `main()` at the bottom.
 
 A kata must cost fewer tokens than the one-off commands it replaces.
 This is the same gate as `session-mining` — run that skill's **Token
-budget** procedure (isolated `KADOU_HOME`, `kadou --plain run` vs the
+budget** procedure (isolated `KATA_HOME`, `kata --plain run` vs the
 concatenated one-off stdout+stderr, UTF-8 bytes / 4). Include the kadou
 frame / MCP envelope. Report counts only.
 
@@ -119,16 +119,16 @@ work done on FAIL.
    project-local kata not yet meant for the shared library)
 2. Write `<folder>/<name>.sh` (single-file) from the template above, or
    `<folder>/<name>/kata.sh` plus siblings for a multi-file kata (reach
-   them via `$KADOU_ROOT`, never a second `script:` field)
+   them via `$KATA_ROOT`, never a second `script:` field)
 3. `chmod +x` the file
-4. `kadou check <folder>` — must show `0 errors` before anything else
-5. `kadou show <folder>/<name>` to confirm `about`, `risk`, and the args
+4. `kata check <folder>` — must show `0 errors` before anything else
+5. `kata show <folder>/<name>` to confirm `about`, `risk`, and the args
    schema look right
-6. `kadou run <folder>/<name> --dry-run` to confirm the env var names
+6. `kata run <folder>/<name> --dry-run` to confirm the env var names
    match what the script reads
 7. Token budget: measure against the one-off sequence this kata
    replaces (`session-mining` Token budget). Must print `PASS`.
 8. If proposing from an agent session instead of writing the file
    directly, use the `propose_kata` MCP tool (`id`, `source`) — it never
-   registers or runs the kata; a human runs `kadou accept <id>` to
+   registers or runs the kata; a human runs `kata accept <id>` to
    promote it into a real folder (§6.7)

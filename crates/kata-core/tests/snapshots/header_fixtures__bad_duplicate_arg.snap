@@ -1,0 +1,14 @@
+---
+source: crates/kata-core/tests/header_fixtures.rs
+expression: diags
+---
+[
+    Diagnostic {
+        severity: Error,
+        message: "duplicate arg `x`",
+        fix: None,
+        line: 7,
+        col: 5,
+        len: 1,
+    },
+]

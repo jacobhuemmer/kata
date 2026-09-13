@@ -1,0 +1,16 @@
+---
+source: crates/kata-core/tests/header_fixtures.rs
+expression: diags
+---
+[
+    Diagnostic {
+        severity: Error,
+        message: "tabs are not allowed in the header",
+        fix: Some(
+            "use spaces",
+        ),
+        line: 4,
+        col: 8,
+        len: 1,
+    },
+]

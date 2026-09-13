@@ -1,0 +1,25 @@
+---
+source: crates/kata-core/tests/header_fixtures.rs
+expression: header
+---
+ParsedHeader {
+    about: "List a directory",
+    risk: Low,
+    needs: [],
+    args: [
+        Arg {
+            name: "target_dir",
+            ty: Text,
+            default: Some(
+                Text(
+                    ".",
+                ),
+            ),
+            help: None,
+        },
+    ],
+    alias: [],
+    timeout: None,
+    notes: None,
+    shebang: None,
+}

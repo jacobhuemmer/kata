@@ -7,7 +7,7 @@ user-invocable: false
 # Clean Code Functions for kadou (Rust)
 
 Apply these principles when writing or modifying functions across
-`kadou-core`, `kadou-exec`, `kadou-mcp`, `kadou-mine`, and the `kadou` bin.
+`kata-core`, `kata-exec`, `kata-mcp`, `kata-mine`, and the `kadou` bin.
 
 ## Size
 

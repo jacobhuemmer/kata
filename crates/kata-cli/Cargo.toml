@@ -1,0 +1,39 @@
+[package]
+name = "kata-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kata"
+path = "src/main.rs"
+
+[dependencies]
+anstream.workspace = true
+anstyle.workspace = true
+clap = { workspace = true, features = ["derive"] }
+clap_complete.workspace = true
+crossterm.workspace = true
+humantime.workspace = true
+inquire.workspace = true
+kata-core = { path = "../kata-core", version = "0.1.0" }
+kata-exec = { path = "../kata-exec", version = "0.1.0" }
+kata-mcp = { path = "../kata-mcp", version = "0.1.0" }
+kata-mine = { path = "../kata-mine", version = "0.1.0" }
+nucleo-matcher.workspace = true
+rust-embed.workspace = true
+serde_json.workspace = true
+similar.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+toml_edit.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[dev-dependencies]
+assert_cmd.workspace = true
+insta.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/kadou",
-    "crates/kadou-core",
-    "crates/kadou-exec",
-    "crates/kadou-mcp",
-    "crates/kadou-mine",
+    "crates/kata-cli",
+    "crates/kata-core",
+    "crates/kata-exec",
+    "crates/kata-mcp",
+    "crates/kata-mine",
 ]
 
 [workspace.lints.clippy]

@@ -4,7 +4,7 @@
 #
 # `fmt`, `clippy`, and `deny` run once on Linux since their result does not depend on OS;
 # `test` and `msrv` run on both macOS and Linux because `/bin/sh` differs there (dash vs.
-# bash-in-POSIX-mode) and kadou-exec shells out to it.
+# bash-in-POSIX-mode) and kata-exec shells out to it.
 name: CI
 
 on:
@@ -71,11 +71,11 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   # Mutation testing ratchet (docs/design/10-mutation-baseline.md has the measured baseline
-  # and the exact commands). macOS only, like `test`/`msrv` above, since kadou-exec's process
+  # and the exact commands). macOS only, like `test`/`msrv` above, since kata-exec's process
   # tests are platform-sensitive and this exercises the same binaries. `.cargo/mutants.toml`
   # excludes only `kadou`'s own `fn main` (never exercised by `cargo test`, only by the built
   # binary `tests/cli.rs` drives) — every other function in every crate, `kadou` and
-  # `kadou-mine` included, is covered.
+  # `kata-mine` included, is covered.
   #
   # Sharded 4 ways (Later-4, `docs/design/12-mvp-review.md` §5/§6): a full `--workspace` run
   # measured 1592 mutants in 56 minutes at `-j 4` on an 18-core Mac, against a 60-minute wall
@@ -136,8 +136,8 @@ jobs:
           # docs/design/10-mutation-baseline.md, rounded down to the nearest 5%. Raise a floor
           # only after re-measuring a real improvement; never lower one just to make a red
           # build pass.
-          check kadou-core 85
-          check kadou-exec 80
-          check kadou-mcp 80
-          check kadou 90
-          check kadou-mine 75
+          check kata-core 85
+          check kata-exec 80
+          check kata-mcp 80
+          check kata-cli 90
+          check kata-mine 75

@@ -26,13 +26,13 @@ fn parse_risk_level_rejects_unknown_word() {
 }
 ```
 
-Run `cargo test -p kadou-core parse_risk_level_rejects_unknown_word` —
+Run `cargo test -p kata-core parse_risk_level_rejects_unknown_word` —
 expect a compile error or a failing assertion. If it passes immediately,
 either the test is wrong or the behavior already exists.
 
 **Commit the failing test by itself:**
 ```
-test(kadou-core): add failing case for unknown risk word
+test(kata-core): add failing case for unknown risk word
 ```
 
 **Rules for Red:**
@@ -48,12 +48,12 @@ Write the smallest implementation that makes the test pass. Don't
 generalize beyond what this test demands — the next Red step will force
 the next behavior.
 
-Run `cargo test -p kadou-core` — expect green, and re-run the full
+Run `cargo test -p kata-core` — expect green, and re-run the full
 `cargo test --workspace` before committing.
 
 **Commit the passing implementation as its own commit:**
 ```
-feat(kadou-core): reject unknown risk words in the header parser
+feat(kata-core): reject unknown risk words in the header parser
 ```
 
 Two commits minimum per behavior — never squash the failing-test commit
@@ -74,7 +74,7 @@ duplication, apply `clean-code-functions`/`clean-code-design`. Re-run
 `cargo test --workspace` after every change, not just at the end. If the
 refactor is more than a one-line cleanup, give it its own commit:
 ```
-refactor(kadou-core): extract risk-word validation from parse_header
+refactor(kata-core): extract risk-word validation from parse_header
 ```
 
 Never add new behavior during refactor — only restructure.
@@ -100,8 +100,8 @@ Back to Red. Add the next case. Drive the next behavior.
 ## Fixing a Bug: Test First, Always
 
 1. Write a test that fails the same way the bug manifests — RED. Commit it
-   alone: `test(kadou-mcp): reproduce needs-as-args bypass`
-2. Fix the bug — GREEN. Commit: `fix(kadou-mcp): reject needs named in
+   alone: `test(kata-mcp): reproduce needs-as-args bypass`
+2. Fix the bug — GREEN. Commit: `fix(kata-mcp): reject needs named in
    run_kata args`
 3. The test is now a permanent regression guard
 

@@ -1,0 +1,16 @@
+---
+source: crates/kata-core/tests/header_fixtures.rs
+expression: diags
+---
+[
+    Diagnostic {
+        severity: Error,
+        message: "select without options",
+        fix: Some(
+            "list at least one option, e.g. `select a|b|c`",
+        ),
+        line: 6,
+        col: 11,
+        len: 6,
+    },
+]

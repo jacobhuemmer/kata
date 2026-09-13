@@ -34,7 +34,7 @@ workspace.
   `tempfile::tempdir()` per test, as `sesami_shaped.rs` and `mcp_server.rs`
   already do, not a shared static directory
 - **Repeatable** — control time, randomness, and environment explicitly;
-  never depend on the real `$HOME` (see "`KADOU_HOME` Isolation" below)
+  never depend on the real `$HOME` (see "`KATA_HOME` Isolation" below)
 - **Self-validating** — assert, don't `println!` and eyeball the output
 - **Timely** — write the test before or alongside the code (`tdd-workflow`)
 
@@ -69,7 +69,7 @@ workspace.
 
 - The header parser's diagnostics and the `tools/list` byte payload are
   snapshot-tested with `insta`, matching the existing pattern in
-  `crates/kadou-core/tests/header_fixtures.rs`:
+  `crates/kata-core/tests/header_fixtures.rs`:
   ```rust
   insta::assert_debug_snapshot!(format!("bad_{name}"), diags);
   ```
@@ -80,18 +80,18 @@ workspace.
   an accepted snapshot is a claim that the new output is correct, not just
   different
 
-## `tempfile` Isolation with `KADOU_HOME` — Never the Real `$HOME`
+## `tempfile` Isolation with `KATA_HOME` — Never the Real `$HOME`
 
 - Every test that touches paths, config, the vault, or history sets
-  `KADOU_HOME` to a `tempfile::tempdir()` root, matching `paths.rs`'s
+  `KATA_HOME` to a `tempfile::tempdir()` root, matching `paths.rs`'s
   `discover()`/`resolve()` contract — never read or write the developer's
-  real `~/.config/kadou` from a test
+  real `~/.config/kata` from a test
   ```rust
   let home = tempfile::tempdir().unwrap();
-  let paths = kadou_core::paths::resolve(Some(home.path().to_path_buf()), None).unwrap();
+  let paths = kata_core::paths::resolve(Some(home.path().to_path_buf()), None).unwrap();
   ```
 - Do not rely on `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME` being
-  unset or set to anything in particular — pin `KADOU_HOME` explicitly, as
+  unset or set to anything in particular — pin `KATA_HOME` explicitly, as
   the existing `paths.rs` tests do
 - A test that skips this isolation is not repeatable across machines or CI
   and can corrupt a developer's real kadou state — treat this as a hard
@@ -103,7 +103,7 @@ workspace.
   mocking framework — a fake `Runner` that records what it was asked to
   run is easier to read than a mock-expectation DSL
 - Only fake at real boundaries: the process runner, the clock, the
-  filesystem when a fixture won't do — never fake `kadou-core` domain
+  filesystem when a fixture won't do — never fake `kata-core` domain
   logic itself
 
 ## One Concept Per Test

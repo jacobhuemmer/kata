@@ -53,17 +53,17 @@ why if a kata truly needs it.
   ```
 - Always quote: `"${var}"`, not `$var`
 - Lowercase for local script variables, uppercase only for the kadou-
-  provided env vars (`KADOU_ID`, `KADOU_FILE`, `KADOU_DIR`, `KADOU_ROOT`,
+  provided env vars (`KATA_ID`, `KATA_FILE`, `KATA_DIR`, `KATA_ROOT`,
   and the kata's own declared args/needs)
 
-## Shared Helpers via `$KADOU_ROOT`
+## Shared Helpers via `$KATA_ROOT`
 
-A single-file kata reaches a sibling helper through `$KADOU_ROOT`, not a
+A single-file kata reaches a sibling helper through `$KATA_ROOT`, not a
 second `script:` field (§4.6):
 ```sh
-TRIGGER="${KADOU_ROOT}/scripts/trigger-pipeline.sh"
+TRIGGER="${KATA_ROOT}/scripts/trigger-pipeline.sh"
 ```
-`KADOU_ROOT` is the top-level folder under `kata/`, stable regardless of
+`KATA_ROOT` is the top-level folder under `kata/`, stable regardless of
 how deeply the kata itself is nested — this is what `kadou import` rewrites
 the old dops `REPO_ROOT`/`TRIGGER` idiom into.
 

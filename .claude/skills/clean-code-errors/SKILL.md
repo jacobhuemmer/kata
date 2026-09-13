@@ -11,8 +11,8 @@ the workspace.
 
 ## thiserror in Libraries
 
-- Every library crate (`kadou-core`, `kadou-exec`, `kadou-mcp`,
-  `kadou-mine`) defines its own `thiserror`-derived error enum, matching
+- Every library crate (`kata-core`, `kata-exec`, `kata-mcp`,
+  `kata-mine`) defines its own `thiserror`-derived error enum, matching
   the existing pattern:
   ```rust
   #[derive(Debug, thiserror::Error)]
@@ -38,7 +38,7 @@ the workspace.
 - If a bin-only code path genuinely needs to bag heterogeneous errors with
   no caller that inspects the variant (a true one-off CLI glue path),
   `anyhow` is an acceptable *addition*, scoped to the `kadou` bin crate
-  only — never in `kadou-core`/`kadou-exec`/`kadou-mcp`/`kadou-mine`. Note
+  only — never in `kata-core`/`kata-exec`/`kata-mcp`/`kata-mine`. Note
   the addition in the commit message; don't add it silently
 
 ## Sentence Errors With a Fix Line
@@ -84,7 +84,7 @@ the workspace.
 
 - Validate inputs where they cross a boundary: CLI args in `commands.rs`,
   MCP tool args in `tools.rs`, config in `config.rs` — not deep inside
-  `kadou-core` domain logic that assumes already-validated input
+  `kata-core` domain logic that assumes already-validated input
 - A malformed header is an error at `kadou check`/load time, not a
   silent default (§4.7: "a bad header is loud, not silently treated as a
   helper file")

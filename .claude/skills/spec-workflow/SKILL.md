@@ -20,7 +20,7 @@ required it.
 3. `docs/design/07-review.md` — resolved findings, historical context only
 4. `docs/design/03-principles.md` — charter and non-goals; consult before
    adding anything not already in the PRD
-5. `docs/design/06-session-mining.md` — `kadou-mine` pipeline contract,
+5. `docs/design/06-session-mining.md` — `kata-mine` pipeline contract,
    with packaging overridden by PRD §6.8 (Rust crate, not Go `cmd/`)
 
 `docs/design/tools-list.json` is not prose — it is the literal byte

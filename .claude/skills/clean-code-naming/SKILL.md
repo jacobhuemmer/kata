@@ -14,8 +14,8 @@ vocabulary rule.
 
 ## Crate and Module Names
 
-- Short, lowercase, `snake_case`, single concept: `kadou-core`, `kadou-exec`,
-  `kadou-mcp`, `kadou-mine`
+- Short, lowercase, `snake_case`, single concept: `kata-core`, `kata-exec`,
+  `kata-mcp`, `kata-mine`
 - A module names what it *provides*: `header`, `risk`, `vault`, `visibility`
   — not `util`, `common`, `helpers`, `misc`
 - The module name is part of the call site: `header::parse_header`, not
@@ -24,7 +24,7 @@ vocabulary rule.
 ## Trait Names
 
 - Single-method traits use the verb + `-er`/behavior suffix when idiomatic:
-  `Runner` (`kadou_exec::Runner`)
+  `Runner` (`kata_exec::Runner`)
 - Multi-method traits describe the capability, not the implementer:
   `VaultStore`, not `VaultImpl`
 - Do not prefix with `I` — not Rust idiom

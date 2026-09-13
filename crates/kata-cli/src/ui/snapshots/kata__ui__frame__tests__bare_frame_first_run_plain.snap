@@ -1,0 +1,15 @@
+---
+source: crates/kata-cli/src/ui/frame.rs
+assertion_line: 414
+expression: text
+---
+ ▸ kata   2 kata
+
+ starter
+   hello       ● low   Print a greeting
+   disk-usage  ● low   Disk usage of a directory
+
+ run     kata run                 pick one, or:  kata run starter/hello
+ new     kata new <id>            write a kata and open it
+ team    kata get <git-url>       add your team's kata
+ agents  kata mcp serve

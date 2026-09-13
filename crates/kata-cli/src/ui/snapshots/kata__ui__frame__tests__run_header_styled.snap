@@ -1,0 +1,8 @@
+---
+source: crates/kata-cli/src/ui/frame.rs
+expression: styled
+---
+ ▸ sesami/ses-deploy  [35m●[0m critical
+   version=25.6.1.2  oke_cluster=uat
+   needs  [32m✓[0m vault
+ ────────────────────────────────────────────────────────────────────────

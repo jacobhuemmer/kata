@@ -7,7 +7,7 @@ user-invocable: false
 # Clean Code Design Principles for kadou (Rust)
 
 Apply these principles when making structural or architectural decisions
-across the `kadou-core` / `kadou-exec` / `kadou-mcp` / `kadou-mine` / `kadou`
+across the `kata-core` / `kata-exec` / `kata-mcp` / `kata-mine` / `kadou`
 workspace.
 
 ## YAGNI — You Aren't Gonna Need It
@@ -41,11 +41,11 @@ workspace.
 
 ## Separation of Concerns
 
-- I/O and domain logic stay separate: `kadou-core` parses and resolves,
-  `kadou-exec` runs processes, `kadou-mcp` speaks the wire protocol, the
+- I/O and domain logic stay separate: `kata-core` parses and resolves,
+  `kata-exec` runs processes, `kata-mcp` speaks the wire protocol, the
   `kadou` bin wires CLI + config + calls into all three
 - Don't mix wire-format concerns (JSON shaping for `tools/list`) into
-  `kadou-core` domain types — `kadou-mcp/src/schema.rs` and `tools.rs` own
+  `kata-core` domain types — `kata-mcp/src/schema.rs` and `tools.rs` own
   that translation
 
 ## Composition Over Inheritance

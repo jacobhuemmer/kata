@@ -64,8 +64,8 @@ mod redact { pub fn redact_all(text: &str, secrets: &[String]) -> String { /* ..
 
 ## Dependency Inversion Principle
 
-- `kadou-mcp` depends on `kadou-core` and `kadou-exec`'s public types, not
-  the reverse — the crate graph is a DAG, `kadou-core` knows nothing about
+- `kata-mcp` depends on `kata-core` and `kata-exec`'s public types, not
+  the reverse — the crate graph is a DAG, `kata-core` knows nothing about
   MCP or exec
 - Accept trait bounds or narrow interfaces as parameters, return concrete
   types — the same "accept interfaces, return structs" idiom carries over
@@ -80,7 +80,7 @@ mod redact { pub fn redact_all(text: &str, secrets: &[String]) -> String { /* ..
   traits for polymorphism
 - Accept `&impl Trait` / generic bounds, return concrete types — the Rust
   form of DIP
-- Keep the crate dependency graph acyclic: if `kadou-mine` ever needs
-  something from `kadou-mcp`, extract a shared type into `kadou-core`
-  instead of introducing a back-edge (`kadou-mine` currently has **no MCP
+- Keep the crate dependency graph acyclic: if `kata-mine` ever needs
+  something from `kata-mcp`, extract a shared type into `kata-core`
+  instead of introducing a back-edge (`kata-mine` currently has **no MCP
   types** — keep it that way, per §3 "Why split this way")

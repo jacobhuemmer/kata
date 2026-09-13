@@ -1,0 +1,28 @@
+[package]
+name = "kata-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "time", "process"] }
+tokio-util.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+kata-core = { path = "../kata-core", version = "0.1.0" }
+kata-exec = { path = "../kata-exec", version = "0.1.0" }
+thiserror.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+humantime.workspace = true
+similar.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+rmcp = { workspace = true, features = ["server", "client", "macros", "transport-io"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

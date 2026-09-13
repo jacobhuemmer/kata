@@ -1,16 +1,16 @@
 #!/bin/sh
-# kadou install one-liner (docs/design/05-prd.md §7.5).
+# Kata install one-liner (docs/design/05-prd.md §7.5, 13-kata-rename.md).
 #
 #   curl -fsSL https://<stable-install-url>/install.sh | sh
 #
 # POSIX sh, no bashisms (CI runs this under both dash and bash-in-POSIX-mode, per §9
 # "Cross-cutting"). Detects OS/arch, downloads the release tarball and its SHA256SUMS,
-# verifies the tarball's checksum before touching disk, then installs the single `kadou`
-# binary. Idempotent: only the binary is replaced -- config, vault, and kata folders under
-# KADOU_INSTALL_DIR's sibling XDG dirs are never touched.
+# verifies the tarball's checksum before touching disk, then installs the single `kata`
+# binary. Idempotent: only the binary is replaced -- config, vault, and catalog under
+# KATA_INSTALL_DIR's sibling XDG dirs are never touched.
 #
 # Stable URL and GitHub release publishing are gated (repo README Gates) -- this script
-# specifies the shape only; KADOU_INSTALL_BASE_URL must be set to a real (or, in tests, a
+# specifies the shape only; KATA_INSTALL_BASE_URL must be set to a real (or, in tests, a
 # `file://`) location.
 set -eu
 
@@ -41,9 +41,9 @@ sha256_of() {
 }
 
 main() {
-  version="${KADOU_VERSION:-latest}"
-  base_url="${KADOU_INSTALL_BASE_URL:-https://REPLACE-WITH-STABLE-INSTALL-URL}"
-  install_dir="${KADOU_INSTALL_DIR:-$HOME/.local/bin}"
+  version="${KATA_VERSION:-${KADOU_VERSION:-latest}}"
+  base_url="${KATA_INSTALL_BASE_URL:-${KADOU_INSTALL_BASE_URL:-https://REPLACE-WITH-STABLE-INSTALL-URL}}"
+  install_dir="${KATA_INSTALL_DIR:-${KADOU_INSTALL_DIR:-$HOME/.local/bin}}"
   dry_run=0
 
   for arg in "$@"; do
@@ -60,7 +60,7 @@ main() {
 
   os=$(uname -s | tr '[:upper:]' '[:lower:]')
   arch=$(uname -m)
-  asset="kadou-${version}-${os}-${arch}.tar.gz"
+  asset="kata-${version}-${os}-${arch}.tar.gz"
   asset_url="${base_url%/}/${version}/${asset}"
   sums_url="${base_url%/}/${version}/SHA256SUMS"
 
@@ -85,18 +85,18 @@ main() {
   fi
 
   if [ "$dry_run" -eq 1 ]; then
-    echo "kadou ${version} → ${install_dir}/kadou   sha256 ok (dry run)"
+    echo "kata ${version} → ${install_dir}/kata   sha256 ok (dry run)"
     return 0
   fi
 
   tar -xzf "$work_dir/asset.tar.gz" -C "$work_dir"
   mkdir -p "$install_dir"
-  mv "$work_dir/kadou" "$install_dir/kadou"
-  chmod +x "$install_dir/kadou"
+  mv "$work_dir/kata" "$install_dir/kata"
+  chmod +x "$install_dir/kata"
 
-  echo "kadou ${version} → ${install_dir}/kadou   sha256 ok"
-  echo "  next:  kadou            open the library"
-  echo "         kadou mcp serve  for agents"
+  echo "kata ${version} → ${install_dir}/kata   sha256 ok"
+  echo "  next:  kata            open the library"
+  echo "         kata mcp serve  for agents"
 }
 
 main "$@"

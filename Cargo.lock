@@ -1249,7 +1249,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kadou"
+name = "kata-cli"
 version = "0.1.0"
 dependencies = [
  "anstream",
@@ -1261,10 +1261,10 @@ dependencies = [
  "humantime",
  "inquire",
  "insta",
- "kadou-core",
- "kadou-exec",
- "kadou-mcp",
- "kadou-mine",
+ "kata-core",
+ "kata-exec",
+ "kata-mcp",
+ "kata-mine",
  "nucleo-matcher",
  "predicates",
  "rust-embed",
@@ -1277,7 +1277,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kadou-core"
+name = "kata-core"
 version = "0.1.0"
 dependencies = [
  "age",
@@ -1286,7 +1286,7 @@ dependencies = [
  "etcetera",
  "humantime",
  "insta",
- "kadou-exec",
+ "kata-exec",
  "keyring-core",
  "serde",
  "serde_json",
@@ -1302,7 +1302,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "kadou-exec"
+name = "kata-exec"
 version = "0.1.0"
 dependencies = [
  "nix",
@@ -1312,12 +1312,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "kadou-mcp"
+name = "kata-mcp"
 version = "0.1.0"
 dependencies = [
  "humantime",
- "kadou-core",
- "kadou-exec",
+ "kata-core",
+ "kata-exec",
  "rmcp",
  "serde",
  "serde_json",
@@ -1332,11 +1332,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "kadou-mine"
+name = "kata-mine"
 version = "0.1.0"
 dependencies = [
  "humantime",
- "kadou-core",
+ "kata-core",
  "regex",
  "serde",
  "serde_json",

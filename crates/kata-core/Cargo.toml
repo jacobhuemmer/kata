@@ -1,0 +1,35 @@
+[package]
+name = "kata-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+keyring = ["dep:keyring-core", "dep:apple-native-keyring-store"]
+
+[dependencies]
+age.workspace = true
+apple-native-keyring-store = { workspace = true, optional = true, features = ["keychain"] }
+base64.workspace = true
+etcetera.workspace = true
+humantime.workspace = true
+kata-exec = { path = "../kata-exec", version = "0.1.0" }
+keyring-core = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+sha2.workspace = true
+similar.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+zeroize = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+insta.workspace = true
+
+[lints]
+workspace = true

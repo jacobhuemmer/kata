@@ -33,10 +33,10 @@ cargo install cargo-mutants --locked
 
 ```sh
 # See what would be mutated, no testing
-cargo mutants --list -p kadou-mcp
+cargo mutants --list -p kata-mcp
 
 # Run mutation testing on one crate (start here — full-workspace runs are slow)
-cargo mutants -p kadou-mcp
+cargo mutants -p kata-mcp
 
 # Only mutate what changed since main (fast, use before opening a PR)
 cargo mutants --in-diff <(git diff main)
@@ -50,17 +50,17 @@ runs are for a periodic sweep, not every change.
 
 Priority order, matching kadou's own safety invariants (`CLAUDE.md`):
 
-1. `kadou-mcp/src/visibility.rs` — `human_ceiling`/`agent_ceiling`/
+1. `kata-mcp/src/visibility.rs` — `human_ceiling`/`agent_ceiling`/
    `is_visible_risk` (agents-never-see-high/critical is a tested
    invariant; mutation testing proves the test suite would actually catch
    a broken comparison operator here)
-2. `kadou-mcp/src/redact.rs` — `redact_all`/`variants` (a mutant that
+2. `kata-mcp/src/redact.rs` — `redact_all`/`variants` (a mutant that
    drops one redaction variant and survives means a secret could leak)
-3. `kadou-mcp/src/env.rs` — `build_mcp_env` (the allowlist itself)
-4. `kadou-core/src/header.rs` — the bespoke header parser (§6.2 risk 1
+3. `kata-mcp/src/env.rs` — `build_mcp_env` (the allowlist itself)
+4. `kata-core/src/header.rs` — the bespoke header parser (§6.2 risk 1
    already treats its error messages as a tested contract via `insta`;
    mutation testing complements that)
-5. `kadou-core/src/vault.rs` — resolution logic (not the `age` crypto
+5. `kata-core/src/vault.rs` — resolution logic (not the `age` crypto
    itself — see `clean-code-boundaries` on learning tests instead)
 
 ## Reading Results
@@ -109,7 +109,7 @@ writing a test that can't distinguish real behavior.
 ## What It Does NOT Catch
 
 - Missing scenarios entirely (it only mutates code that's covered)
-- Concurrency bugs (relevant to `kadou-mcp`'s per-server concurrency
+- Concurrency bugs (relevant to `kata-mcp`'s per-server concurrency
   limit, §6.1 — cover those with a dedicated concurrency test instead)
 - Incorrect error message text (mutation doesn't touch string literals by
   default) — that's what the `insta` snapshot corpus in
