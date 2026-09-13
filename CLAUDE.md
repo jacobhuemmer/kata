@@ -130,20 +130,21 @@ parallel, respect the crate/directory boundaries your assignment states
 Use exactly these words in code, comments, commit messages, and skills —
 they are the PRD's own nouns (`docs/design/05-prd.md` §1.1, §4):
 
-**kadou** (the product/binary), **kata** (one script with a header — the
-unit), **folder** (a directory under `kata/`, a namespace, not a
-registry), **header** (the closed six-key comment grammar, §4.3), **args**
-(what an agent may set via `run_kata`), **needs** (what only the vault may
-supply), **vault** (the age-encrypted secret store), **risk** (one of
-`low`/`medium`/`high`/`critical`), **grant** (human approval of a pending
-high/critical run), **draft** (an unaccepted `proposed/` or `mined/`
-kata), **history** (the run-record + log store).
+**Kata** (the product/binary/`kata mcp serve`), **kata** (one script with a
+header — the unit), **catalog** (the on-disk collection under
+`~/.config/kata/catalog/`, not a registry), **header** (the closed six-key
+comment grammar, §4.3), **args** (what an agent may set via `run_kata`),
+**needs** (what only the vault may supply), **vault** (the age-encrypted
+secret store), **risk** (one of `low`/`medium`/`high`/`critical`), **grant**
+(human approval of a pending high/critical run), **draft** (an unaccepted
+`proposed/` or `mined/` kata), **history** (the run-record + log store).
+See `docs/design/13-kata-rename.md`.
 
-Never write **runbook** or **catalog** in code, comments, or new
-`.claude/skills/*` content — those are the legacy Go dops nouns this
-rewrite replaces (`docs/design/05-prd.md` §1.1 migration table). The two
-sanctioned exceptions: this vocabulary rule itself, and the migration note
-in `create-kata/SKILL.md` explaining what it replaces.
+Never write **runbook** in new `.claude/skills/*` content except as a
+user-utterance synonym for kata. **catalog** is the on-disk collection
+(`13-kata-rename.md`), not the dops registry. Never write **kadou** in new
+copy. The migration note in `create-kata/SKILL.md` may still mention
+runbook.yaml.
 
 ## Safety invariants — never regress these
 
