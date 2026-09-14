@@ -74,6 +74,17 @@ fn list_rows(
     rows
 }
 
+/// Agents often pass MCP-style `query=k8s` as the positional CLI query. Treat that as `k8s`.
+fn normalize_list_query(q: &str) -> String {
+    let q = q.trim();
+    for prefix in ["query=", "q="] {
+        if let Some(rest) = q.strip_prefix(prefix) {
+            return rest.trim().to_string();
+        }
+    }
+    q.to_string()
+}
+
 pub fn run_list(query: Option<String>, folder: Option<String>, risk: Option<String>) -> ExitCode {
     let paths = resolve_paths();
     materialize_starter(&paths);
@@ -99,7 +110,7 @@ pub fn run_list(query: Option<String>, folder: Option<String>, risk: Option<Stri
         }
     };
 
-    let query_lower = query.map(|q| q.to_lowercase());
+    let query_lower = query.map(|q| normalize_list_query(&q).to_lowercase());
     let rows = list_rows(
         &scanned,
         folder.as_deref(),

@@ -54,6 +54,16 @@ run `k8s-list` (contexts → namespaces → workloads) before `k8s-trouble`.
 CLI fallback when MCP is not connected: `kata --plain list`,
 `kata --plain show <id>`, `kata --plain run <id> k=v`.
 
+On **Cursor agent**, `GetDynamicTools` search for `kata` / `list_kata` often
+returns **no matches** even when `~/.cursor/mcp.json` has `kata mcp serve`.
+Do not hunt Kata through lazy-mcp. Use the `kata` CLI (or CallDynamicTool
+on a `kata` namespace if one appears in the catalog). CLI list query is
+positional: `kata --plain list k8s`, not `kata list query=k8s`.
+
+`k8s-trouble` does many kubectl calls. Keep `limit` at 5 or less in a
+Cursor shell (default 30s). One pod: pass `pod=`. Namespace-wide with
+`limit=20` will time out.
+
 ## Token budget
 
 A kata must cost fewer tokens than the one-off commands it replaces.

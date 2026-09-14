@@ -85,6 +85,17 @@ fn help_does_not_say_folder() {
         .stdout(predicate::str::contains("Folder").not());
 }
 
+#[test]
+fn list_treats_mcp_style_query_equals_as_the_search_string() {
+    let home = tempfile::tempdir().unwrap();
+    kata_in(home.path())
+        .args(["--plain", "list", "query=hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("starter/hello"))
+        .stdout(predicate::str::contains("no kata found").not());
+}
+
 /// The non-interactive form every id-taking command with no id shares (§7.3): `assert_cmd`
 /// never gives the child a real TTY, so this exercises the exact sentence a human sees when
 /// piping/scripting `kata run`/`show`/`edit` with no id.
