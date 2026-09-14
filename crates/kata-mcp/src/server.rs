@@ -120,7 +120,8 @@ fn parse_list_args(arguments: &serde_json::Map<String, serde_json::Value>) -> to
             .and_then(|v| v.as_str())
             .map(str::to_string),
         folder: arguments
-            .get("folder")
+            .get("prefix")
+            .or_else(|| arguments.get("folder"))
             .and_then(|v| v.as_str())
             .map(str::to_string),
         risk: arguments

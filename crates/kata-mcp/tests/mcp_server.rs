@@ -157,7 +157,7 @@ async fn list_kata_at_default_ceiling_returns_exactly_the_five_low_risk_sesami_i
     let (value, is_error) = call(
         &client,
         "list_kata",
-        serde_json::json!({"folder": "sesami", "limit": 50}),
+        serde_json::json!({"prefix": "sesami", "limit": 50}),
     )
     .await;
     assert!(!is_error);
@@ -199,7 +199,7 @@ async fn list_kata_risk_argument_filters_over_the_wire() {
     let (value, is_error) = call(
         &client,
         "list_kata",
-        serde_json::json!({"folder": "sesami", "limit": 50, "risk": "medium"}),
+        serde_json::json!({"prefix": "sesami", "limit": 50, "risk": "medium"}),
     )
     .await;
     assert!(!is_error, "{value}");
@@ -212,7 +212,7 @@ async fn list_kata_risk_argument_filters_over_the_wire() {
     let (value, is_error) = call(
         &client,
         "list_kata",
-        serde_json::json!({"folder": "sesami", "limit": 50, "risk": "low"}),
+        serde_json::json!({"prefix": "sesami", "limit": 50, "risk": "low"}),
     )
     .await;
     assert!(!is_error, "{value}");
@@ -1143,7 +1143,7 @@ async fn list_kata_with_folder_mined_or_include_drafts_lists_a_mined_draft_regar
     let client = spawn_server(state).await;
 
     let (by_folder, is_error) =
-        call(&client, "list_kata", serde_json::json!({"folder": "mined"})).await;
+        call(&client, "list_kata", serde_json::json!({"prefix": "mined"})).await;
     assert!(!is_error, "{by_folder}");
     let ids: Vec<&str> = by_folder["kata"]
         .as_array()

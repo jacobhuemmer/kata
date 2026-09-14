@@ -43,7 +43,7 @@ pub fn tools_list_value() -> Value {
                     "additionalProperties": false,
                     "properties": {
                         "query": { "type": "string", "maxLength": 200, "description": "Substring of id, alias, or about." },
-                        "folder": { "type": "string" },
+                        "prefix": { "type": "string", "description": "Id prefix (starter, sesami, agent)." },
                         "risk": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
                         "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 },
                         "offset": { "type": "integer", "minimum": 0, "default": 0 },
