@@ -60,9 +60,11 @@ Do not hunt Kata through lazy-mcp. Use the `kata` CLI (or CallDynamicTool
 on a `kata` namespace if one appears in the catalog). CLI list query is
 positional: `kata --plain list k8s`, not `kata list query=k8s`.
 
-`k8s-trouble` does many kubectl calls. Keep `limit` at 5 or less in a
-Cursor shell (default 30s). One pod: pass `pod=`. Namespace-wide with
-`limit=20` will time out.
+Do **not** spawn a subagent just to wait on Kata. Use **`run_kata`** (MCP).
+That wait is the kata header `timeout` (e.g. `k8s-trouble` is 2m), not
+Cursor Shell’s 30s default. Shell `kata run` is fallback only: set the
+shell wait to at least the header timeout (`block_until_ms` / timeout
+≥ 120000). Do not batch kubectl in the kata to paper over a 30s shell.
 
 ## Token budget
 
