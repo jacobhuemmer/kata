@@ -453,6 +453,30 @@ mod tests {
         assert_eq!(windows_interpreter("powershell"), "powershell");
     }
 
+    #[test]
+    fn path_lookup_accepts_exe_suffix_only_on_windows() {
+        if std::env::var_os("KATA_EXEC_PATH_PROBE").is_some() {
+            assert_eq!(on_path("kata-probe"), cfg!(windows));
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("kata-probe.exe"), "fixture").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::path_lookup_accepts_exe_suffix_only_on_windows",
+            ])
+            .env("KATA_EXEC_PATH_PROBE", "1")
+            .env("PATH", directory.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
     fn write_script(dir: &Path, name: &str, content: &str) -> PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, content).unwrap();
