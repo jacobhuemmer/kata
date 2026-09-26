@@ -1,4 +1,4 @@
-# Contributing to kadou
+# Contributing to kata
 
 Start with [`CLAUDE.md`](../CLAUDE.md) at the repo root — it's the single
 source for how work on this repo gets done: the governing loop, forced
@@ -15,7 +15,7 @@ safety invariants that must never regress.
    non-goals — check it before adding anything the PRD doesn't already
    specify.
 2. Read the crate you're about to touch. Don't guess a module's shape from
-   its name — `kadou-core`, `kadou-exec`, `kadou-mcp`, and `kadou-mine`
+   its name — `kata-core`, `kata-exec`, `kata-mcp`, and `kata-mine`
    each own a distinct part of the engine (see `05-prd.md` §3).
 3. Load the relevant skill under [`.claude/skills/`](../.claude/skills/)
    before applying it — `spec-workflow` for slice planning,
@@ -57,8 +57,8 @@ actually landed, before building on top of them.
 
 ## Vocabulary
 
-Use **kadou, kata, folder, header, args, needs, vault, risk, grant, draft,
-history** — never **runbook** or **catalog** — in code, comments, commits,
+Use **Kata, kata, catalog, folder, header, args, needs, vault, risk, grant, draft,
+history** — never **runbook** — in code, comments, commits,
 and skills. See `CLAUDE.md`'s Vocabulary section for the full mapping from
 the legacy Go dops nouns.
 

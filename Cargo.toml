@@ -35,9 +35,9 @@ cast_sign_loss = "deny"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-# Not specified anywhere in docs/design/; matches the permissive ecosystem this workspace
-# already commits to (§3.3) and every dependency's own allowed set. Confirm with Mason.
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/jacobhuemmer/kata"
+homepage = "https://github.com/jacobhuemmer/kata"
 
 # Pinned versions per docs/design/05-prd.md §3.1 (re-verified 2026-09-11). A crate is added
 # to an individual member's [dependencies] only when the slice that needs it lands; this

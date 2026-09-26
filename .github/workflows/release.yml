@@ -1,0 +1,98 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            os: darwin
+            arch: x86_64
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            os: darwin
+            arch: arm64
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            os: linux
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            os: linux
+            arch: aarch64
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            os: windows
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify tag and build
+        shell: bash
+        env:
+          RELEASE_REF: ${{ github.ref }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          version=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          if [[ "$RELEASE_REF" != "refs/tags/v$version" ]]; then
+            echo 'Release must run on the tag matching Cargo.toml.' >&2
+            exit 1
+          fi
+          cargo build --locked --release -p kata-cli --target "$TARGET"
+      - name: Smoke test the built CLI and a POSIX script
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          export KATA_HOME="$RUNNER_TEMP/kata-smoke"
+          binary="target/$TARGET/release/kata"
+          "$binary" --version
+          "$binary" --plain list
+          "$binary" --plain run starter/hello
+      - name: Package binary and license notices
+        run: python scripts/package-release.py --target ${{ matrix.target }} --os ${{ matrix.os }} --arch ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Publish release and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cat dist/*.sha256 > dist/SHA256SUMS
+          gh release create "$RELEASE_TAG" dist/*.tar.gz dist/*.zip dist/SHA256SUMS --verify-tag --generate-notes --title "Kata $RELEASE_TAG"
+      - name: Update Homebrew, Scoop and submit WinGet manifests
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
+        run: python3 scripts/publish-packages.py --publish
