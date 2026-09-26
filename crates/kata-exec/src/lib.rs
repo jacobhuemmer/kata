@@ -29,6 +29,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 
 /// How long to wait after `SIGTERM` before escalating to `SIGKILL` (§6.1).
+#[cfg(unix)]
 const KILL_GRACE: Duration = Duration::from_secs(5);
 
 /// Most lines the collector keeps in memory (`docs/design/12-mvp-review.md` §6 Later-2, E6).
@@ -61,11 +62,30 @@ pub fn interpreter_words(shebang: Option<&str>) -> Vec<String> {
         .map(|line| line.strip_prefix("#!").unwrap_or(line))
         .map(|rest| rest.split_whitespace().map(str::to_string).collect())
         .unwrap_or_default();
-    if words.is_empty() {
+    let mut words = if words.is_empty() {
         vec!["/bin/sh".to_string()]
     } else {
         words
+    };
+    normalize_interpreter(&mut words);
+    words
+}
+
+#[cfg(any(windows, test))]
+fn windows_interpreter(program: &str) -> &str {
+    program
+        .strip_prefix("/bin/")
+        .or_else(|| program.strip_prefix("/usr/bin/"))
+        .unwrap_or(program)
+}
+
+fn normalize_interpreter(words: &mut [String]) {
+    #[cfg(windows)]
+    if let Some(program) = words.first_mut() {
+        *program = windows_interpreter(program).to_string();
     }
+    #[cfg(not(windows))]
+    let _ = words;
 }
 
 /// `argv`: the interpreter words followed by the absolute kata path (§6.1).
@@ -105,7 +125,12 @@ pub fn interpreter_missing(shebang: Option<&str>) -> Option<String> {
 
 fn on_path(cmd: &str) -> bool {
     std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(cmd).is_file()))
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|dir| {
+                dir.join(cmd).is_file()
+                    || (cfg!(windows) && dir.join(format!("{cmd}.exe")).is_file())
+            })
+        })
         .unwrap_or(false)
 }
 
@@ -421,7 +446,10 @@ mod tests {
     fn windows_maps_posix_system_interpreters_to_git_bash_path() {
         assert_eq!(windows_interpreter("/bin/sh"), "sh");
         assert_eq!(windows_interpreter("/usr/bin/env"), "env");
-        assert_eq!(windows_interpreter("/custom/bin/python"), "/custom/bin/python");
+        assert_eq!(
+            windows_interpreter("/custom/bin/python"),
+            "/custom/bin/python"
+        );
         assert_eq!(windows_interpreter("powershell"), "powershell");
     }
 

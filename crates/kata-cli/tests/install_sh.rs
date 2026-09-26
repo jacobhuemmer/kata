@@ -171,7 +171,9 @@ fn default_install_resolves_the_latest_github_release() {
     let bin = root.path().join("tools");
     std::fs::create_dir(&bin).unwrap();
     let curl = bin.join("curl");
-    std::fs::write(&curl, r##"#!/bin/sh
+    std::fs::write(
+        &curl,
+        r##"#!/bin/sh
 if [ "$2" = '-o' ]; then
   printf '%s' 'https://github.com/jacobhuemmer/kata/releases/tag/v0.1.0'
 else
@@ -181,7 +183,9 @@ else
     *) exit 9 ;;
   esac
 fi
-"##).unwrap();
+"##,
+    )
+    .unwrap();
     std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
     let output = Command::new("sh")
         .arg(install_sh())
@@ -191,8 +195,16 @@ fi
         .env_remove("KATA_INSTALL_BASE_URL")
         .env_remove("KADOU_INSTALL_BASE_URL")
         .env("FIXTURE_ROOT", root.path())
-        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
         .env("KATA_INSTALL_DIR", root.path().join("installed"))
-        .output().unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
