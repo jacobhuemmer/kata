@@ -56,7 +56,7 @@ end
 (output / 'kata.rb').write_text(formula)
 url, sha = asset('windows', 'x86_64')
 scoop = {'version': version, 'description': 'Script library and MCP server for reusable automation',
-         'homepage': f'https://github.com/{REPO}', 'license': 'MIT|Apache-2.0', 'depends': 'git',
+         'homepage': f'https://github.com/{REPO}', 'license': 'MIT|Apache-2.0', 'depends': ['git', 'extras/vcredist2022'],
          'architecture': {'64bit': {'url': url, 'hash': sha}}, 'bin': 'kata.exe',
          'notes': 'Run Kata from Git Bash. POSIX scripts require sh and their tools on PATH.'}
 (output / 'kata.json').write_text(json.dumps(scoop, indent=2) + '\n')
@@ -86,6 +86,7 @@ NestedInstallerFiles:
 Dependencies:
   PackageDependencies:
     - PackageIdentifier: Git.Git
+    - PackageIdentifier: Microsoft.VCRedist.2015+.x64
 Installers:
   - Architecture: x64
     InstallerUrl: {url}
@@ -134,7 +135,7 @@ if parser.parse_args().publish:
     else:
         api(f'repos/{fork}/git/refs', 'POST', {'ref': f'refs/heads/{branch}', 'sha': commit['sha']})
     body = output / 'winget-pr.md'
-    body.write_text(f'Adds {identifier} {version}, a portable CLI for reusable POSIX scripts.\n\nWindows requires Git Bash, supplied by the Git.Git dependency. Release binaries are built by GitHub Actions; SHA-256 hashes come from the release checksums.\n')
+    body.write_text(f'Adds {identifier} {version}, a portable CLI for reusable POSIX scripts.\n\nWindows requires Git Bash and the Visual C++ runtime, supplied by the Git.Git and Microsoft.VCRedist.2015+.x64 dependencies. Release binaries are built by GitHub Actions; SHA-256 hashes come from the release checksums.\n')
     existing_pr = api(f'repos/microsoft/winget-pkgs/pulls?head={OWNER}:{branch}&state=open')
     if existing_pr:
         print(existing_pr[0]['html_url'])

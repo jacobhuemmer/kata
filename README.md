@@ -39,6 +39,7 @@ or `KATA_INSTALL_DIR` to change the destination. Linux binaries require glibc 2.
 ### Windows (Scoop)
 
 ```powershell
+scoop bucket add extras
 scoop bucket add jacobhuemmer https://github.com/jacobhuemmer/scoop-bucket
 scoop install kata
 ```
@@ -55,7 +56,9 @@ winget install --id JacobHuemmer.Kata --exact
 Until then, use Scoop or the Windows x64 zip from
 [Releases](https://github.com/jacobhuemmer/kata/releases).
 
-**Run Kata from Git Bash on Windows.** Scoop and WinGet declare Git as a dependency.
+**Run Kata from Git Bash on Windows.** Scoop and WinGet install Git and the Visual C++ runtime as dependencies.
+For a standalone Windows zip, install both first: `winget install Git.Git` and
+`winget install --id Microsoft.VCRedist.2015+.x64 --exact`.
 Kata scripts use POSIX interpreters and tools; those tools must be on `PATH`.
 Native Windows cancellation currently stops the direct child only. Use WSL and the
 Linux build when you need Unix process-group cancellation. PowerShell scripts and
