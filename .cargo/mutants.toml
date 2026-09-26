@@ -2,49 +2,49 @@
 # CI ratchet this config feeds). Schema: `cargo mutants --emit-schema=config`, or
 # https://github.com/sourcefrog/cargo-mutants/blob/v27.1.0/src/config.rs.
 #
-# `crates/kadou`'s former blanket exclusion (R15, docs/design/10-mutation-baseline.md's "known
+# `crates/kata-cli`'s former blanket exclusion (R15, docs/design/10-mutation-baseline.md's "known
 # blocker") is narrowed to just `fn main` itself: the CLI's subprocess integration tests moved
 # from `src/main.rs`'s own unit-test harness (where `CARGO_BIN_EXE_kadou` was unreliable) to
-# `crates/kadou/tests/cli.rs`, a real integration test target, so the rest of the crate is now
+# `crates/kata-cli/tests/cli.rs`, a real integration test target, so the rest of the crate is now
 # mutation-tested. `fn main` itself is still excluded: it is never called during `cargo test`
 # (only the built binary, exercised by `tests/cli.rs`, calls it), so a mutant there can never be
 # "caught" by any test -- that would be noise, not a real coverage gap.
 #
-# `crates/kadou-mine` (§9 slice 9) is measured too as of 2026-09-12; nothing of its own is
+# `crates/kata-mine` (§9 slice 9) is measured too as of 2026-09-12; nothing of its own is
 # excluded.
 exclude_re = [
-  '^crates/kadou/src/main\.rs:.*replace main ->',
+  '^crates/kata-cli/src/main\.rs:.*replace main ->',
   # §9 slice 8: these run only over a real terminal (raw-mode key events, or an `inquire`
   # widget reading from a real stdin) -- `cargo test`'s subprocess stdin/stdout is never a
   # TTY, so `resolve_id_or_pick`'s picker branch, the picker's own event loop, and the
   # interactive branch of the run/--ask arg prompts can never execute under `cargo test`, the
   # same "mutant can never be caught by any test" reasoning as `fn main` above. Verified
   # manually over a real pty (expect) instead -- see the handoff for the exact transcripts.
-  '^crates/kadou/src/commands\.rs:.*styled_for_stdout',
-  '^crates/kadou/src/commands\.rs:.*run_picker_interactive',
-  '^crates/kadou/src/commands\.rs:.*map_key',
-  '^crates/kadou/src/commands\.rs:.*clear_picker_frame',
-  '^crates/kadou/src/commands\.rs:.*in prompt_for_arg$',
-  '^crates/kadou/src/commands\.rs:.*prompt_for_arg ->',
-  '^crates/kadou/src/commands\.rs:.*prompt_for_args ->',
-  '^crates/kadou/src/commands\.rs:.*int_validator',
+  '^crates/kata-cli/src/commands/mod\.rs:.*styled_for_stdout',
+  '^crates/kata-cli/src/commands/picker\.rs:.*run_picker_interactive',
+  '^crates/kata-cli/src/commands/picker\.rs:.*map_key',
+  '^crates/kata-cli/src/commands/picker\.rs:.*clear_picker_frame',
+  '^crates/kata-cli/src/commands/run\.rs:.*in prompt_for_arg$',
+  '^crates/kata-cli/src/commands/run\.rs:.*prompt_for_arg ->',
+  '^crates/kata-cli/src/commands/run\.rs:.*prompt_for_args ->',
+  '^crates/kata-cli/src/commands/run\.rs:.*int_validator',
   # Same reasoning, narrower: these two lines are the TTY gate itself
   # (`resolve_id_or_pick`'s `stdin/stdout.is_terminal()` check) and the missing-required-arg
   # filter that only changes `fill_args_interactively`'s outcome on the TTY branch --
   # off a TTY (always true under `cargo test`), both the correct code and every mutant on
   # these two lines produce the identical Ok(())/error outcome.
-  '^crates/kadou/src/commands\.rs:1242:',
-  '^crates/kadou/src/commands\.rs:943:',
+  '^crates/kata-cli/src/commands/picker\.rs:65:',
+  '^crates/kata-cli/src/commands/run\.rs:228:',
   # 12-mvp-review Later-10: `send_with`'s existing tests only assert the missing-binary path
   # is a no-op (an empty PATH override so `Command::spawn` fails silently); nothing on that
   # path ever inspects the AppleScript/notify-send arguments `send_with` builds, so a mutant
   # in its script/quoting logic can never be caught by any test, the same "unreachable by
   # cargo test" reasoning as the picker exclusions above.
-  '^crates/kadou-mcp/src/notify\.rs:.*send_with',
+  '^crates/kata-mcp/src/notify\.rs:.*send_with',
 ]
 
-# kadou-exec spawns real child processes and asserts on SIGTERM/SIGKILL timing (KILL_GRACE =
-# 5s in crates/kadou-exec/src/lib.rs); a mutant that breaks the kill path can let a `sleep 30`
+# kata-exec spawns real child processes and asserts on SIGTERM/SIGKILL timing (KILL_GRACE =
+# 5s in crates/kata-exec/src/lib.rs); a mutant that breaks the kill path can let a `sleep 30`
 # child run to completion. Baseline suite time is ~8s; 60s floor plus a 5x multiplier gives
 # enough headroom to tell "genuinely slow" apart from "actually hung" without inflating a
 # clean run's cost.
