@@ -124,7 +124,8 @@ if parser.parse_args().publish:
     parent = (json.loads(existing_branch.stdout)['object']['sha'] if existing_branch.returncode == 0
               else api('repos/microsoft/winget-pkgs/git/ref/heads/master')['object']['sha'])
     prefix = f'manifests/j/JacobHuemmer/Kata/{version}'
-    tree = api(f'repos/{fork}/git/trees', 'POST', {'base_tree': parent, 'tree': [
+    base_tree = api(f'repos/{fork}/git/commits/{parent}')['tree']['sha']
+    tree = api(f'repos/{fork}/git/trees', 'POST', {'base_tree': base_tree, 'tree': [
         {'path': f'{prefix}/{file.name}', 'mode': '100644', 'type': 'blob', 'content': file.read_text()}
         for file in sorted(winget.iterdir())]})
     commit = api(f'repos/{fork}/git/commits', 'POST', {'message': f'New version: {identifier} version {version}', 'tree': tree['sha'], 'parents': [parent]})
