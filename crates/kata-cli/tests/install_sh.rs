@@ -162,3 +162,37 @@ fn an_unknown_argument_is_a_clean_error() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn default_install_resolves_the_latest_github_release() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().unwrap();
+    build_release_fixture(root.path(), "0.1.0", true);
+    let bin = root.path().join("tools");
+    std::fs::create_dir(&bin).unwrap();
+    let curl = bin.join("curl");
+    std::fs::write(&curl, r##"#!/bin/sh
+if [ "$2" = '-o' ]; then
+  printf '%s' 'https://github.com/jacobhuemmer/kata/releases/tag/v0.1.0'
+else
+  case "$2" in
+    https://github.com/jacobhuemmer/kata/releases/download/v0.1.0/*)
+      cp "$FIXTURE_ROOT/0.1.0/${2##*/}" "$4" ;;
+    *) exit 9 ;;
+  esac
+fi
+"##).unwrap();
+    std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new("sh")
+        .arg(install_sh())
+        .arg("--dry-run")
+        .env_remove("KATA_VERSION")
+        .env_remove("KADOU_VERSION")
+        .env_remove("KATA_INSTALL_BASE_URL")
+        .env_remove("KADOU_INSTALL_BASE_URL")
+        .env("FIXTURE_ROOT", root.path())
+        .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+        .env("KATA_INSTALL_DIR", root.path().join("installed"))
+        .output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
