@@ -1,0 +1,3 @@
+* text=auto eol=lf
+# This fixture intentionally exercises CRLF rejection.
+tests/fixtures/headers/bad/crlf.sh -text
