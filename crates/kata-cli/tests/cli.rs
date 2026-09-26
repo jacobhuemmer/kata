@@ -2403,6 +2403,7 @@ fn mine_skip_on_an_unknown_fingerprint_is_a_clean_error() {
         .stderr(predicate::str::contains("no queued draft for fingerprint"));
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn mine_install_schedule_writes_a_plist_under_an_isolated_home_without_loading_it() {
     // Never passes --load: that would shell out to the real `launchctl` (forbidden by this
@@ -2425,4 +2426,16 @@ fn mine_install_schedule_writes_a_plist_under_an_isolated_home_without_loading_i
             .join("Library/LaunchAgents/dev.kata.mine.plist")
             .is_file()
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn mine_install_schedule_on_linux_prints_a_crontab_entry() {
+    let home = tempfile::tempdir().unwrap();
+    kata_in(home.path())
+        .args(["mine", "install-schedule"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("crontab -e"))
+        .stdout(predicate::str::contains("mine run --once"));
 }

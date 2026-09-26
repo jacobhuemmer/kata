@@ -119,6 +119,11 @@ fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(original, link)
 }
 
+#[cfg(windows)]
+fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(original, link)
+}
+
 /// Clones into a hidden checkout under `kata_dir/.checkouts/<folder>` (never scanned: the
 /// folder scanner skips dot-prefixed names) and symlinks `target` to `root`'s resolved
 /// subdirectory of it. Cleans up the hidden checkout on any failure so a bad `--root` never
