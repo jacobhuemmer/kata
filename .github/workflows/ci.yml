@@ -94,7 +94,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo install cargo-mutants --version 27.1.0 --locked
-      - run: cargo mutants --workspace -j 3 --shard ${{ matrix.shard }}/4
+      - name: Collect mutation results for the floor check
+        run: |
+          status=0
+          cargo mutants --workspace -j 3 --shard ${{ matrix.shard }}/4 || status=$?
+          # Misses (2) and mutant timeouts (3) are counted by mutants-floor below.
+          # Baseline failures, usage errors and tool failures still fail this job.
+          case "$status" in 0|2|3) ;; *) exit "$status" ;; esac
       - uses: actions/upload-artifact@v4
         if: always()
         with:
