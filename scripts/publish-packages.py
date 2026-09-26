@@ -89,7 +89,7 @@ Dependencies:
 Installers:
   - Architecture: x64
     InstallerUrl: {url}
-    InstallerSha256: {sha.upper()}
+    InstallerSha256: "{sha.upper()}"
 ManifestType: installer
 ManifestVersion: 1.6.0
 ''')
@@ -119,16 +119,25 @@ if parser.parse_args().publish:
     publish_file('homebrew-tap', 'Formula/kata.rb', output / 'kata.rb')
     publish_file('scoop-bucket', 'kata.json', output / 'kata.json')
     fork = f'{OWNER}/winget-pkgs'
-    parent = api('repos/microsoft/winget-pkgs/git/ref/heads/master')['object']['sha']
     branch = f'kata-{version}'
+    existing_branch = subprocess.run(['gh', 'api', f'repos/{fork}/git/ref/heads/{branch}'], capture_output=True, text=True)
+    parent = (json.loads(existing_branch.stdout)['object']['sha'] if existing_branch.returncode == 0
+              else api('repos/microsoft/winget-pkgs/git/ref/heads/master')['object']['sha'])
     prefix = f'manifests/j/JacobHuemmer/Kata/{version}'
     tree = api(f'repos/{fork}/git/trees', 'POST', {'base_tree': parent, 'tree': [
         {'path': f'{prefix}/{file.name}', 'mode': '100644', 'type': 'blob', 'content': file.read_text()}
         for file in sorted(winget.iterdir())]})
     commit = api(f'repos/{fork}/git/commits', 'POST', {'message': f'New version: {identifier} version {version}', 'tree': tree['sha'], 'parents': [parent]})
-    api(f'repos/{fork}/git/refs', 'POST', {'ref': f'refs/heads/{branch}', 'sha': commit['sha']})
+    if existing_branch.returncode == 0:
+        api(f'repos/{fork}/git/refs/heads/{branch}', 'PATCH', {'sha': commit['sha']})
+    else:
+        api(f'repos/{fork}/git/refs', 'POST', {'ref': f'refs/heads/{branch}', 'sha': commit['sha']})
     body = output / 'winget-pr.md'
     body.write_text(f'Adds {identifier} {version}, a portable CLI for reusable POSIX scripts.\n\nWindows requires Git Bash, supplied by the Git.Git dependency. Release binaries are built by GitHub Actions; SHA-256 hashes come from the release checksums.\n')
+    existing_pr = api(f'repos/microsoft/winget-pkgs/pulls?head={OWNER}:{branch}&state=open')
+    if existing_pr:
+        print(existing_pr[0]['html_url'])
+        raise SystemExit(0)
     subprocess.run(['gh', 'pr', 'create', '--repo', 'microsoft/winget-pkgs', '--base', 'master', '--head', f'{OWNER}:{branch}',
                     '--title', f'New package: {identifier} version {version}', '--body-file', str(body)], check=True)
 else:

@@ -3,6 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - 'LICENSE-*'
+      - 'scripts/**'
+      - '.github/workflows/release.yml'
   pull_request:
   workflow_dispatch:
 
