@@ -1,7 +1,7 @@
 #!/bin/sh
 # Kata install one-liner (docs/design/05-prd.md §7.5, 13-kata-rename.md).
 #
-#   curl -fsSL https://<stable-install-url>/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/jacobhuemmer/kata/main/install.sh | sh
 #
 # POSIX sh, no bashisms (CI runs this under both dash and bash-in-POSIX-mode, per §9
 # "Cross-cutting"). Detects OS/arch, downloads the release tarball and its SHA256SUMS,
@@ -9,9 +9,6 @@
 # binary. Idempotent: only the binary is replaced -- config, vault, and catalog under
 # KATA_INSTALL_DIR's sibling XDG dirs are never touched.
 #
-# Stable URL and GitHub release publishing are gated (repo README Gates) -- this script
-# specifies the shape only; KATA_INSTALL_BASE_URL must be set to a real (or, in tests, a
-# `file://`) location.
 set -eu
 
 # `file://` is the only scheme every test in this tree uses (no real network, per the repo's
@@ -42,7 +39,7 @@ sha256_of() {
 
 main() {
   version="${KATA_VERSION:-${KADOU_VERSION:-latest}}"
-  base_url="${KATA_INSTALL_BASE_URL:-${KADOU_INSTALL_BASE_URL:-https://REPLACE-WITH-STABLE-INSTALL-URL}}"
+  base_url="${KATA_INSTALL_BASE_URL:-${KADOU_INSTALL_BASE_URL:-https://github.com/jacobhuemmer/kata/releases/download}}"
   install_dir="${KATA_INSTALL_DIR:-${KADOU_INSTALL_DIR:-$HOME/.local/bin}}"
   dry_run=0
 
@@ -58,11 +55,24 @@ main() {
     esac
   done
 
+  if [ "$version" = latest ]; then
+    latest_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/jacobhuemmer/kata/releases/latest)
+    version=${latest_url##*/}
+  fi
+  version=${version#v}
+  case "$version" in
+    ''|*[!0-9A-Za-z.-]*) echo "install.sh: invalid release version" >&2; exit 2 ;;
+  esac
+  release_path=$version
+  case "$base_url" in
+    https://github.com/jacobhuemmer/kata/releases/download) release_path=v$version ;;
+  esac
+
   os=$(uname -s | tr '[:upper:]' '[:lower:]')
   arch=$(uname -m)
   asset="kata-${version}-${os}-${arch}.tar.gz"
-  asset_url="${base_url%/}/${version}/${asset}"
-  sums_url="${base_url%/}/${version}/SHA256SUMS"
+  asset_url="${base_url%/}/${release_path}/${asset}"
+  sums_url="${base_url%/}/${release_path}/SHA256SUMS"
 
   work_dir=$(mktemp -d)
   trap 'rm -rf "$work_dir"' EXIT INT TERM
