@@ -417,6 +417,14 @@ async fn terminate(_pid: Option<u32>, child: &mut Child) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn windows_maps_posix_system_interpreters_to_git_bash_path() {
+        assert_eq!(windows_interpreter("/bin/sh"), "sh");
+        assert_eq!(windows_interpreter("/usr/bin/env"), "env");
+        assert_eq!(windows_interpreter("/custom/bin/python"), "/custom/bin/python");
+        assert_eq!(windows_interpreter("powershell"), "powershell");
+    }
+
     fn write_script(dir: &Path, name: &str, content: &str) -> PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, content).unwrap();
