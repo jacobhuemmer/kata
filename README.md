@@ -32,7 +32,7 @@ or use the installer, which verifies the archive before installing to `~/.local/
 curl -fsSL https://raw.githubusercontent.com/jacobhuemmer/kata/main/install.sh | sh
 ```
 
-Ensure `~/.local/bin` is on your `PATH`. Set `KATA_VERSION=0.1.0` to select a version
+Ensure `~/.local/bin` is on your `PATH`. Set `KATA_VERSION=0.1.1` to select a version
 or `KATA_INSTALL_DIR` to change the destination. Linux binaries require glibc 2.39+
 (Ubuntu 24.04 or newer); build from source on older distributions.
 

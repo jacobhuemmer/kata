@@ -14,7 +14,7 @@ apple-native-keyring-store = { workspace = true, optional = true, features = ["k
 base64.workspace = true
 etcetera.workspace = true
 humantime.workspace = true
-kata-exec = { path = "../kata-exec", version = "0.1.0" }
+kata-exec = { path = "../kata-exec", version = "0.1.1" }
 keyring-core = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

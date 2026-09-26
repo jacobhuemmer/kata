@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory() as temporary:
     name = f'kata-{version}-{args.os}-{args.arch}'
     if args.os == 'windows':
         asset = out / (name + '.zip')
-        with zipfile.ZipFile(asset, 'w', zipfile.ZIP_DEFLATED) as archive:
+        with zipfile.ZipFile(asset, 'w', zipfile.ZIP_DEFLATED, strict_timestamps=False) as archive:
             for file in stage.rglob('*'):
                 if file.is_file():
                     archive.write(file, file.relative_to(stage))

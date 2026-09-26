@@ -41,9 +41,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.88
         with:
           targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Test release packaging
+        run: python scripts/test_package_release.py
       - name: Verify tag and build
         shell: bash
         env:
