@@ -1,6 +1,5 @@
 //! `kata show` (§9 slice 3).
 
-use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 use super::picker::{PickOutcome, resolve_id_or_pick};
@@ -8,6 +7,7 @@ use super::{
     check_human_ceiling, find_kata_or_report, load_config, load_vault, materialize_starter,
     resolve_paths,
 };
+use crate::ui::prompt::prefill;
 
 /// `kata show <id>` (§9 slice 3 "`kata show` printing the header fields, resolved args, env
 /// names, file path and sha256"); no id opens the picker on a TTY (§7.3, §9 slice 8).
@@ -44,9 +44,6 @@ pub(super) fn show_kata_by_id(id: &str) -> ExitCode {
         }
     };
 
-    // Missing-required-arg is not a `show`-time failure: the point of `show` is to tell a
-    // human which args they still need to pass, not to refuse to describe the kata.
-    let resolved_args = kata_core::resolve_args(&kata, &BTreeMap::new()).unwrap_or_default();
     let vault = load_vault(&paths);
     let resolved_needs = kata_core::resolve_needs(&kata, &vault);
 
@@ -70,12 +67,9 @@ pub(super) fn show_kata_by_id(id: &str) -> ExitCode {
     if !kata.args.is_empty() {
         println!();
         println!("args");
+        // Each arg on its own: one missing required arg must not hide the others' defaults.
         for arg in &kata.args {
-            let resolved = resolved_args
-                .iter()
-                .find(|r| r.name == arg.name)
-                .map(|r| r.value.clone());
-            match resolved {
+            match prefill(arg, None) {
                 Some(value) => println!("  {} = {value}", arg.name),
                 None => println!("  {} (required)", arg.name),
             }
