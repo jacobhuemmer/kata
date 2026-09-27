@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 humantime.workspace = true
-kata-core = { path = "../kata-core", version = "0.1.1" }
+kata-core = { path = "../kata-core", version = "0.1.2" }
 regex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

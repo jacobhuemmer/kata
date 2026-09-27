@@ -11,8 +11,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "
 tokio-util.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
-kata-core = { path = "../kata-core", version = "0.1.1" }
-kata-exec = { path = "../kata-exec", version = "0.1.1" }
+kata-core = { path = "../kata-core", version = "0.1.2" }
+kata-exec = { path = "../kata-exec", version = "0.1.2" }
 thiserror.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 humantime.workspace = true
