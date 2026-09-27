@@ -727,6 +727,30 @@ fn show_applies_the_human_ceiling_like_list_and_run() {
 }
 
 #[test]
+fn show_prints_defaults_even_when_another_arg_is_required() {
+    // One required arg made `resolve_args` fail as a whole, so `show` printed every arg as
+    // `(required)`, defaults included.
+    let home = tempfile::tempdir().unwrap();
+    let kata_dir = home.path().join(".config/kata/catalog/team");
+    std::fs::create_dir_all(&kata_dir).unwrap();
+    std::fs::write(
+        kata_dir.join("lookup.sh"),
+        "#!/bin/sh\n# ---\n# about: Lookup\n# risk:  low\n# args:\n#   query: text\n\
+         #   show: text = both\n#   limit: int = 8\n#   all: bool = false\n# ---\necho hi\n",
+    )
+    .unwrap();
+
+    kata_in(home.path())
+        .args(["show", "team/lookup"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("  query (required)\n"))
+        .stdout(predicate::str::contains("  show = both\n"))
+        .stdout(predicate::str::contains("  limit = 8\n"))
+        .stdout(predicate::str::contains("  all = false\n"));
+}
+
+#[test]
 fn run_critical_without_confirm_still_works_as_dry_run_only() {
     let home = critical_ceiling_home("ses-deploy", "critical");
 
