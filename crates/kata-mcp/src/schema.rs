@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use rmcp::model::{Tool, ToolAnnotations};
+use rmcp::model::{CacheScope, ListToolsResult, Tool, ToolAnnotations};
 use serde_json::{Value, json};
 
 /// `propose_kata`'s `id` shape (§4.2 segment rule, applied to every `/`-separated segment,
@@ -34,6 +34,11 @@ pub const PROPOSE_SOURCE_MAX_BYTES: usize = 65536;
 #[allow(clippy::too_many_lines)]
 pub fn tools_list_value() -> Value {
     json!({
+        // SEP-2549 cache hints, required by spec 2026-07-28 (Claude Code rejects a result
+        // without them). 0 ms and private: clients re-fetch as before, nothing is shared.
+        // Serialized before "tools" because that is rmcp's ListToolsResult field order.
+        "ttlMs": 0,
+        "cacheScope": "private",
         "tools": [
             {
                 "name": "list_kata",
@@ -126,6 +131,20 @@ pub fn build_tools() -> Result<Vec<Tool>, SchemaError> {
         .iter()
         .map(tool_from_value)
         .collect()
+}
+
+/// The whole `tools/list` result: the four tools plus the cache hints, all read from
+/// [`tools_list_value`] so the served result matches `docs/design/tools-list.json`.
+pub fn build_list_tools_result() -> Result<ListToolsResult, SchemaError> {
+    let value = tools_list_value();
+    let ttl_ms = value["ttlMs"]
+        .as_u64()
+        .ok_or_else(|| SchemaError("no \"ttlMs\" number".to_string()))?;
+    let cache_scope: CacheScope = serde_json::from_value(value["cacheScope"].clone())
+        .map_err(|e| SchemaError(format!("bad \"cacheScope\": {e}")))?;
+    Ok(ListToolsResult::with_all_items(build_tools()?)
+        .with_ttl_ms(ttl_ms)
+        .with_cache_scope(cache_scope))
 }
 
 fn tool_from_value(entry: &Value) -> Result<Tool, SchemaError> {

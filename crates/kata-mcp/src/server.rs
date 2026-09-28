@@ -53,9 +53,8 @@ impl ServerHandler for KadouMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let tools =
-            schema::build_tools().map_err(|err| McpError::internal_error(err.to_string(), None))?;
-        Ok(ListToolsResult::with_all_items(tools))
+        schema::build_list_tools_result()
+            .map_err(|err| McpError::internal_error(err.to_string(), None))
     }
 
     async fn call_tool(
