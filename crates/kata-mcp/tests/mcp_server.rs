@@ -137,14 +137,31 @@ async fn tools_list_wire_bytes_match_the_checked_in_schema() {
     let client = spawn_server(state).await;
 
     let result = client.list_tools(None).await.expect("list_tools");
-    let wire_value = serde_json::json!({ "tools": result.tools });
-    let wire_bytes = serde_json::to_vec(&wire_value).expect("serialize the wire value");
+    let wire_bytes = serde_json::to_vec(&result).expect("serialize the wire value");
 
     assert_eq!(
         wire_bytes,
         kata_mcp::schema::tools_list_bytes().unwrap(),
         "the tools/list payload a real client receives over the wire must equal the \
          byte-checked schema in docs/design/tools-list.json"
+    );
+}
+
+#[tokio::test]
+async fn tools_list_carries_the_sep_2549_cache_hints() {
+    // Claude Code rejects a tools/list result without ttlMs (a number) and cacheScope
+    // ("public" | "private"), which spec 2026-07-28 makes required (SEP-2549). Older
+    // clients ignore the two fields, so kata always sends them.
+    let home = setup_sesami(|_| {});
+    let state = ServerState::new(home.paths.clone(), None, 2, &std::env::temp_dir());
+    let client = spawn_server(state).await;
+
+    let result = client.list_tools(None).await.expect("list_tools");
+    assert_eq!(result.ttl_ms, Some(0), "tools/list must send ttlMs");
+    assert_eq!(
+        result.cache_scope,
+        Some(rmcp::model::CacheScope::Private),
+        "tools/list must send cacheScope"
     );
 }
 
