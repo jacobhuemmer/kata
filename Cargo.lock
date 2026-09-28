@@ -1250,7 +1250,7 @@ dependencies = [
 
 [[package]]
 name = "kata-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1278,7 +1278,7 @@ dependencies = [
 
 [[package]]
 name = "kata-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "age",
  "apple-native-keyring-store",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "kata-exec"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nix",
  "tempfile",
@@ -1313,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "kata-mcp"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "humantime",
  "kata-core",
@@ -1333,7 +1333,7 @@ dependencies = [
 
 [[package]]
 name = "kata-mine"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "humantime",
  "kata-core",
