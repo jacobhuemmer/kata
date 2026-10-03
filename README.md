@@ -12,7 +12,7 @@ scripts. Kata supplies a picker, validation, an encrypted vault, and run history
 ### macOS and Linux (Homebrew)
 
 ```sh
-brew tap jacobhuemmer/tap
+brew tap masonhuemmer/tap
 brew install kata
 kata --version
 ```
@@ -20,16 +20,16 @@ kata --version
 Update with `brew update && brew upgrade kata`. To build the latest `main`:
 
 ```sh
-brew install --HEAD jacobhuemmer/tap/kata
+brew install --HEAD masonhuemmer/tap/kata
 ```
 
 ### macOS and Linux (standalone)
 
-Download a binary and `SHA256SUMS` from [Releases](https://github.com/jacobhuemmer/kata/releases),
+Download a binary and `SHA256SUMS` from [Releases](https://github.com/masonhuemmer/kata/releases),
 or use the installer, which verifies the archive before installing to `~/.local/bin`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jacobhuemmer/kata/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/masonhuemmer/kata/main/install.sh | sh
 ```
 
 Ensure `~/.local/bin` is on your `PATH`. Set `KATA_VERSION=0.1.3` to select a version
@@ -40,7 +40,7 @@ or `KATA_INSTALL_DIR` to change the destination. Linux binaries require glibc 2.
 
 ```powershell
 scoop bucket add extras
-scoop bucket add jacobhuemmer https://github.com/jacobhuemmer/scoop-bucket
+scoop bucket add masonhuemmer https://github.com/masonhuemmer/scoop-bucket
 scoop install kata
 ```
 
@@ -54,7 +54,7 @@ winget install --id JacobHuemmer.Kata --exact
 ```
 
 Until then, use Scoop or the Windows x64 zip from
-[Releases](https://github.com/jacobhuemmer/kata/releases).
+[Releases](https://github.com/masonhuemmer/kata/releases).
 
 **Run Kata from Git Bash on Windows.** Scoop and WinGet install Git and the Visual C++ runtime as dependencies.
 For a standalone Windows zip, install both first: `winget install Git.Git` and
@@ -69,7 +69,7 @@ native Windows parity are not claimed.
 Install Rust 1.88 or newer and Git:
 
 ```sh
-git clone https://github.com/jacobhuemmer/kata.git
+git clone https://github.com/masonhuemmer/kata.git
 cd kata
 cargo install --locked --path crates/kata-cli
 ```
@@ -122,8 +122,8 @@ workflow publishes binaries and `SHA256SUMS`, updates the Homebrew tap and Scoop
 bucket, and opens a WinGet community pull request.
 
 Repository secret `PACKAGE_TOKEN` must have write access to
-`jacobhuemmer/homebrew-tap`, `jacobhuemmer/scoop-bucket`, and the
-`jacobhuemmer/winget-pkgs` fork, plus permission to open the upstream pull request.
+`masonhuemmer/homebrew-tap`, `masonhuemmer/scoop-bucket`, and the
+`masonhuemmer/winget-pkgs` fork, plus permission to open the upstream pull request.
 The built-in Actions token publishes the Kata release itself.
 
 ## License
