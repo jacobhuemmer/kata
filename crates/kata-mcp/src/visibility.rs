@@ -53,10 +53,7 @@ pub fn discover_project_local(cwd: &Path, home: Option<&Path>) -> Option<PathBuf
         if home.is_some_and(|home| home == dir) {
             return None;
         }
-        match dir.parent() {
-            Some(parent) => dir = parent.to_path_buf(),
-            None => return None,
-        }
+        dir = dir.parent()?.to_path_buf();
     }
 }
 

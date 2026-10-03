@@ -175,10 +175,10 @@ fn default_install_resolves_the_latest_github_release() {
         &curl,
         r##"#!/bin/sh
 if [ "$2" = '-o' ]; then
-  printf '%s' 'https://github.com/jacobhuemmer/kata/releases/tag/v0.1.0'
+  printf '%s' 'https://github.com/masonhuemmer/kata/releases/tag/v0.1.0'
 else
   case "$2" in
-    https://github.com/jacobhuemmer/kata/releases/download/v0.1.0/*)
+    https://github.com/masonhuemmer/kata/releases/download/v0.1.0/*)
       cp "$FIXTURE_ROOT/0.1.0/${2##*/}" "$4" ;;
     *) exit 9 ;;
   esac

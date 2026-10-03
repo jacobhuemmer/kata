@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import tomllib
 
-OWNER = 'jacobhuemmer'
+OWNER = 'masonhuemmer'
 REPO = f'{OWNER}/kata'
 version = tomllib.loads(Path('Cargo.toml').read_text())['workspace']['package']['version']
 base = f'https://github.com/{REPO}/releases/download/v{version}'

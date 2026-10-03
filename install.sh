@@ -1,7 +1,7 @@
 #!/bin/sh
 # Kata install one-liner (docs/design/05-prd.md §7.5, 13-kata-rename.md).
 #
-#   curl -fsSL https://raw.githubusercontent.com/jacobhuemmer/kata/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/masonhuemmer/kata/main/install.sh | sh
 #
 # POSIX sh, no bashisms (CI runs this under both dash and bash-in-POSIX-mode, per §9
 # "Cross-cutting"). Detects OS/arch, downloads the release tarball and its SHA256SUMS,
@@ -39,7 +39,7 @@ sha256_of() {
 
 main() {
   version="${KATA_VERSION:-${KADOU_VERSION:-latest}}"
-  base_url="${KATA_INSTALL_BASE_URL:-${KADOU_INSTALL_BASE_URL:-https://github.com/jacobhuemmer/kata/releases/download}}"
+  base_url="${KATA_INSTALL_BASE_URL:-${KADOU_INSTALL_BASE_URL:-https://github.com/masonhuemmer/kata/releases/download}}"
   install_dir="${KATA_INSTALL_DIR:-${KADOU_INSTALL_DIR:-$HOME/.local/bin}}"
   dry_run=0
 
@@ -56,7 +56,7 @@ main() {
   done
 
   if [ "$version" = latest ]; then
-    latest_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/jacobhuemmer/kata/releases/latest)
+    latest_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' https://github.com/masonhuemmer/kata/releases/latest)
     version=${latest_url##*/}
   fi
   version=${version#v}
@@ -65,7 +65,7 @@ main() {
   esac
   release_path=$version
   case "$base_url" in
-    https://github.com/jacobhuemmer/kata/releases/download) release_path=v$version ;;
+    https://github.com/masonhuemmer/kata/releases/download) release_path=v$version ;;
   esac
 
   os=$(uname -s | tr '[:upper:]' '[:lower:]')
